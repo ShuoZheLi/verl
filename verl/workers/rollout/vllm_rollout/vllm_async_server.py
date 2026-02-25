@@ -43,7 +43,7 @@ from verl.utils.profiler import DistProfiler, build_vllm_profiler_args
 from verl.utils.vllm.vllm_fp8_utils import apply_vllm_fp8_patches
 from verl.workers.config import HFModelConfig, RolloutConfig
 from verl.workers.rollout.replica import RolloutMode, RolloutReplica, TokenOutput
-from verl.workers.rollout.utils import get_max_position_embeddings, run_unvicorn
+from verl.workers.rollout.utils import get_max_position_embeddings, run_uvicorn
 from verl.workers.rollout.vllm_rollout import ServerAdapter
 from verl.workers.rollout.vllm_rollout.utils import (
     VLLM_LORA_INT_ID,
@@ -153,10 +153,10 @@ class vLLMHttpServer:
         if self.node_rank == 0:
             self._master_address = self._server_address
             # used for torch.distributed.init_process_group
-            self._master_port, self._master_sock = get_free_port(self._server_address)
+            self._master_port, self._master_sock = get_free_port(self._server_address, with_alive_sock=True)
             # used for data parallel: --data-parallel-address, --data-parallel-rpc-port
-            self._dp_rpc_port, self._dp_rpc_sock = get_free_port(self._server_address)
-            self._dp_master_port, self._dp_master_sock = get_free_port(self._server_address)
+            self._dp_rpc_port, self._dp_rpc_sock = get_free_port(self._server_address, with_alive_sock=True)
+            self._dp_master_port, self._dp_master_sock = get_free_port(self._server_address, with_alive_sock=True)
         else:
             self._master_address = None
             self._master_port = None
@@ -231,8 +231,25 @@ class vLLMHttpServer:
             set_expandable_segments(True)
 
         quantization = self.config.quantization
+        hf_overrides = {}
 
-        if quantization is not None:
+        # Handle QAT (Quantization-Aware Training) configuration
+        qat_config_dict = getattr(self.config, "qat", {}) or {}
+        if qat_config_dict.get("enable", False):
+            # QAT uses compressed-tensors quantization, apply patches for dynamic weight loading
+            from verl.utils.qat import QATConfig, apply_qat_patches, load_quantization_config
+
+            apply_qat_patches()
+
+            # Load quantization config from JSON file
+            qat_config = QATConfig(**qat_config_dict)
+            quantization_config_dict = load_quantization_config(qat_config)
+            hf_overrides["quantization_config"] = quantization_config_dict
+            quantization = "compressed-tensors"
+
+            logger.info("QAT quantization config injected to vLLM async server")
+        elif quantization is not None:
+            # Handle other quantization methods (fp8, torchao)
             _SUPPORTED_QUANTIZATION = ["fp8", "torchao"]
             if quantization not in _SUPPORTED_QUANTIZATION:
                 raise ValueError(f"Currently only support {_SUPPORTED_QUANTIZATION} quantization, got: {quantization}")
@@ -250,25 +267,32 @@ class vLLMHttpServer:
                     "weight_block_size": [128, 128],
                     "ignored_layers": all_mlp_gate_layers,
                 }
-                fp8_block_quant_kwargs = dict(FP8_BLOCK_QUANT_KWARGS)
+                hf_overrides["quantization_config"] = dict(FP8_BLOCK_QUANT_KWARGS)
                 # Apply vllm fp8 patches
                 # Will remove the patch after vllm support on-the-fly quant for rollout natively.
                 apply_vllm_fp8_patches()
                 # for subprocesses patching
                 os.environ["VERL_VLLM_FP8_QUANT_ENABLED"] = "1"
 
-        hf_overrides = {}
         if quantization is not None and self.config.quantization_config_file is not None:
             hf_overrides["quantization_config_file"] = self.config.quantization_config_file
 
-        if quantization == "fp8":
-            hf_overrides["quantization_config"] = fp8_block_quant_kwargs
-        compilation_config = engine_kwargs.get("compilation_config", None)
-        if compilation_config is None:
-            compilation_config = json.dumps({"cudagraph_mode": "FULL_AND_PIECEWISE"})
-        else:
-            cudagraph_mode = compilation_config.get("cudagraph_mode", "FULL_AND_PIECEWISE")
-            compilation_config = json.dumps({"cudagraph_mode": cudagraph_mode})
+        compilation_config = engine_kwargs.pop("compilation_config", None) or {}
+        if isinstance(compilation_config, str):
+            compilation_config = json.loads(compilation_config)
+        compilation_config.setdefault("cudagraph_mode", "FULL_AND_PIECEWISE")
+
+        # FULL cuda graph is not yet supported with DCP, downgrade to PIECEWISE
+        dcp_size = engine_kwargs.get("decode_context_parallel_size", 1) or 1
+        if dcp_size > 1 and compilation_config["cudagraph_mode"] == "FULL_AND_PIECEWISE":
+            logger.warning(
+                "FULL cuda graph is not supported with DCP (decode_context_parallel_size=%d), "
+                "downgrading cudagraph_mode to PIECEWISE.",
+                dcp_size,
+            )
+            compilation_config["cudagraph_mode"] = "PIECEWISE"
+
+        compilation_config = json.dumps(compilation_config)
         args = {
             "dtype": self.config.dtype,
             "load_format": self.config.load_format,
@@ -400,6 +424,8 @@ class vLLMHttpServer:
         # 3. launch server
         if self.node_rank == 0:
             self._master_sock.close()
+            self._dp_rpc_sock.close()
+            self._dp_master_sock.close()
             await self.run_server(server_args)
         else:
             # TODO: avoid connect before master_sock close
@@ -446,7 +472,7 @@ class vLLMHttpServer:
             logger.info(f"Initializing a V1 LLM engine with config: {vllm_config}")
 
         self.engine = engine_client
-        self._server_port, self._server_task = await run_unvicorn(app, args, self._server_address)
+        self._server_port, self._server_task = await run_uvicorn(app, args, self._server_address)
 
     async def run_headless(self, args: argparse.Namespace):
         """Run headless server in a separate thread."""
