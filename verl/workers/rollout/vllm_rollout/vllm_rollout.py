@@ -163,6 +163,7 @@ class ServerAdapter(BaseRollout):
 
         # build communication buffer
         bucket_size_mb = self.config.checkpoint_engine.update_weights_bucket_megabytes
+        # bucket_size_mb = 4096
         bucket_size = int(bucket_size_mb) << 20
         s = self.zmq_context.socket(zmq.REQ)
         s.bind(self.zmq_handle)
