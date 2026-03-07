@@ -1,44 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
 export PYTHONUNBUFFERED=1
-export VLLM_USE_V1=0
 export HYDRA_FULL_ERROR=0
 export VLLM_USE_V1=1
 export WANDB_PROJECT="PPO_midi"
-export SLURM_JOB_ID="level_1_only_05b"
+export SLURM_JOB_ID="0"
 
-  # data.train_files=/data/shuozhe/saved_dataset/lighteval-MATH-preprocessed/train.parquet \
-  # data.val_files=/data/shuozhe/saved_dataset/math-500/test-00000-of-00001_verl.parquet \
+# IMPORTANT: vLLM v1 memory pool is incompatible with expandable_segments
+# Either unset, or keep only max_split_size_mb
+export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:128"
+# or: unset PYTORCH_CUDA_ALLOC_CONF
 
 python3 -m verl.trainer.main_ppo \
-  data.train_files=/data/shuozhe/saved_dataset/level_1_only/train.parquet \
-  data.val_files=/data/shuozhe/saved_dataset/level_1_only/test.parquet \
+  data.train_files=/data/shuozhe/saved_dataset/lighteval-MATH-preprocessed/train.parquet \
+  data.val_files=/data/shuozhe/saved_dataset/math-500/test-00000-of-00001_verl.parquet \
   data.prompt_key=prompt \
   +data.response_key=ground_truth \
   data.train_batch_size=32 \
   data.max_prompt_length=2048 \
-  data.max_response_length=2048 \
-  actor_rollout_ref.model.path=/data/shuozhe/saved_model/Qwen2.5-0.5B \
+  data.max_response_length=1024 \
+  actor_rollout_ref.model.path=/data/shuozhe/saved_model/Qwen2.5-1.5B \
   actor_rollout_ref.actor.optim.lr=1e-6 \
   actor_rollout_ref.actor.ppo_mini_batch_size=32 \
-  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
   actor_rollout_ref.actor.fsdp_config.param_offload=False \
   actor_rollout_ref.actor.use_kl_loss=False \
   actor_rollout_ref.ref.fsdp_config.param_offload=True \
   actor_rollout_ref.rollout.name=vllm \
   actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
   actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
-  actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
+  actor_rollout_ref.rollout.gpu_memory_utilization=0.55 \
+  actor_rollout_ref.rollout.max_model_len=4096 \
+  actor_rollout_ref.rollout.max_num_seqs=64 \
+  actor_rollout_ref.rollout.n=2 \
   actor_rollout_ref.rollout.enforce_eager=True \
   actor_rollout_ref.rollout.free_cache_engine=True \
   actor_rollout_ref.rollout.enable_chunked_prefill=True \
-  actor_rollout_ref.rollout.n=8 \
   actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=4096 \
   actor_rollout_ref.hybrid_engine=True \
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
   critic.optim.lr=1e-5 \
-  critic.model.path=/data/shuozhe/saved_model/Qwen2.5-0.5B \
+  critic.model.path=/data/shuozhe/saved_model/Qwen2.5-1.5B \
   critic.model.external_lib=trl \
   critic.model.fsdp_config.param_offload=False \
-  critic.ppo_micro_batch_size_per_gpu=4 \
+  critic.ppo_micro_batch_size_per_gpu=1 \
   trainer.val_before_train=True \
   trainer.n_gpus_per_node=4 \
   trainer.nnodes=1 \
@@ -47,6 +53,6 @@ python3 -m verl.trainer.main_ppo \
   trainer.total_epochs=5 \
   trainer.logger='["console","wandb"]' \
   trainer.project_name="PPO" \
-  trainer.experiment_name="qwen2.5_0.5B_ppo_valuehead_${SLURM_JOB_ID}" \
+  trainer.experiment_name="qwen2.5_1.5B_ppo_valuehead_${SLURM_JOB_ID}" \
   trainer.default_local_dir="/data/shuozhe/verl/train_log/job_${SLURM_JOB_ID}" \
-  2>&1 | tee /data/shuozhe/verl/train_log/job_${SLURM_JOB_ID}.txt
+  2>&1 | tee "/data/shuozhe/verl/train_log/job_${SLURM_JOB_ID}.txt"

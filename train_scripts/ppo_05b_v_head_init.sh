@@ -3,14 +3,14 @@ export VLLM_USE_V1=0
 export HYDRA_FULL_ERROR=0
 export VLLM_USE_V1=1
 export WANDB_PROJECT="PPO_midi"
-export SLURM_JOB_ID="level_1_only_05b"
+export SLURM_JOB_ID="05b_vh_init_e5"
 
   # data.train_files=/data/shuozhe/saved_dataset/lighteval-MATH-preprocessed/train.parquet \
   # data.val_files=/data/shuozhe/saved_dataset/math-500/test-00000-of-00001_verl.parquet \
 
 python3 -m verl.trainer.main_ppo \
-  data.train_files=/data/shuozhe/saved_dataset/level_1_only/train.parquet \
-  data.val_files=/data/shuozhe/saved_dataset/level_1_only/test.parquet \
+  data.train_files=/data/shuozhe/saved_dataset/lighteval-MATH-preprocessed/train.parquet \
+  data.val_files=/data/shuozhe/saved_dataset/math-500/test-00000-of-00001_verl.parquet \
   data.prompt_key=prompt \
   +data.response_key=ground_truth \
   data.train_batch_size=32 \
@@ -37,6 +37,8 @@ python3 -m verl.trainer.main_ppo \
   critic.optim.lr=1e-5 \
   critic.model.path=/data/shuozhe/saved_model/Qwen2.5-0.5B \
   critic.model.external_lib=trl \
+  critic.model.value_head_init_mean=0.0 \
+  critic.model.value_head_init_std=0.00001 \
   critic.model.fsdp_config.param_offload=False \
   critic.ppo_micro_batch_size_per_gpu=4 \
   trainer.val_before_train=True \

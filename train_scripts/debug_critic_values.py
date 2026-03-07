@@ -217,7 +217,12 @@ def _run_generation(
     return output_ids, response_ids, response_text, prompt_len
 
 
-def _compute_critic_values(critic, input_ids: torch.Tensor, response_len: int) -> torch.Tensor:
+def _compute_critic_values(
+    critic,
+    input_ids: torch.Tensor,
+    prompt_len: int,
+    response_len: int,
+) -> torch.Tensor:
     attention_mask = torch.ones_like(input_ids)
     with torch.no_grad():
         outputs = critic(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
@@ -231,10 +236,20 @@ def _compute_critic_values(critic, input_ids: torch.Tensor, response_len: int) -
     if values.dim() == 3:
         values = values.squeeze(-1)
 
-    # Align with training behavior: use values for response tokens only.
-    if response_len > 0:
-        values = values[:, -response_len - 1 : -1]
-    return values
+    if response_len <= 0:
+        return values[:, :0]
+
+    seq_len = values.shape[1]
+    start = min(max(int(prompt_len), 0), seq_len)
+    end = min(start + int(response_len), seq_len)
+    response_values = values[:, start:end]
+
+    # Fallback for sequence/value alignment mismatches:
+    # keep only post-prompt values so prompt/question tokens are excluded.
+    if response_values.shape[1] != response_len:
+        response_values = values[:, start:]
+
+    return response_values
 
 
 def _save_outputs(
@@ -383,7 +398,12 @@ def main() -> int:
     if response_len == 0:
         print("[warn] Model generated zero tokens. Consider increasing max_new_tokens.")
 
-    response_values = _compute_critic_values(critic, output_ids, response_len)
+    response_values = _compute_critic_values(
+        critic,
+        output_ids,
+        prompt_len=prompt_len,
+        response_len=response_len,
+    )
 
     print("\n=== Prompt ===\n")
     print(prompt)

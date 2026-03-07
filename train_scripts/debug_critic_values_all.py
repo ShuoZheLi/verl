@@ -289,6 +289,19 @@ def _allreduce_numpy(sum_arr, cnt_arr, enabled: bool):
     return sum_t.cpu().numpy(), cnt_t.cpu().numpy()
 
 
+def _allgather_float_list(local_values, enabled: bool):
+    if not enabled:
+        return [float(v) for v in local_values]
+
+    gathered = [None for _ in range(dist.get_world_size())]
+    dist.all_gather_object(gathered, [float(v) for v in local_values])
+    merged = []
+    for part in gathered:
+        if part:
+            merged.extend(float(v) for v in part)
+    return merged
+
+
 def _count_sharded_range(start: int, end: int, rank: int, world_size: int) -> int:
     if start + rank >= end:
         return 0
@@ -336,7 +349,12 @@ def _run_generation(
     return output_ids, response_ids, response_text, prompt_len
 
 
-def _compute_critic_values(critic, input_ids: torch.Tensor, response_len: int) -> torch.Tensor:
+def _compute_critic_values(
+    critic,
+    input_ids: torch.Tensor,
+    prompt_len: int,
+    response_len: int,
+) -> torch.Tensor:
     attention_mask = torch.ones_like(input_ids)
     with torch.no_grad():
         outputs = critic(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
@@ -349,9 +367,20 @@ def _compute_critic_values(critic, input_ids: torch.Tensor, response_len: int) -
     if values.dim() == 3:
         values = values.squeeze(-1)
 
-    if response_len > 0:
-        values = values[:, -response_len - 1 : -1]
-    return values
+    if response_len <= 0:
+        return values[:, :0]
+
+    seq_len = values.shape[1]
+    start = min(max(int(prompt_len), 0), seq_len)
+    end = min(start + int(response_len), seq_len)
+    response_values = values[:, start:end]
+
+    # Fallback for unexpected sequence/value alignment differences:
+    # keep only the post-prompt tail to avoid accidentally including prompt tokens.
+    if response_values.shape[1] != response_len:
+        response_values = values[:, start:]
+
+    return response_values
 
 
 def normalize_and_bin_sequences(sequences, num_bins=100):
@@ -418,6 +447,115 @@ def _save_curves(out_dir: Path, correct_values, wrong_values, num_bins: int):
     print(f"[saved] {out_dir / 'curves.png'}")
 
 
+def _summarize_distribution(values):
+    if len(values) == 0:
+        return {
+            "count": 0,
+            "mean": None,
+            "std": None,
+            "min": None,
+            "max": None,
+            "p25": None,
+            "median": None,
+            "p75": None,
+        }
+
+    arr = np.asarray(values, dtype=np.float64)
+    return {
+        "count": int(arr.size),
+        "mean": float(arr.mean()),
+        "std": float(arr.std()),
+        "min": float(arr.min()),
+        "max": float(arr.max()),
+        "p25": float(np.percentile(arr, 25)),
+        "median": float(np.percentile(arr, 50)),
+        "p75": float(np.percentile(arr, 75)),
+    }
+
+
+def _build_histogram(values, bins):
+    if len(values) == 0:
+        return [0.0 for _ in range(len(bins) - 1)]
+    hist, _ = np.histogram(values, bins=bins, density=True)
+    return hist.astype(np.float64).tolist()
+
+
+def _save_final_value_distribution(
+    out_dir: Path,
+    correct_final_values,
+    wrong_final_values,
+    num_bins: int,
+):
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    all_values = list(correct_final_values) + list(wrong_final_values)
+    bins = None
+    distribution = {
+        "num_bins": int(num_bins),
+        "correct_final_value_stats": _summarize_distribution(correct_final_values),
+        "wrong_final_value_stats": _summarize_distribution(wrong_final_values),
+        "note": "Final value means critic value at the last generated response token.",
+    }
+
+    if all_values:
+        all_arr = np.asarray(all_values, dtype=np.float64)
+        vmin = float(all_arr.min())
+        vmax = float(all_arr.max())
+        if np.isclose(vmin, vmax):
+            span = max(abs(vmin) * 1e-3, 1e-6)
+            bins = np.linspace(vmin - span, vmax + span, num_bins + 1)
+        else:
+            bins = np.linspace(vmin, vmax, num_bins + 1)
+        distribution["bin_edges"] = bins.tolist()
+        distribution["correct_density"] = _build_histogram(correct_final_values, bins)
+        distribution["wrong_density"] = _build_histogram(wrong_final_values, bins)
+
+    dist_path = out_dir / "final_value_distribution.json"
+    with dist_path.open("w", encoding="utf-8") as df:
+        json.dump(distribution, df, ensure_ascii=True, indent=2)
+
+    try:
+        import matplotlib.pyplot as plt  # noqa: WPS433
+
+        fig = plt.figure(figsize=(9, 4))
+        ax = fig.add_subplot(1, 1, 1)
+
+        has_any = False
+        if len(correct_final_values) > 0:
+            ax.hist(
+                correct_final_values,
+                bins=bins if bins is not None else num_bins,
+                density=True,
+                alpha=0.45,
+                label=f"correct (n={len(correct_final_values)})",
+            )
+            has_any = True
+        if len(wrong_final_values) > 0:
+            ax.hist(
+                wrong_final_values,
+                bins=bins if bins is not None else num_bins,
+                density=True,
+                alpha=0.45,
+                label=f"wrong (n={len(wrong_final_values)})",
+            )
+            has_any = True
+        if has_any:
+            ax.legend()
+
+        ax.set_title("Distribution of Final Response-Token Critic Value")
+        ax.set_xlabel("Final response-token value")
+        ax.set_ylabel("Density")
+        ax.grid(True, linestyle="--", alpha=0.4)
+        fig.tight_layout()
+        fig.savefig(out_dir / "final_value_distribution.png", dpi=150)
+        plt.close(fig)
+    except Exception as exc:
+        print(f"[warn] Failed to write final value distribution plot: {exc}")
+
+    print(f"[saved] {dist_path}")
+    print(f"[saved] {out_dir / 'final_value_distribution.png'}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Debug PPO critic values over an entire dataset.")
     parser.add_argument(
@@ -455,6 +593,12 @@ def main() -> int:
     parser.add_argument("--max_examples", type=int, default=None)
     parser.add_argument("--save_every", type=int, default=50)
     parser.add_argument("--num_bins", type=int, default=100)
+    parser.add_argument(
+        "--dist_bins",
+        type=int,
+        default=80,
+        help="Histogram bins for final-value distribution plot.",
+    )
     parser.add_argument(
         "--correct_match",
         type=str,
@@ -539,6 +683,8 @@ def main() -> int:
     wrong_cnt = np.zeros(args.num_bins, dtype=np.int64)
     num_correct_local = 0
     num_wrong_local = 0
+    correct_final_values_local = []
+    wrong_final_values_local = []
 
     with jsonl_path.open("w", encoding="utf-8") as f:
         indices = range(start + rank, end, world_size) if dist_enabled else range(start, end)
@@ -553,7 +699,7 @@ def main() -> int:
             prompt = _normalize_prompt(prompt_raw, tokenizer)
             reference = _normalize_reference(ref_raw)
 
-            output_ids, response_ids, response_text, _ = _run_generation(
+            output_ids, response_ids, response_text, prompt_len = _run_generation(
                 model=actor,
                 tokenizer=tokenizer,
                 prompt=prompt,
@@ -567,8 +713,20 @@ def main() -> int:
             )
 
             response_len = response_ids.shape[1]
-            values = _compute_critic_values(critic, output_ids, response_len)
+            values = _compute_critic_values(
+                critic,
+                output_ids,
+                prompt_len=prompt_len,
+                response_len=response_len,
+            )
             values_list = values[0].detach().cpu().tolist()
+            response_ids_list = response_ids[0].detach().cpu().tolist()
+            if len(values_list) != len(response_ids_list):
+                aligned_len = min(len(values_list), len(response_ids_list))
+                values_list = values_list[:aligned_len]
+                response_ids_list = response_ids_list[:aligned_len]
+
+            final_response_value = float(values_list[-1]) if values_list else None
 
             correct = _is_correct(
                 response_text,
@@ -580,9 +738,13 @@ def main() -> int:
             if correct:
                 num_correct_local += 1
                 _accumulate_bins(values_list, args.num_bins, correct_sum, correct_cnt)
+                if final_response_value is not None:
+                    correct_final_values_local.append(final_response_value)
             else:
                 num_wrong_local += 1
                 _accumulate_bins(values_list, args.num_bins, wrong_sum, wrong_cnt)
+                if final_response_value is not None:
+                    wrong_final_values_local.append(final_response_value)
 
             record = {
                 "index": idx,
@@ -590,8 +752,9 @@ def main() -> int:
                 "response": response_text,
                 "reference": None if reference is None else str(reference),
                 "correct": bool(correct),
-                "response_ids": response_ids[0].detach().cpu().tolist(),
+                "response_ids": response_ids_list,
                 "values": values_list,
+                "final_response_value": final_response_value,
                 "rank": rank,
                 "data_source": data_source,
             }
@@ -607,6 +770,8 @@ def main() -> int:
 
     correct_sum, correct_cnt = _allreduce_numpy(correct_sum, correct_cnt, dist_enabled)
     wrong_sum, wrong_cnt = _allreduce_numpy(wrong_sum, wrong_cnt, dist_enabled)
+    correct_final_values = _allgather_float_list(correct_final_values_local, dist_enabled)
+    wrong_final_values = _allgather_float_list(wrong_final_values_local, dist_enabled)
 
     if dist_enabled:
         tot = torch.tensor([num_correct_local, num_wrong_local], device="cuda", dtype=torch.long)
@@ -650,6 +815,13 @@ def main() -> int:
         except Exception as exc:
             print(f"[warn] Failed to write curves plot: {exc}")
 
+        _save_final_value_distribution(
+            out_dir=out_dir,
+            correct_final_values=correct_final_values,
+            wrong_final_values=wrong_final_values,
+            num_bins=args.dist_bins,
+        )
+
         meta = {
             "checkpoint_dir": str(ckpt_dir),
             "dataset_path": args.dataset_path,
@@ -663,6 +835,8 @@ def main() -> int:
             "score_threshold": args.score_threshold,
             "num_correct": num_correct,
             "num_wrong": num_wrong,
+            "num_correct_with_final_value": len(correct_final_values),
+            "num_wrong_with_final_value": len(wrong_final_values),
             "world_size": world_size,
         }
         with (out_dir / "metadata.json").open("w", encoding="utf-8") as mf:
