@@ -130,3 +130,4 @@ outputs
 .history
 
 *train_log*
+*critic_debug*
