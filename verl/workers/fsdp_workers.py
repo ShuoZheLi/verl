@@ -1355,7 +1355,7 @@ class CriticWorker(Worker, DistProfilerExtension):
         # the following line is necessary
         from torch.distributed.fsdp import MixedPrecision
 
-        from verl.utils.model import load_valuehead_model, print_model_size
+        from verl.utils.model import load_valuehead_model, print_model_size, update_model_config
         from verl.utils.torch_dtypes import PrecisionType
 
         use_shm = config.model.get("use_shm", False)
@@ -1405,6 +1405,10 @@ class CriticWorker(Worker, DistProfilerExtension):
         if getattr(critic_model_config, "model_type", None) == "kimi_vl":
             critic_model_config.text_config.topk_method = "greedy"
 
+        update_model_config(critic_model_config, override_config_kwargs=override_config_kwargs)
+        if self.rank == 0:
+            print(f"Critic model config after override: {critic_model_config}")
+
         init_context = get_init_weight_context_manager(
             use_meta_tensor=not critic_model_config.tie_word_embeddings, mesh=self.device_mesh
         )
@@ -1429,6 +1433,8 @@ class CriticWorker(Worker, DistProfilerExtension):
                 torch_dtype,
                 critic_model_config,
                 config.model.get("trust_remote_code", False),
+                value_head_init_mean=config.model.get("value_head_init_mean", 0.0),
+                value_head_init_std=config.model.get("value_head_init_std", None),
             )
 
             use_remove_padding = config.model.get("use_remove_padding", False)

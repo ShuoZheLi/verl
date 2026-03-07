@@ -258,6 +258,9 @@ class FSDPCriticModelCfg(BaseModelConfig):
         lora_rank (int): Set to positive value to enable LoRA (e.g., 32).
         lora_alpha (int): LoRA scaling factor.
         target_modules (Union[str, List[str]]): LoRA target modules: "all-linear" or list of layer names.
+        value_head_init_mean (float): Mean for critic value-head parameter initialization.
+        value_head_init_std (Optional[float]): Std for critic value-head parameter initialization.
+            If None, keep the default initialization from transformers/trl.
     """
 
     use_shm: bool = False
@@ -268,5 +271,7 @@ class FSDPCriticModelCfg(BaseModelConfig):
     lora_rank: int = 0
     lora_alpha: int = 16
     target_modules: str | list[str] = "all-linear"
+    value_head_init_mean: float = 0.0
+    value_head_init_std: Optional[float] = None
     # TiledMLP configuration for memory-efficient MLP computation
     tiled_mlp: dict = field(default_factory=lambda: {"enabled": False, "num_shards": 4})

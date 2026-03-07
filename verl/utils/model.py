@@ -618,7 +618,66 @@ def patch_valuehead_model(model) -> None:
     model._no_split_modules = getattr(model.pretrained_model, "_no_split_modules", [])
 
 
-def load_valuehead_model(local_path, torch_dtype, model_config, trust_remote_code):
+def _find_value_head_linears(model: nn.Module) -> list[tuple[str, nn.Linear]]:
+    """Find linear modules that act as critic/value heads across supported model variants."""
+    value_heads: list[tuple[str, nn.Linear]] = []
+
+    v_head = getattr(model, "v_head", None)
+    if isinstance(v_head, nn.Linear):
+        value_heads.append(("v_head", v_head))
+    elif v_head is not None:
+        summary = getattr(v_head, "summary", None)
+        if isinstance(summary, nn.Linear):
+            value_heads.append(("v_head.summary", summary))
+
+    for attr_name in ("score", "classifier"):
+        module = getattr(model, attr_name, None)
+        if isinstance(module, nn.Linear):
+            value_heads.append((attr_name, module))
+
+    deduped: list[tuple[str, nn.Linear]] = []
+    seen_module_ids: set[int] = set()
+    for name, module in value_heads:
+        module_id = id(module)
+        if module_id in seen_module_ids:
+            continue
+        seen_module_ids.add(module_id)
+        deduped.append((name, module))
+    return deduped
+
+
+def _init_value_head_parameters(model: nn.Module, mean: float, std: float) -> None:
+    if std < 0:
+        raise ValueError(f"value_head_init_std must be >= 0, got {std}")
+
+    value_heads = _find_value_head_linears(model)
+    if not value_heads:
+        warnings.warn(
+            "value_head_init_std is set but no value-head linear module was found. "
+            "Supported names are: v_head(.summary), score, classifier.",
+            stacklevel=2,
+        )
+        return
+
+    for _, module in value_heads:
+        if std == 0:
+            nn.init.constant_(module.weight, mean)
+            if module.bias is not None:
+                nn.init.constant_(module.bias, mean)
+        else:
+            nn.init.normal_(module.weight, mean=mean, std=std)
+            if module.bias is not None:
+                nn.init.normal_(module.bias, mean=mean, std=std)
+
+
+def load_valuehead_model(
+    local_path,
+    torch_dtype,
+    model_config,
+    trust_remote_code,
+    value_head_init_mean: float = 0.0,
+    value_head_init_std: Optional[float] = None,
+):
     from transformers import AutoModelForCausalLM, AutoModelForTokenClassification, AutoModelForVision2Seq
 
     try:
@@ -629,6 +688,8 @@ def load_valuehead_model(local_path, torch_dtype, model_config, trust_remote_cod
             attn_implementation="flash_attention_2",
             trust_remote_code=trust_remote_code,
         )
+        if value_head_init_std is not None:
+            _init_value_head_parameters(model=model, mean=value_head_init_mean, std=value_head_init_std)
         return model
     except BaseException as e:
         if not is_trl_available():
@@ -653,6 +714,8 @@ def load_valuehead_model(local_path, torch_dtype, model_config, trust_remote_cod
     )
     model = AutoModelForCausalLMWithValueHead.from_pretrained(ori_model)
     patch_valuehead_model(model)
+    if value_head_init_std is not None:
+        _init_value_head_parameters(model=model, mean=value_head_init_mean, std=value_head_init_std)
     return model
 
 
