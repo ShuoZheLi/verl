@@ -327,6 +327,7 @@ class TestComputeDataMetrics(unittest.TestCase):
         self.assertIn("critic/advantages/mean", metrics)
         self.assertIn("critic/returns/mean", metrics)
         self.assertIn("critic/values/mean", metrics)
+        self.assertIn("critic/prompt_end_value/mean", metrics)
         self.assertIn("critic/vf_explained_var", metrics)
         self.assertIn("response_length/mean", metrics)
         self.assertIn("prompt_length/mean", metrics)
@@ -334,6 +335,7 @@ class TestComputeDataMetrics(unittest.TestCase):
         # Check some specific values
         self.assertAlmostEqual(metrics["critic/score/mean"], 5.0)  # Sum of token_level_scores
         self.assertAlmostEqual(metrics["critic/rewards/mean"], 2.5)  # Sum of token_level_rewards
+        self.assertAlmostEqual(metrics["critic/prompt_end_value/mean"], 1.0)
 
     def test_compute_data_metrics_without_critic(self):
         """Test compute_data_metrics with critic disabled."""
@@ -341,12 +343,42 @@ class TestComputeDataMetrics(unittest.TestCase):
 
         # Check that critic-specific metrics are not present
         self.assertNotIn("critic/values/mean", metrics)
+        self.assertNotIn("critic/prompt_end_value/mean", metrics)
         self.assertNotIn("critic/vf_explained_var", metrics)
 
         # Check that other metrics are still present
         self.assertIn("critic/score/mean", metrics)
         self.assertIn("critic/rewards/mean", metrics)
         self.assertIn("response_length/mean", metrics)
+
+    def test_compute_data_metrics_prompt_end_value_ignores_modified_response_mask(self):
+        """Prompt-end value should use token-0 state value even if response_mask is modified."""
+        batch = MagicMock()
+        batch.batch = {
+            "token_level_scores": torch.tensor([[1.0, 0.0], [1.0, 0.0]]),
+            "token_level_rewards": torch.tensor([[1.0, 0.0], [1.0, 0.0]]),
+            "advantages": torch.tensor([[0.1, 0.2], [0.3, 0.4]]),
+            "returns": torch.tensor([[1.1, 1.2], [1.3, 1.4]]),
+            "responses": torch.zeros((2, 2)),
+            "attention_mask": torch.tensor(
+                [
+                    [1, 1, 1, 1],  # non-aborted
+                    [1, 1, 1, 1],  # non-aborted
+                ]
+            ),
+            # Simulate rollout-correction masking token 0 for sample 0.
+            "response_mask": torch.tensor(
+                [
+                    [0, 1],
+                    [1, 0],
+                ]
+            ),
+            # Prompt-end values are token-0 values: 0.9 and 1.1 => mean 1.0
+            "values": torch.tensor([[0.9, 5.0], [1.1, 6.0]]),
+        }
+
+        metrics = compute_data_metrics(batch, use_critic=True)
+        self.assertAlmostEqual(metrics["critic/prompt_end_value/mean"], 1.0)
 
 
 class TestComputeTimingMetrics(unittest.TestCase):

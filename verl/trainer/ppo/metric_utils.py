@@ -97,6 +97,7 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
             - critic/advantages/mean, max, min: Statistics about advantages
             - critic/returns/mean, max, min: Statistics about returns
             - critic/values/mean, max, min: Statistics about critic values (if use_critic=True)
+            - critic/prompt_end_value/mean: Mean value at the end of prompt (if use_critic=True)
             - critic/vf_explained_var: Explained variance of the value function (if use_critic=True)
             - response_length/mean, max, min, clip_ratio: Statistics about response lengths
             - prompt_length/mean, max, min, clip_ratio: Statistics about prompt lengths
@@ -142,6 +143,13 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
         return_diff_var = torch.var(valid_returns - valid_values)
         return_var = torch.var(valid_returns)
 
+        # Values are aligned with action positions, so index 0 always corresponds
+        # to the value at the last prompt token (before generating token 0).
+        # Use non_aborted_mask (from attention_mask) instead of response_mask
+        # because response_mask can be post-processed (e.g. rollout correction).
+        prompt_end_values = values[non_aborted_mask, :1].squeeze(-1)
+        prompt_end_value_mean = torch.mean(prompt_end_values).detach().item()
+
     # Aborted samples and non-aborted response length statistics
     # response_length_non_aborted/*: statistics computed on non-aborted samples only
     aborted_ratio = torch.mean(aborted_mask.float()).detach().item()
@@ -180,6 +188,8 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
                 "critic/values/mean": torch.mean(valid_values).detach().item(),
                 "critic/values/max": torch.max(valid_values).detach().item(),
                 "critic/values/min": torch.min(valid_values).detach().item(),
+                # prompt end value (state value before generating first response token)
+                "critic/prompt_end_value/mean": prompt_end_value_mean,
                 # vf explained var
                 "critic/vf_explained_var": (1.0 - return_diff_var / (return_var + 1e-5)).detach().item(),
             }
