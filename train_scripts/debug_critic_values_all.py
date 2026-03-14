@@ -205,6 +205,38 @@ def _normalize_text_for_match(text: str) -> str:
     return text
 
 
+def _normalize_filter_value(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        return _normalize_text_for_match(json.dumps(value, ensure_ascii=True, sort_keys=True))
+    return _normalize_text_for_match(str(value))
+
+
+def _build_level_filtered_indices(ds, level_key: str, levels: list[str] | None) -> list[int]:
+    if not levels:
+        return list(range(len(ds)))
+
+    if level_key not in ds.column_names:
+        cols = ", ".join(ds.column_names)
+        raise KeyError(f"Level key '{level_key}' not found in dataset columns: {cols}")
+
+    target_levels = set()
+    for level in levels:
+        normalized = _normalize_filter_value(level)
+        if normalized:
+            target_levels.add(normalized)
+    if not target_levels:
+        raise ValueError("No valid level value was provided in --levels.")
+
+    level_values = ds[level_key]
+    selected = []
+    for idx, value in enumerate(level_values):
+        if _normalize_filter_value(value) in target_levels:
+            selected.append(idx)
+    return selected
+
+
 def _is_correct(
     response: str,
     reference: str | None,
@@ -317,12 +349,6 @@ def _allgather_float_list(local_values, enabled: bool):
         if part:
             merged.extend(float(v) for v in part)
     return merged
-
-
-def _count_sharded_range(start: int, end: int, rank: int, world_size: int) -> int:
-    if start + rank >= end:
-        return 0
-    return ((end - 1 - (start + rank)) // world_size) + 1
 
 
 def _run_generation(
@@ -589,6 +615,19 @@ def main() -> int:
         help="Path to the PPO checkpoint directory (contains actor/critic).",
     )
     parser.add_argument("--dataset_path", type=str, required=True, help="Path to training parquet file.")
+    parser.add_argument(
+        "--level_key",
+        type=str,
+        default="level",
+        help="Dataset column key used for level filtering.",
+    )
+    parser.add_argument(
+        "--levels",
+        type=str,
+        nargs="+",
+        default=None,
+        help='Optional level values to keep. Example: --levels "Level 5" or --levels "Level 1" "Level 5".',
+    )
     parser.add_argument("--prompt_key", type=str, default="prompt", help="Prompt column key in dataset.")
     parser.add_argument(
         "--response_key",
@@ -693,14 +732,28 @@ def main() -> int:
     gen_config = _get_generation_config(actor_hf)
 
     ds = load_dataset("parquet", data_files=args.dataset_path, split="train")
-    total = len(ds)
+    dataset_total = len(ds)
+    filtered_indices = _build_level_filtered_indices(ds, args.level_key, args.levels)
+    filtered_total = len(filtered_indices)
+
+    if (not dist_enabled) or rank == 0:
+        if args.levels:
+            levels_str = ", ".join(args.levels)
+            print(
+                f"[filter] matched {filtered_total}/{dataset_total} rows "
+                f"where {args.level_key} in {{{levels_str}}}"
+            )
+        else:
+            print(f"[filter] no level filter; using all {dataset_total} rows")
 
     start = max(0, args.start_index)
-    end = args.end_index if args.end_index is not None else total
-    end = min(end, total)
+    end = args.end_index if args.end_index is not None else filtered_total
+    end = min(end, filtered_total)
 
     if args.max_examples is not None:
         end = min(end, start + args.max_examples)
+
+    selected_indices = filtered_indices[start:end]
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -716,8 +769,8 @@ def main() -> int:
     wrong_final_values_local = []
 
     with jsonl_path.open("w", encoding="utf-8") as f:
-        indices = range(start + rank, end, world_size) if dist_enabled else range(start, end)
-        total_local = _count_sharded_range(start, end, rank, world_size) if dist_enabled else (end - start)
+        indices = selected_indices[rank::world_size] if dist_enabled else selected_indices
+        total_local = len(indices)
         processed = 0
         for idx in indices:
             row = ds[int(idx)]
@@ -855,11 +908,16 @@ def main() -> int:
         meta = {
             "checkpoint_dir": str(ckpt_dir),
             "dataset_path": args.dataset_path,
+            "level_key": args.level_key,
+            "levels": args.levels,
             "prompt_key": args.prompt_key,
             "response_key": args.response_key,
             "data_source_key": args.data_source_key,
             "start_index": start,
             "end_index": end,
+            "dataset_total_rows": dataset_total,
+            "level_filtered_rows": filtered_total,
+            "selected_rows": len(selected_indices),
             "max_examples": args.max_examples,
             "correct_match": args.correct_match,
             "score_threshold": args.score_threshold,

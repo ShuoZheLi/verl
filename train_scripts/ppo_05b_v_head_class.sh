@@ -37,7 +37,7 @@ python3 -m verl.trainer.main_ppo \
   critic.optim.lr=1e-5 \
   critic.model.path=/data/shuozhe/saved_model/Qwen2.5-0.5B \
   critic.value_head_type=categorical \
-  critic.value_num_bins=21 \
+  critic.value_num_bins=11 \
   critic.value_min=0.0 \
   critic.value_max=1.0 \
   critic.value_target_type=hl_gauss \

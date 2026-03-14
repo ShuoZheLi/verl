@@ -3,7 +3,9 @@ export VLLM_USE_V1=0
 export HYDRA_FULL_ERROR=0
 export VLLM_USE_V1=1
 export WANDB_PROJECT="PPO_midi"
-export SLURM_JOB_ID="05b_vh_class_bin_11_hl_gauss_075_init_e-5"
+export SLURM_JOB_ID="05b_vh_init_load_c1100_e5"
+
+CRITIC_INIT_CKPT=/data/shuozhe/verl/train_log/job_05b_vh_init_e5/global_step_1100/merged_hf/critic
 
   # data.train_files=/data/shuozhe/saved_dataset/lighteval-MATH-preprocessed/train.parquet \
   # data.val_files=/data/shuozhe/saved_dataset/math-500/test-00000-of-00001_verl.parquet \
@@ -35,20 +37,13 @@ python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.hybrid_engine=True \
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
   critic.optim.lr=1e-5 \
-  critic.model.path=/data/shuozhe/saved_model/Qwen2.5-0.5B \
-  critic.value_head_type=categorical \
-  critic.value_num_bins=11 \
-  critic.value_min=0.0 \
-  critic.value_max=1.0 \
-  critic.value_target_type=hl_gauss \
-  critic.value_hl_gauss_sigma_ratio=0.75 \
-  critic.value_target_scaling=identity \
-  critic.value_target_out_of_range=clip \
-  critic.model.value_head_init_mean=0.0 \
-  critic.model.value_head_init_std=0.00001 \
+  critic.model.path=${CRITIC_INIT_CKPT} \
+  critic.model.external_lib=trl \
   critic.model.fsdp_config.param_offload=False \
   critic.ppo_micro_batch_size_per_gpu=4 \
-  trainer.val_before_train=False \
+  trainer.resume_mode=disable \
+  trainer.critic_warmup=0 \
+  trainer.val_before_train=True \
   trainer.n_gpus_per_node=4 \
   trainer.nnodes=1 \
   trainer.test_freq=50 \
@@ -56,10 +51,6 @@ python3 -m verl.trainer.main_ppo \
   trainer.total_epochs=5 \
   trainer.logger='["console","wandb"]' \
   trainer.project_name="PPO" \
-  trainer.experiment_name="qwen2.5_0.5B_ppo_valuehead_categorical_${SLURM_JOB_ID}" \
+  trainer.experiment_name="qwen2.5_0.5B_ppo_valuehead_${SLURM_JOB_ID}" \
   trainer.default_local_dir="/data/shuozhe/verl/train_log/job_${SLURM_JOB_ID}" \
   2>&1 | tee /data/shuozhe/verl/train_log/job_${SLURM_JOB_ID}.txt
-
-
-  # critic.model.value_head_init_mean=0.0 \
-  # critic.model.value_head_init_std=0.00001 \

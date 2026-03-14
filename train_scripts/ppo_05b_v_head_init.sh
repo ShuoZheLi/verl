@@ -3,14 +3,14 @@ export VLLM_USE_V1=0
 export HYDRA_FULL_ERROR=0
 export VLLM_USE_V1=1
 export WANDB_PROJECT="PPO_midi"
-export SLURM_JOB_ID="05b_vh_init_e5"
+export SLURM_JOB_ID="05b_vh_init_e5_new_lvl5"
 
-  # data.train_files=/data/shuozhe/saved_dataset/lighteval-MATH-preprocessed/train.parquet \
-  # data.val_files=/data/shuozhe/saved_dataset/math-500/test-00000-of-00001_verl.parquet \
+  # data.train_files=/data/shuozhe/saved_dataset/verl_math_7500_500_5000/train.parquet \
+  # data.val_files=/data/shuozhe/saved_dataset/verl_math_7500_500_5000/test.parquet \
 
 python3 -m verl.trainer.main_ppo \
-  data.train_files=/data/shuozhe/saved_dataset/lighteval-MATH-preprocessed/train.parquet \
-  data.val_files=/data/shuozhe/saved_dataset/math-500/test-00000-of-00001_verl.parquet \
+  data.train_files=/data/shuozhe/saved_dataset/verl_math_7500_500_5000_level_5/train.parquet \
+  data.val_files=/data/shuozhe/saved_dataset/verl_math_7500_500_5000_level_5/test_5000.parquet \
   data.prompt_key=prompt \
   +data.response_key=ground_truth \
   data.train_batch_size=32 \
