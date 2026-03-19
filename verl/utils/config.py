@@ -94,6 +94,18 @@ def validate_config(
             "Set algorithm.lam=1.0 to keep the configuration unambiguous."
         )
 
+    actor_update_interval = int(config.trainer.get("actor_update_interval", 1))
+    if actor_update_interval < 1:
+        raise ValueError(
+            f"trainer.actor_update_interval must be >= 1, got {actor_update_interval}."
+        )
+
+    if config.trainer.critic_warmup < 0:
+        raise ValueError(f"trainer.critic_warmup must be >= 0, got {config.trainer.critic_warmup}.")
+
+    if config.algorithm.adv_estimator == AdvantageEstimator.ZERO_CRITIC and actor_update_interval != 1:
+        print("WARNING: trainer.actor_update_interval is ignored when algorithm.adv_estimator=zero_critic.")
+
     if not config.actor_rollout_ref.actor.use_dynamic_bsz:
         if config.actor_rollout_ref.actor.strategy == "megatron":
             model_parallel_size = (

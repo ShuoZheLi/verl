@@ -458,6 +458,20 @@ critic:
   shuffle: ${oc.select:actor_rollout_ref.actor.shuffle,false}
   data_loader_seed: ${oc.select:actor_rollout_ref.actor.data_loader_seed,null}
   cliprange_value: 0.5
+  value_head_type: scalar
+  value_head_architecture: linear
+  value_head_state_size: null
+  value_head_gru_hidden_size: 256
+  value_num_bins: 11
+  value_min: 0.0
+  value_max: 1.0
+  value_target_type: two_hot
+  value_hl_gauss_sigma: null
+  value_hl_gauss_sigma_ratio: 0.75
+  value_target_scaling: identity
+  value_target_scale_min: 0.0
+  value_target_scale_max: 1.0
+  value_target_out_of_range: error
   loss_agg_mode: ${oc.select:actor_rollout_ref.actor.loss_agg_mode,token-mean}
   checkpoint:
     _target_: verl.trainer.config.CheckpointConfig
@@ -630,6 +644,7 @@ trainer:
   val_only: false
   test_freq: -1
   critic_warmup: 0
+  actor_update_interval: 1
   default_hdfs_dir: null
   del_local_ckpt_after_load: false
   default_local_dir: checkpoints/${trainer.project_name}/${trainer.experiment_name}

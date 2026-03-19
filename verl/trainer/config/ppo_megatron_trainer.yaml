@@ -154,7 +154,12 @@ trainer:
   del_local_ckpt_after_load: False
   val_before_train: True
   test_freq: -1
+
+  # Number of iterations to warm up the critic before updating policy
   critic_warmup: 0
+
+  # Number of global PPO steps between actor optimizer updates once critic warmup is over
+  actor_update_interval: 1
   default_hdfs_dir: null
   default_local_dir: checkpoints/${trainer.project_name}/${trainer.experiment_name}
   max_actor_ckpt_to_keep: null

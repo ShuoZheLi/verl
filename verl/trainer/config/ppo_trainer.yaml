@@ -178,6 +178,9 @@ trainer:
   # Number of iterations to warm up the critic before updating policy
   critic_warmup: 0
 
+  # Number of global PPO steps between actor optimizer updates once critic warmup is over
+  actor_update_interval: 1
+
   # Default path to distributed filesystem for saving checkpoints
   default_hdfs_dir: null
 

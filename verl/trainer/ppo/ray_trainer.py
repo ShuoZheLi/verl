@@ -323,8 +323,42 @@ class RayPPOTrainer:
 
         self._create_dataloader(train_dataset, val_dataset, collate_fn, train_sampler)
 
+    def _get_actor_update_interval(self) -> int:
+        interval = int(self.config.trainer.get("actor_update_interval", 1))
+        if interval < 1:
+            raise ValueError(f"trainer.actor_update_interval must be >= 1, got {interval}")
+        return interval
+
+    def _get_effective_actor_update_interval(self) -> int:
+        return 1 if self.use_zero_critic else self._get_actor_update_interval()
+
+    def _get_first_actor_update_step(self) -> int:
+        critic_warmup = int(self.config.trainer.critic_warmup)
+        if critic_warmup < 0:
+            raise ValueError(f"trainer.critic_warmup must be >= 0, got {critic_warmup}")
+        return critic_warmup if critic_warmup > 0 else self._get_actor_update_interval()
+
+    def _count_actor_updates_through_step(self, global_step: int) -> int:
+        if self.use_zero_critic:
+            return global_step
+
+        first_actor_update_step = self._get_first_actor_update_step()
+        if global_step < first_actor_update_step:
+            return 0
+
+        actor_update_interval = self._get_actor_update_interval()
+        return 1 + (global_step - first_actor_update_step) // actor_update_interval
+
     def _should_update_actor(self) -> bool:
-        return self.use_zero_critic or self.config.trainer.critic_warmup <= self.global_steps
+        if self.use_zero_critic:
+            return True
+
+        first_actor_update_step = self._get_first_actor_update_step()
+        if self.global_steps < first_actor_update_step:
+            return False
+
+        actor_update_interval = self._get_actor_update_interval()
+        return (self.global_steps - first_actor_update_step) % actor_update_interval == 0
 
     def _should_refresh_rollout_after_critic_only_step(self) -> bool:
         rollout_config = self.config.actor_rollout_ref.rollout
@@ -404,13 +438,20 @@ class RayPPOTrainer:
             total_training_steps = self.config.trainer.total_training_steps
 
         self.total_training_steps = total_training_steps
+        self.total_actor_training_steps = self._count_actor_updates_through_step(total_training_steps)
+        self.actor_scheduler_total_training_steps = max(1, self.total_actor_training_steps)
         print(f"Total training steps: {self.total_training_steps}")
+        print(f"Total actor update steps: {self.total_actor_training_steps}")
+        if self.total_actor_training_steps == 0:
+            print("Warning: actor update schedule yields zero actor optimizer steps; using 1 scheduler step.")
 
         try:
             OmegaConf.set_struct(self.config, True)
             with open_dict(self.config):
                 if OmegaConf.select(self.config, "actor_rollout_ref.actor.optim"):
-                    self.config.actor_rollout_ref.actor.optim.total_training_steps = total_training_steps
+                    self.config.actor_rollout_ref.actor.optim.total_training_steps = (
+                        self.actor_scheduler_total_training_steps
+                    )
                 if OmegaConf.select(self.config, "critic.optim"):
                     self.config.critic.optim.total_training_steps = total_training_steps
         except Exception as e:
@@ -1533,40 +1574,42 @@ class RayPPOTrainer:
                         critic_output_metrics = reduce_metrics(critic_output.meta_info["metrics"])
                         metrics.update(critic_output_metrics)
 
-                    # implement critic warmup
+                    # implement the actor update schedule
                     should_update_actor = self._should_update_actor()
+                    metrics["training/actor_update_interval"] = self._get_effective_actor_update_interval()
+                    metrics["training/is_actor_update_step"] = int(should_update_actor)
                     if should_update_actor:
                         # update actor
                         with marked_timer("update_actor", timing_raw, color="red"):
                             actor_output = self._update_actor(batch)
 
-                        # Check if the ESI (Elastic Server Instance)/training plan is close to expiration.
-                        esi_close_to_expiration = should_save_ckpt_esi(
-                            max_steps_duration=self.max_steps_duration,
-                            redundant_time=self.config.trainer.esi_redundant_time,
-                        )
-                        # Check if the conditions for saving a checkpoint are met.
-                        # The conditions include a mandatory condition (1) and
-                        # one of the following optional conditions (2/3/4):
-                        # 1. The save frequency is set to a positive value.
-                        # 2. It's the last training step.
-                        # 3. The current step number is a multiple of the save frequency.
-                        # 4. The ESI(Elastic Server Instance)/training plan is close to expiration.
-                        if self.config.trainer.save_freq > 0 and (
-                            is_last_step
-                            or self.global_steps % self.config.trainer.save_freq == 0
-                            or esi_close_to_expiration
-                        ):
-                            if esi_close_to_expiration:
-                                print("Force saving checkpoint: ESI instance expiration approaching.")
-                            with marked_timer("save_checkpoint", timing_raw, color="green"):
-                                self._save_checkpoint()
+                    # Check if the ESI (Elastic Server Instance)/training plan is close to expiration.
+                    esi_close_to_expiration = should_save_ckpt_esi(
+                        max_steps_duration=self.max_steps_duration,
+                        redundant_time=self.config.trainer.esi_redundant_time,
+                    )
+                    # Check if the conditions for saving a checkpoint are met.
+                    # The conditions include a mandatory condition (1) and
+                    # one of the following optional conditions (2/3/4):
+                    # 1. The save frequency is set to a positive value.
+                    # 2. It's the last training step.
+                    # 3. The current step number is a multiple of the save frequency.
+                    # 4. The ESI(Elastic Server Instance)/training plan is close to expiration.
+                    if self.config.trainer.save_freq > 0 and (
+                        is_last_step
+                        or self.global_steps % self.config.trainer.save_freq == 0
+                        or esi_close_to_expiration
+                    ):
+                        if esi_close_to_expiration:
+                            print("Force saving checkpoint: ESI instance expiration approaching.")
+                        with marked_timer("save_checkpoint", timing_raw, color="green"):
+                            self._save_checkpoint()
 
                     if should_update_actor or self._should_refresh_rollout_after_critic_only_step():
                         # In hybrid mode with the naive checkpoint engine, rollout replicas are
-                        # put to sleep after generation. During critic warmup we skip actor
-                        # updates, but we still need to refresh the sleeping rollout so the next
-                        # generation step does not run against freed GPU state.
+                        # put to sleep after generation. On any critic-only step (critic warmup
+                        # or a sparse actor update schedule), refresh the sleeping rollout so the
+                        # next generation step does not run against freed GPU state.
                         with marked_timer("update_weights", timing_raw, color="red"):
                             self.checkpoint_manager.update_weights()
 
