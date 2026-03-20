@@ -98,6 +98,7 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
             - critic/returns/mean, max, min: Statistics about returns
             - critic/values/mean, max, min: Statistics about critic values (if use_critic=True)
             - critic/prompt_end_value/mean: Mean value at the end of prompt (if use_critic=True)
+            - critic/vf_rho: Var(returns - values) / Var(returns) on valid response tokens (if use_critic=True)
             - critic/vf_explained_var: Explained variance of the value function (if use_critic=True)
             - response_length/mean, max, min, clip_ratio: Statistics about response lengths
             - prompt_length/mean, max, min, clip_ratio: Statistics about prompt lengths
@@ -142,6 +143,7 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
         valid_values = torch.masked_select(values, response_mask)
         return_diff_var = torch.var(valid_returns - valid_values)
         return_var = torch.var(valid_returns)
+        vf_rho = (return_diff_var / (return_var + 1e-5)).detach().item()
 
         # Values are aligned with action positions, so index 0 always corresponds
         # to the value at the last prompt token (before generating token 0).
@@ -190,8 +192,10 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
                 "critic/values/min": torch.min(valid_values).detach().item(),
                 # prompt end value (state value before generating first response token)
                 "critic/prompt_end_value/mean": prompt_end_value_mean,
+                # rho = Var(R - V_hat) / Var(R), using the same valid-token mask as vf_explained_var.
+                "critic/vf_rho": vf_rho,
                 # vf explained var
-                "critic/vf_explained_var": (1.0 - return_diff_var / (return_var + 1e-5)).detach().item(),
+                "critic/vf_explained_var": 1.0 - vf_rho,
             }
             if use_critic
             else {}
@@ -233,6 +237,47 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
         metrics["tool_call_counts/mean"] = tool_call_counts.mean()
 
     return metrics
+
+
+def compute_grpo_baseline_metrics(batch: DataProto) -> dict[str, float]:
+    """Compute GRPO's sequence-level baseline variance reduction metric.
+
+    This logs the GRPO analogue of critic rho:
+
+        rho = Var(R - b_group) / Var(R)
+
+    where R is the sequence-level reward and b_group is the prompt-group mean
+    baseline. To match the current GRPO advantage implementation, singleton
+    groups use a zero baseline instead of subtracting their own reward.
+    """
+    if "token_level_rewards" not in batch.batch or "uid" not in batch.non_tensor_batch:
+        return {}
+
+    sequence_rewards = batch.batch["token_level_rewards"].sum(dim=-1)
+    if sequence_rewards.numel() <= 1:
+        return {}
+
+    group_ids = batch.non_tensor_batch["uid"]
+    id2rewards = defaultdict(list)
+    for i, group_id in enumerate(group_ids):
+        id2rewards[group_id].append(sequence_rewards[i])
+
+    baselines = torch.zeros_like(sequence_rewards)
+    for i, group_id in enumerate(group_ids):
+        rewards = id2rewards[group_id]
+        if len(rewards) > 1:
+            baselines[i] = torch.mean(torch.stack(rewards))
+
+    residual_var = torch.var(sequence_rewards - baselines)
+    reward_var = torch.var(sequence_rewards)
+    baseline_rho = residual_var / (reward_var + 1e-5)
+
+    return {
+        "grpo/reward_var": reward_var.detach().item(),
+        "grpo/residual_var": residual_var.detach().item(),
+        "grpo/baseline_rho": baseline_rho.detach().item(),
+        "grpo/baseline_explained_var": (1.0 - baseline_rho).detach().item(),
+    }
 
 
 def compute_timing_metrics(batch: DataProto, timing_raw: dict[str, float]) -> dict[str, Any]:
@@ -314,10 +359,15 @@ def compute_throughout_metrics(batch: DataProto, timing_raw: dict[str, float], n
 
 
 def compute_zero_critic_metrics() -> dict[str, float]:
-    """Metrics emitted when using a fixed zero value function instead of a critic."""
+    """Metrics emitted when using a fixed zero value function instead of a critic.
+
+    By convention, zero critic corresponds to a baseline that does not reduce
+    return variance, so vf_rho=1.0 and vf_explained_var=0.0.
+    """
     return {
         "critic/vf_loss": 0.0,
         "critic/vf_clipfrac": 0.0,
+        "critic/vf_rho": 1.0,
         "critic/vf_explained_var": 0.0,
         "critic/vpred_mean": 0.0,
         "critic/values/mean": 0.0,

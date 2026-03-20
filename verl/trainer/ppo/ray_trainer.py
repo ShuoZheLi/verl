@@ -44,6 +44,7 @@ from verl.trainer.ppo import core_algos
 from verl.trainer.ppo.core_algos import AdvantageEstimator, agg_loss
 from verl.trainer.ppo.metric_utils import (
     compute_data_metrics,
+    compute_grpo_baseline_metrics,
     compute_throughout_metrics,
     compute_timing_metrics,
     compute_variance_proxy_metrics,
@@ -1658,6 +1659,11 @@ class RayPPOTrainer:
                 )
                 # collect metrics
                 metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
+                if self.config.algorithm.adv_estimator in {
+                    AdvantageEstimator.GRPO,
+                    AdvantageEstimator.GRPO_VECTORIZED,
+                }:
+                    metrics.update(compute_grpo_baseline_metrics(batch=batch))
                 self._maybe_add_zero_critic_metrics(metrics)
                 metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
                 # TODO: implement actual tflpo and theoretical tflpo

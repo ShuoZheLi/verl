@@ -25,6 +25,7 @@ from verl.trainer.ppo.metric_utils import (
     bootstrap_metric,
     calc_maj_val,
     compute_data_metrics,
+    compute_grpo_baseline_metrics,
     compute_throughout_metrics,
     compute_timing_metrics,
     compute_zero_critic_metrics,
@@ -297,6 +298,7 @@ class TestZeroCriticMetrics(unittest.TestCase):
         expected = {
             "critic/vf_loss",
             "critic/vf_clipfrac",
+            "critic/vf_rho",
             "critic/vf_explained_var",
             "critic/vpred_mean",
             "critic/values/mean",
@@ -306,7 +308,10 @@ class TestZeroCriticMetrics(unittest.TestCase):
             "critic/grad_norm",
         }
         self.assertEqual(set(metrics.keys()), expected)
-        self.assertTrue(all(value == 0.0 for value in metrics.values()))
+        self.assertEqual(metrics["critic/vf_rho"], 1.0)
+        for key, value in metrics.items():
+            if key != "critic/vf_rho":
+                self.assertEqual(value, 0.0)
 
 
 class TestComputeDataMetrics(unittest.TestCase):
@@ -348,6 +353,7 @@ class TestComputeDataMetrics(unittest.TestCase):
         self.assertIn("critic/returns/mean", metrics)
         self.assertIn("critic/values/mean", metrics)
         self.assertIn("critic/prompt_end_value/mean", metrics)
+        self.assertIn("critic/vf_rho", metrics)
         self.assertIn("critic/vf_explained_var", metrics)
         self.assertIn("response_length/mean", metrics)
         self.assertIn("prompt_length/mean", metrics)
@@ -357,6 +363,13 @@ class TestComputeDataMetrics(unittest.TestCase):
         self.assertAlmostEqual(metrics["critic/rewards/mean"], 2.5)  # Sum of token_level_rewards
         self.assertAlmostEqual(metrics["critic/prompt_end_value/mean"], 1.0)
 
+        response_mask = self.batch.batch["response_mask"].bool()
+        valid_returns = torch.masked_select(self.batch.batch["returns"], response_mask)
+        valid_values = torch.masked_select(self.batch.batch["values"], response_mask)
+        expected_rho = (torch.var(valid_returns - valid_values) / (torch.var(valid_returns) + 1e-5)).item()
+        self.assertAlmostEqual(metrics["critic/vf_rho"], expected_rho)
+        self.assertAlmostEqual(metrics["critic/vf_explained_var"], 1.0 - expected_rho)
+
     def test_compute_data_metrics_without_critic(self):
         """Test compute_data_metrics with critic disabled."""
         metrics = compute_data_metrics(self.batch, use_critic=False)
@@ -364,12 +377,47 @@ class TestComputeDataMetrics(unittest.TestCase):
         # Check that critic-specific metrics are not present
         self.assertNotIn("critic/values/mean", metrics)
         self.assertNotIn("critic/prompt_end_value/mean", metrics)
+        self.assertNotIn("critic/vf_rho", metrics)
         self.assertNotIn("critic/vf_explained_var", metrics)
 
         # Check that other metrics are still present
         self.assertIn("critic/score/mean", metrics)
         self.assertIn("critic/rewards/mean", metrics)
         self.assertIn("response_length/mean", metrics)
+
+    def test_compute_data_metrics_vf_rho_matches_masked_formula(self):
+        """vf_rho should use the masked valid tokens and match Var(R - V_hat) / Var(R)."""
+        batch = MagicMock()
+        batch.batch = {
+            "token_level_scores": torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
+            "token_level_rewards": torch.tensor([[0.5, 1.0], [1.5, 2.0]]),
+            "advantages": torch.tensor([[0.1, 0.2], [0.3, 0.4]]),
+            "returns": torch.tensor([[1.1, 1.2], [1.3, 1.4]]),
+            "responses": torch.zeros((2, 2)),
+            "attention_mask": torch.tensor(
+                [
+                    [1, 1, 1, 1],
+                    [1, 1, 1, 1],
+                ]
+            ),
+            "response_mask": torch.tensor(
+                [
+                    [1, 1],
+                    [1, 0],
+                ]
+            ),
+            "values": torch.tensor([[0.8, 1.05], [1.2, 999.0]]),
+        }
+
+        metrics = compute_data_metrics(batch, use_critic=True)
+
+        response_mask = batch.batch["response_mask"].bool()
+        valid_returns = torch.masked_select(batch.batch["returns"], response_mask)
+        valid_values = torch.masked_select(batch.batch["values"], response_mask)
+        expected_rho = (torch.var(valid_returns - valid_values) / (torch.var(valid_returns) + 1e-5)).item()
+
+        self.assertAlmostEqual(metrics["critic/vf_rho"], expected_rho)
+        self.assertAlmostEqual(metrics["critic/vf_explained_var"], 1.0 - expected_rho)
 
     def test_compute_data_metrics_prompt_end_value_ignores_modified_response_mask(self):
         """Prompt-end value should use token-0 state value even if response_mask is modified."""
@@ -399,6 +447,53 @@ class TestComputeDataMetrics(unittest.TestCase):
 
         metrics = compute_data_metrics(batch, use_critic=True)
         self.assertAlmostEqual(metrics["critic/prompt_end_value/mean"], 1.0)
+
+
+class TestComputeGRPOBaselineMetrics(unittest.TestCase):
+    def test_compute_grpo_baseline_metrics_matches_group_baseline_formula(self):
+        batch = MagicMock()
+        batch.batch = {
+            "token_level_rewards": torch.tensor(
+                [
+                    [1.0, 0.0],  # group a -> seq reward 1.0
+                    [3.0, 0.0],  # group a -> seq reward 3.0
+                    [2.0, 0.0],  # group b -> seq reward 2.0
+                    [4.0, 0.0],  # group b -> seq reward 4.0
+                    [5.0, 0.0],  # singleton group c -> baseline stays 0.0
+                ]
+            ),
+        }
+        batch.non_tensor_batch = {
+            "uid": np.array(["a", "a", "b", "b", "c"], dtype=object),
+        }
+
+        metrics = compute_grpo_baseline_metrics(batch)
+
+        sequence_rewards = batch.batch["token_level_rewards"].sum(dim=-1)
+        baselines = torch.tensor([2.0, 2.0, 3.0, 3.0, 0.0])
+        residual_var = torch.var(sequence_rewards - baselines)
+        reward_var = torch.var(sequence_rewards)
+        expected_residual_var = residual_var.item()
+        expected_reward_var = reward_var.item()
+        expected_rho = (residual_var / (reward_var + 1e-5)).item()
+
+        self.assertIn("grpo/reward_var", metrics)
+        self.assertIn("grpo/residual_var", metrics)
+        self.assertIn("grpo/baseline_rho", metrics)
+        self.assertIn("grpo/baseline_explained_var", metrics)
+        self.assertAlmostEqual(metrics["grpo/reward_var"], expected_reward_var)
+        self.assertAlmostEqual(metrics["grpo/residual_var"], expected_residual_var)
+        self.assertAlmostEqual(metrics["grpo/baseline_rho"], expected_rho)
+        self.assertAlmostEqual(metrics["grpo/baseline_explained_var"], 1.0 - expected_rho)
+
+    def test_compute_grpo_baseline_metrics_returns_empty_without_uid(self):
+        batch = MagicMock()
+        batch.batch = {
+            "token_level_rewards": torch.tensor([[1.0, 0.0], [2.0, 0.0]]),
+        }
+        batch.non_tensor_batch = {}
+
+        self.assertEqual(compute_grpo_baseline_metrics(batch), {})
 
 
 class TestComputeTimingMetrics(unittest.TestCase):
