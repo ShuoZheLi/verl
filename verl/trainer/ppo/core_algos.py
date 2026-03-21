@@ -26,6 +26,7 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 import torch
+import torch.nn.functional as torch_F
 from omegaconf import DictConfig
 
 import verl.utils.torch_functional as verl_F
@@ -106,6 +107,8 @@ class AdvantageEstimator(str, Enum):
     """
 
     GAE = "gae"
+    PROMPT_BASELINE = "prompt_baseline"
+    PROMPT_BASELINE_BCE = "prompt_baseline_bce"
     ZERO_CRITIC = "zero_critic"
     GRPO = "grpo"
     REINFORCE_PLUS_PLUS = "reinforce_plus_plus"
@@ -299,6 +302,62 @@ def compute_zero_critic_advantage_return(
         gamma=gamma,
         lam=1.0,
     )
+
+
+@register_adv_est("prompt_end_baseline")
+@register_adv_est(AdvantageEstimator.PROMPT_BASELINE)
+def compute_prompt_baseline_advantage_return(
+    token_level_rewards: torch.Tensor,
+    values: torch.Tensor,
+    response_mask: torch.Tensor,
+    gamma: float,
+    config: Optional[AlgoConfig] = None,
+    **kwargs,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compute discounted reward-to-go with a prompt-level learned baseline.
+
+    The baseline is the critic value at the prompt end, i.e. the value prediction
+    before the first response token is generated. This makes the baseline depend
+    only on the prompt, not on the sampled trajectory prefix.
+
+    Note:
+        This estimator intentionally uses reward-to-go minus a prompt-only
+        baseline, so it requires lam=1.0. Combining a constant prompt baseline
+        with GAE would partially or fully cancel the baseline rather than
+        implementing the intended ``R - b(x)`` estimator.
+    """
+    lam = kwargs.get("lam", 1.0)
+    if lam != 1.0:
+        raise ValueError(
+            "prompt_baseline requires lam=1.0 because it uses reward-to-go minus the prompt-level baseline."
+        )
+    if values is None:
+        raise ValueError("prompt_baseline requires critic values so it can read the prompt-end baseline.")
+    if values.shape != token_level_rewards.shape:
+        raise ValueError(
+            "prompt_baseline requires values and token_level_rewards to have identical shapes, "
+            f"got {values.shape=} and {token_level_rewards.shape=}."
+        )
+
+    with torch.no_grad():
+        returns = torch.zeros_like(token_level_rewards)
+        running_return = torch.zeros(
+            token_level_rewards.size(0),
+            dtype=token_level_rewards.dtype,
+            device=token_level_rewards.device,
+        )
+
+        for t in reversed(range(token_level_rewards.shape[1])):
+            running_return = token_level_rewards[:, t] + gamma * running_return
+            returns[:, t] = running_return
+            running_return = running_return * response_mask[:, t]
+
+        prompt_baseline = values[:, :1]
+        advantages = (returns - prompt_baseline) * response_mask
+        advantages = verl_F.masked_whiten(advantages, response_mask)
+        advantages = advantages * response_mask
+
+    return advantages, returns
 
 
 # NOTE(sgm): this implementation only consider outcome supervision, where the reward is a scalar.
@@ -2014,6 +2073,69 @@ def compute_value_loss(
     vf_loss = 0.5 * agg_loss(loss_mat=clipped_vf_losses, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
     vf_clipfrac = verl_F.masked_mean(torch.gt(vf_losses2, vf_losses1).float(), response_mask)
     return vf_loss, vf_clipfrac
+
+
+def compute_prompt_baseline_bce_value_loss(
+    vpred_logits: torch.Tensor,
+    returns: torch.Tensor,
+    values: torch.Tensor,
+    response_mask: torch.Tensor,
+    cliprange_value: float,
+    loss_agg_mode: str = "token-mean",
+):
+    """Train the prompt-end baseline as a Bernoulli success probability.
+
+    This loss is intended for prompt-baseline estimators where only the first
+    response-position value is consumed during advantage calculation. In this
+    mode, the scalar head is interpreted as a logit, converted to a success
+    probability with ``sigmoid``, and trained against the prompt-level outcome
+    target using clipped BCE.
+    """
+    eps = 1e-6
+    prompt_logits = vpred_logits[:, :1].float()
+    prompt_targets = returns[:, :1].float()
+    prompt_old_probs = values[:, :1].float()
+
+    if torch.any(prompt_targets < -eps) or torch.any(prompt_targets > 1.0 + eps):
+        raise ValueError(
+            "prompt_baseline_bce requires prompt-level targets in [0, 1]. "
+            f"Got target range [{prompt_targets.min().item():.6f}, {prompt_targets.max().item():.6f}]."
+        )
+    if torch.any(prompt_old_probs < -eps) or torch.any(prompt_old_probs > 1.0 + eps):
+        raise ValueError(
+            "prompt_baseline_bce expects stored critic values to already be success probabilities in [0, 1]. "
+            f"Got value range [{prompt_old_probs.min().item():.6f}, {prompt_old_probs.max().item():.6f}]."
+        )
+
+    prompt_targets = prompt_targets.clamp(0.0, 1.0)
+    prompt_old_probs = prompt_old_probs.clamp(eps, 1.0 - eps)
+    prompt_probs = torch.sigmoid(prompt_logits)
+    prompt_probs_safe = prompt_probs.clamp(eps, 1.0 - eps)
+    prompt_probs_clipped = verl_F.clip_by_value(
+        prompt_probs_safe,
+        prompt_old_probs - cliprange_value,
+        prompt_old_probs + cliprange_value,
+    ).clamp(eps, 1.0 - eps)
+
+    vf_losses1 = torch_F.binary_cross_entropy_with_logits(prompt_logits, prompt_targets, reduction="none")
+    vf_losses2 = torch_F.binary_cross_entropy(prompt_probs_clipped, prompt_targets, reduction="none")
+    clipped_vf_losses = torch.max(vf_losses1, vf_losses2)
+
+    prompt_mask = response_mask.new_zeros((response_mask.shape[0], 1))
+    valid_rows = (response_mask > 0).any(dim=-1, keepdim=True)
+    prompt_mask = prompt_mask.masked_fill(valid_rows, 1)
+
+    vf_loss = agg_loss(loss_mat=clipped_vf_losses, loss_mask=prompt_mask, loss_agg_mode=loss_agg_mode)
+    vf_clipfrac = verl_F.masked_mean(torch.gt(vf_losses2, vf_losses1).float(), prompt_mask)
+
+    # Mirror the prompt success probability across valid response positions so
+    # sequence-level masked metrics remain interpretable without extra branches.
+    vpreds = prompt_probs.expand_as(values) * response_mask.to(prompt_probs.dtype)
+    metrics = {
+        "critic/prompt_success_prob_mean": verl_F.masked_mean(prompt_probs, prompt_mask),
+        "critic/prompt_success_target_mean": verl_F.masked_mean(prompt_targets, prompt_mask),
+    }
+    return vf_loss, vf_clipfrac, vpreds, metrics
 
 
 def compute_categorical_value_loss(

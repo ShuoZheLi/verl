@@ -701,24 +701,63 @@ def _find_value_head_modules(model: nn.Module) -> list[tuple[str, nn.Module]]:
     return deduped
 
 
-def _init_stateful_value_head_parameters(module: StatefulValueHead, mean: float, std: float) -> None:
-    for param in module.value_head_parameters():
-        if param is None:
-            continue
+def _init_value_head_parameter(
+    param: torch.nn.Parameter,
+    *,
+    method: str,
+    mean: float,
+    std: Optional[float],
+) -> None:
+    if method == "normal":
+        if std is None:
+            raise ValueError("value_head_init_std must be set when value_head_init_method='normal'.")
+        if std < 0:
+            raise ValueError(f"value_head_init_std must be >= 0, got {std}")
         if std == 0:
             nn.init.constant_(param, mean)
         else:
             nn.init.normal_(param, mean=mean, std=std)
+    elif method == "xavier_uniform":
+        if param.dim() < 2:
+            nn.init.zeros_(param)
+        else:
+            nn.init.xavier_uniform_(param)
+    elif method == "xavier_normal":
+        if param.dim() < 2:
+            nn.init.zeros_(param)
+        else:
+            nn.init.xavier_normal_(param)
+    else:
+        raise ValueError(
+            f"value_head_init_method must be one of ['normal', 'xavier_uniform', 'xavier_normal'], got {method!r}."
+        )
 
 
-def _init_value_head_parameters(model: nn.Module, mean: float, std: float) -> None:
-    if std < 0:
-        raise ValueError(f"value_head_init_std must be >= 0, got {std}")
+def _init_stateful_value_head_parameters(
+    module: StatefulValueHead,
+    *,
+    method: str,
+    mean: float,
+    std: Optional[float],
+) -> None:
+    for param in module.value_head_parameters():
+        if param is None:
+            continue
+        _init_value_head_parameter(param, method=method, mean=mean, std=std)
 
+
+def _init_value_head_parameters(
+    model: nn.Module,
+    *,
+    mean: float,
+    std: Optional[float],
+    method: str = "normal",
+) -> None:
+    
     value_heads = _find_value_head_modules(model)
     if not value_heads:
         warnings.warn(
-            "value_head_init_std is set but no supported value-head module was found. "
+            "Value-head initialization was requested but no supported value-head module was found. "
             "Supported names are: v_head(.summary), score, classifier.",
             stacklevel=2,
         )
@@ -726,16 +765,11 @@ def _init_value_head_parameters(model: nn.Module, mean: float, std: float) -> No
 
     for _, module in value_heads:
         if isinstance(module, nn.Linear):
-            if std == 0:
-                nn.init.constant_(module.weight, mean)
-                if module.bias is not None:
-                    nn.init.constant_(module.bias, mean)
-            else:
-                nn.init.normal_(module.weight, mean=mean, std=std)
-                if module.bias is not None:
-                    nn.init.normal_(module.bias, mean=mean, std=std)
+            _init_value_head_parameter(module.weight, method=method, mean=mean, std=std)
+            if module.bias is not None:
+                _init_value_head_parameter(module.bias, method=method, mean=mean, std=std)
         elif isinstance(module, StatefulValueHead):
-            _init_stateful_value_head_parameters(module, mean=mean, std=std)
+            _init_stateful_value_head_parameters(module, method=method, mean=mean, std=std)
         else:
             raise TypeError(f"Unsupported value-head module type: {type(module).__name__}")
 
@@ -747,6 +781,7 @@ def load_valuehead_model(
     trust_remote_code,
     value_head_init_mean: float = 0.0,
     value_head_init_std: Optional[float] = None,
+    value_head_init_method: Optional[str] = None,
 ):
     from transformers import AutoModelForCausalLM, AutoModelForTokenClassification, AutoModelForVision2Seq
 
@@ -775,10 +810,15 @@ def load_valuehead_model(
         patch_recurrent_value_head(model, head_arch_spec)
         strict_load = saved_head_arch_spec is not None and saved_head_arch_spec.is_recurrent()
         _load_hf_checkpoint_weights(model, local_path, strict=strict_load)
-        if value_head_init_std is not None and not (
+        if (value_head_init_std is not None or value_head_init_method is not None) and not (
             saved_head_arch_spec is not None and saved_head_arch_spec.is_recurrent()
         ):
-            _init_value_head_parameters(model=model, mean=value_head_init_mean, std=value_head_init_std)
+            _init_value_head_parameters(
+                model=model,
+                mean=value_head_init_mean,
+                std=value_head_init_std,
+                method=value_head_init_method or "normal",
+            )
         return model
     except BaseException as e:
         if head_arch_spec.is_recurrent():
@@ -809,8 +849,13 @@ def load_valuehead_model(
     )
     model = AutoModelForCausalLMWithValueHead.from_pretrained(ori_model)
     patch_valuehead_model(model)
-    if value_head_init_std is not None:
-        _init_value_head_parameters(model=model, mean=value_head_init_mean, std=value_head_init_std)
+    if value_head_init_std is not None or value_head_init_method is not None:
+        _init_value_head_parameters(
+            model=model,
+            mean=value_head_init_mean,
+            std=value_head_init_std,
+            method=value_head_init_method or "normal",
+        )
     return model
 
 

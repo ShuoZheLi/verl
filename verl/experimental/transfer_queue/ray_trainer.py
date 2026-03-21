@@ -193,6 +193,23 @@ def compute_advantage(
                 config.pf_ppo.get("reweight_method"),
                 config.pf_ppo.get("weight_pow"),
             )
+    elif adv_estimator in (
+        AdvantageEstimator.PROMPT_BASELINE,
+        AdvantageEstimator.PROMPT_BASELINE_BCE,
+    ):
+        if "values" not in data.batch:
+            raise ValueError(
+                f"algorithm.adv_estimator={adv_estimator.value} requires critic values. "
+                "Ensure the critic worker is enabled and values were computed before advantage calculation."
+            )
+        advantages, returns = core_algos.compute_prompt_baseline_advantage_return(
+            token_level_rewards=data.batch["token_level_rewards"],
+            values=data.batch["values"],
+            response_mask=data.batch["response_mask"],
+            gamma=gamma,
+            lam=lam,
+            config=config,
+        )
     elif adv_estimator == AdvantageEstimator.ZERO_CRITIC:
         if lam != 1.0:
             raise ValueError("algorithm.lam must be 1.0 when algorithm.adv_estimator=zero_critic.")
@@ -748,6 +765,8 @@ class RayPPOTrainer:
         if self.use_critic:
             resource_pool = self.resource_pool_manager.get_resource_pool(Role.Critic)
             critic_cfg = omega_conf_to_dataclass(self.config.critic)
+            if self.config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_BCE:
+                critic_cfg.value_loss_mode = "prompt_baseline_bce"
             critic_cls = RayClassWithInitArgs(cls=self.role_worker_mapping[Role.Critic], config=critic_cfg)
             self.resource_pool_to_cls[resource_pool]["critic"] = critic_cls
 
@@ -1343,6 +1362,17 @@ class RayPPOTrainer:
                     if self.use_critic:
                         with marked_timer("values", timing_raw, color="cyan"):
                             values_meta = self.critic_wg.compute_values(batch_meta)
+                            if self.config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_BCE:
+                                value_transform_meta = batch_meta.union(values_meta).select_fields(["values", "response_mask"])
+                                value_transform_td = self.tq_client.get_data(value_transform_meta)
+                                values_td = TensorDict(
+                                    {
+                                        "values": torch.sigmoid(value_transform_td["values"].float())
+                                        * value_transform_td["response_mask"].to(torch.float32)
+                                    },
+                                    batch_size=value_transform_td["values"].size(0),
+                                )
+                                values_meta = self.tq_client.put(data=values_td, metadata=values_meta)
                             batch_meta = batch_meta.union(values_meta)
 
                     with marked_timer("adv", timing_raw, color="brown"):
@@ -1407,7 +1437,11 @@ class RayPPOTrainer:
                             "response_mask",
                             "token_level_rewards",
                         ]
-                        if self.config.algorithm.adv_estimator == AdvantageEstimator.GAE:
+                        if self.config.algorithm.adv_estimator in (
+                            AdvantageEstimator.GAE,
+                            AdvantageEstimator.PROMPT_BASELINE,
+                            AdvantageEstimator.PROMPT_BASELINE_BCE,
+                        ):
                             compute_advantage_fields.append("values")
                         elif self.config.algorithm.adv_estimator == AdvantageEstimator.GRPO:
                             compute_advantage_fields.append("uid")

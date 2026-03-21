@@ -25,7 +25,7 @@ from verl.trainer.ppo.core_algos import (
     get_adv_estimator_fn,
 )
 from verl.trainer.ppo.utils import need_critic
-from verl.utils.config import omega_conf_to_dataclass
+from verl.utils.config import omega_conf_to_dataclass, validate_config
 
 
 class TestAlgoConfig(unittest.TestCase):
@@ -135,6 +135,60 @@ class TestAlgoConfig(unittest.TestCase):
 
         with self.assertWarns(UserWarning):
             self.assertFalse(need_critic(config))
+
+    def test_prompt_baseline_enables_critic_by_default(self):
+        config = OmegaConf.create(
+            {
+                "algorithm": {"adv_estimator": "prompt_baseline"},
+                "critic": {"enable": None},
+            }
+        )
+
+        self.assertTrue(need_critic(config))
+
+    def test_prompt_baseline_bce_enables_critic_by_default(self):
+        config = OmegaConf.create(
+            {
+                "algorithm": {"adv_estimator": "prompt_baseline_bce"},
+                "critic": {"enable": None},
+            }
+        )
+
+        self.assertTrue(need_critic(config))
+
+    def test_prompt_baseline_bce_validate_config_requires_gamma_one(self):
+        config = OmegaConf.create(
+            {
+                "trainer": {"n_gpus_per_node": 1, "nnodes": 1},
+                "algorithm": {
+                    "adv_estimator": "prompt_baseline_bce",
+                    "lam": 1.0,
+                    "gamma": 0.9,
+                    "use_kl_in_reward": False,
+                },
+                "critic": {"value_head_type": "scalar"},
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "algorithm.gamma=1.0"):
+            validate_config(config, use_reference_policy=False, use_critic=True)
+
+    def test_prompt_baseline_bce_validate_config_rejects_kl_in_reward(self):
+        config = OmegaConf.create(
+            {
+                "trainer": {"n_gpus_per_node": 1, "nnodes": 1},
+                "algorithm": {
+                    "adv_estimator": "prompt_baseline_bce",
+                    "lam": 1.0,
+                    "gamma": 1.0,
+                    "use_kl_in_reward": True,
+                },
+                "critic": {"value_head_type": "scalar"},
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "does not support algorithm.use_kl_in_reward=True"):
+            validate_config(config, use_reference_policy=False, use_critic=True)
 
     def test_config_init_from_yaml(self):
         import os

@@ -21,7 +21,11 @@ from verl.trainer.ppo.core_algos import AdvantageEstimator
 
 def need_critic(config: DictConfig) -> bool:
     """Given a config, do we need critic"""
-    if config.algorithm.adv_estimator == AdvantageEstimator.GAE:
+    if config.algorithm.adv_estimator in [
+        AdvantageEstimator.GAE,
+        AdvantageEstimator.PROMPT_BASELINE,
+        AdvantageEstimator.PROMPT_BASELINE_BCE,
+    ]:
         return True
     elif config.algorithm.adv_estimator in [
         AdvantageEstimator.ZERO_CRITIC,

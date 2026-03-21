@@ -59,6 +59,10 @@ model:
   # Set to null to keep default initialization from transformers/trl.
   value_head_init_std: null
 
+  # Optional init method override for critic value-head parameters.
+  # Supported values: null, "normal", "xavier_uniform", "xavier_normal"
+  value_head_init_method: null
+
   # TiledMLP configuration for memory-efficient MLP computation.
   tiled_mlp:
 

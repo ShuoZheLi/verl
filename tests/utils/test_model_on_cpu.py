@@ -15,8 +15,10 @@
 from types import SimpleNamespace  # Or use a mock object library
 
 import pytest
+import torch
+from torch import nn
 
-from verl.utils.model import update_model_config
+from verl.utils.model import _init_value_head_parameters, update_model_config
 
 
 # Parametrize with different override scenarios
@@ -50,3 +52,29 @@ def test_update_model_config(override_kwargs):
         assert mock_config.nested_params.sub_param_x == "original_x", "Nested sub_param_x should be unchanged"
         assert mock_config.nested_params.sub_param_y == 100, "Nested sub_param_y should be unchanged"
         assert not hasattr(mock_config.nested_params, "sub_param_z"), "Nested sub_param_z should not exist"
+
+
+def test_init_value_head_parameters_supports_xavier_uniform():
+    class DummyValueModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.v_head = nn.Linear(8, 1)
+
+    torch.manual_seed(0)
+    model = DummyValueModel()
+    _init_value_head_parameters(model, mean=0.0, std=None, method="xavier_uniform")
+
+    expected_bound = (6.0 / (model.v_head.in_features + model.v_head.out_features)) ** 0.5
+    assert torch.count_nonzero(model.v_head.weight).item() > 0
+    assert torch.all(model.v_head.weight.abs() <= expected_bound + 1e-6)
+    assert torch.allclose(model.v_head.bias, torch.zeros_like(model.v_head.bias))
+
+
+def test_init_value_head_parameters_rejects_normal_without_std():
+    class DummyValueModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.v_head = nn.Linear(4, 1)
+
+    with pytest.raises(ValueError, match="value_head_init_std must be set"):
+        _init_value_head_parameters(DummyValueModel(), mean=0.0, std=None, method="normal")

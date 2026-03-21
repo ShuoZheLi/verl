@@ -26,6 +26,8 @@ from verl.trainer.ppo.core_algos import (
     AdvantageEstimator,
     compute_gae_advantage_return,
     compute_grpo_outcome_advantage,
+    compute_prompt_baseline_bce_value_loss,
+    compute_prompt_baseline_advantage_return,
     compute_grpo_vectorized_outcome_advantage,
     compute_zero_critic_advantage_return,
     compute_rloo_outcome_advantage,
@@ -34,6 +36,7 @@ from verl.trainer.ppo.core_algos import (
     register_adv_est,
 )
 from verl.trainer.ppo.ray_trainer import compute_advantage
+import verl.utils.torch_functional as verl_F
 
 
 def mock_test_fn():
@@ -260,6 +263,152 @@ def test_compute_advantage_zero_critic_rejects_nonunit_lambda():
             gamma=0.9,
             lam=0.95,
             config=AlgoConfig(adv_estimator="zero_critic"),
+        )
+
+
+def test_prompt_baseline_advantage_uses_prompt_end_value_only():
+    rewards = torch.tensor([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=torch.float32)
+    response_mask = torch.tensor([[1, 1, 0], [1, 1, 1]], dtype=torch.float32)
+    values = torch.tensor([[0.25, 99.0, 99.0], [0.75, -99.0, -99.0]], dtype=torch.float32)
+
+    advantages, returns = compute_prompt_baseline_advantage_return(
+        token_level_rewards=rewards,
+        values=values,
+        response_mask=response_mask,
+        gamma=1.0,
+        lam=1.0,
+    )
+
+    expected_returns = torch.tensor([[1.0, 1.0, 0.0], [1.0, 1.0, 1.0]], dtype=torch.float32)
+    raw_advantages = torch.tensor([[0.75, 0.75, 0.0], [0.25, 0.25, 0.25]], dtype=torch.float32)
+    expected_advantages = verl_F.masked_whiten(raw_advantages, response_mask) * response_mask
+
+    torch.testing.assert_close(returns, expected_returns)
+    torch.testing.assert_close(advantages, expected_advantages)
+
+
+def test_compute_advantage_prompt_baseline_matches_core_algo():
+    data = DataProto.from_single_dict(
+        {
+            "token_level_rewards": torch.tensor([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=torch.float32),
+            "response_mask": torch.tensor([[1, 1, 0], [1, 1, 1]], dtype=torch.float32),
+            "values": torch.tensor([[0.2, 5.0, 5.0], [0.6, 7.0, 7.0]], dtype=torch.float32),
+        }
+    )
+
+    output = compute_advantage(
+        data,
+        adv_estimator=AdvantageEstimator.PROMPT_BASELINE,
+        gamma=1.0,
+        lam=1.0,
+        config=AlgoConfig(adv_estimator="prompt_baseline"),
+    )
+
+    expected_advantages, expected_returns = compute_prompt_baseline_advantage_return(
+        token_level_rewards=data.batch["token_level_rewards"],
+        values=data.batch["values"],
+        response_mask=data.batch["response_mask"],
+        gamma=1.0,
+        lam=1.0,
+    )
+
+    torch.testing.assert_close(output.batch["returns"], expected_returns)
+    torch.testing.assert_close(output.batch["advantages"], expected_advantages)
+
+
+def test_compute_advantage_prompt_baseline_rejects_nonunit_lambda():
+    data = DataProto.from_single_dict(
+        {
+            "token_level_rewards": torch.tensor([[0.0, 1.0, 0.0]], dtype=torch.float32),
+            "response_mask": torch.tensor([[1, 1, 0]], dtype=torch.float32),
+            "values": torch.tensor([[0.5, 1.0, 1.0]], dtype=torch.float32),
+        }
+    )
+
+    with pytest.raises(ValueError, match="lam=1.0"):
+        compute_advantage(
+            data,
+            adv_estimator=AdvantageEstimator.PROMPT_BASELINE,
+            gamma=1.0,
+            lam=0.95,
+            config=AlgoConfig(adv_estimator="prompt_baseline", lam=0.95),
+        )
+
+
+def test_compute_advantage_prompt_baseline_bce_matches_prompt_baseline_core_algo():
+    data = DataProto.from_single_dict(
+        {
+            "token_level_rewards": torch.tensor([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=torch.float32),
+            "response_mask": torch.tensor([[1, 1, 0], [1, 1, 1]], dtype=torch.float32),
+            "values": torch.tensor([[0.2, 0.9, 0.9], [0.6, 0.1, 0.1]], dtype=torch.float32),
+        }
+    )
+
+    output = compute_advantage(
+        data,
+        adv_estimator=AdvantageEstimator.PROMPT_BASELINE_BCE,
+        gamma=1.0,
+        lam=1.0,
+        config=AlgoConfig(adv_estimator="prompt_baseline_bce"),
+    )
+
+    expected_advantages, expected_returns = compute_prompt_baseline_advantage_return(
+        token_level_rewards=data.batch["token_level_rewards"],
+        values=data.batch["values"],
+        response_mask=data.batch["response_mask"],
+        gamma=1.0,
+        lam=1.0,
+    )
+
+    torch.testing.assert_close(output.batch["returns"], expected_returns)
+    torch.testing.assert_close(output.batch["advantages"], expected_advantages)
+
+
+def test_prompt_baseline_bce_value_loss_uses_prompt_end_logit_only():
+    vpred_logits_a = torch.logit(torch.tensor([[0.8, 0.01], [0.3, 0.99]], dtype=torch.float32))
+    vpred_logits_b = torch.logit(torch.tensor([[0.8, 0.99], [0.3, 0.01]], dtype=torch.float32))
+    old_values = torch.tensor([[0.2, 0.2], [0.6, 0.6]], dtype=torch.float32)
+    returns = torch.tensor([[1.0, 1.0], [0.0, 0.0]], dtype=torch.float32)
+    response_mask = torch.tensor([[1, 1], [1, 1]], dtype=torch.float32)
+
+    vf_loss_a, vf_clipfrac_a, vpreds_a, metrics_a = compute_prompt_baseline_bce_value_loss(
+        vpred_logits=vpred_logits_a,
+        returns=returns,
+        values=old_values,
+        response_mask=response_mask,
+        cliprange_value=10.0,
+    )
+    vf_loss_b, vf_clipfrac_b, vpreds_b, metrics_b = compute_prompt_baseline_bce_value_loss(
+        vpred_logits=vpred_logits_b,
+        returns=returns,
+        values=old_values,
+        response_mask=response_mask,
+        cliprange_value=10.0,
+    )
+
+    expected_loss = torch.nn.functional.binary_cross_entropy(
+        torch.tensor([[0.8], [0.3]], dtype=torch.float32),
+        torch.tensor([[1.0], [0.0]], dtype=torch.float32),
+        reduction="mean",
+    )
+
+    torch.testing.assert_close(vf_loss_a, expected_loss)
+    torch.testing.assert_close(vf_loss_b, expected_loss)
+    torch.testing.assert_close(vpreds_a, vpreds_b)
+    torch.testing.assert_close(metrics_a["critic/prompt_success_prob_mean"], torch.tensor(0.55))
+    torch.testing.assert_close(metrics_b["critic/prompt_success_prob_mean"], torch.tensor(0.55))
+    torch.testing.assert_close(vf_clipfrac_a, torch.tensor(0.0))
+    torch.testing.assert_close(vf_clipfrac_b, torch.tensor(0.0))
+
+
+def test_prompt_baseline_bce_value_loss_rejects_targets_outside_unit_interval():
+    with pytest.raises(ValueError, match=r"requires prompt-level targets in \[0, 1\]"):
+        compute_prompt_baseline_bce_value_loss(
+            vpred_logits=torch.zeros((1, 2), dtype=torch.float32),
+            returns=torch.tensor([[1.2, 1.2]], dtype=torch.float32),
+            values=torch.tensor([[0.5, 0.5]], dtype=torch.float32),
+            response_mask=torch.tensor([[1, 1]], dtype=torch.float32),
+            cliprange_value=0.2,
         )
 
 

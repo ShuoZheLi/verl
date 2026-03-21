@@ -93,6 +93,27 @@ def validate_config(
             "algorithm.lam is ignored for algorithm.adv_estimator=zero_critic. "
             "Set algorithm.lam=1.0 to keep the configuration unambiguous."
         )
+    if config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_BCE:
+        if config.algorithm.lam != 1.0:
+            raise ValueError(
+                "algorithm.adv_estimator=prompt_baseline_bce requires algorithm.lam=1.0 "
+                "because it reuses the prompt-baseline reward-to-go estimator."
+            )
+        if config.algorithm.gamma != 1.0:
+            raise ValueError(
+                "algorithm.adv_estimator=prompt_baseline_bce requires algorithm.gamma=1.0 "
+                "so the critic target matches an undiscounted success probability."
+            )
+        if config.algorithm.use_kl_in_reward:
+            raise ValueError(
+                "algorithm.adv_estimator=prompt_baseline_bce does not support algorithm.use_kl_in_reward=True "
+                "because the critic target must stay in [0, 1]."
+            )
+        if config.critic.value_head_type != "scalar":
+            raise ValueError(
+                "algorithm.adv_estimator=prompt_baseline_bce requires critic.value_head_type=scalar "
+                "because it interprets the critic head as a single Bernoulli logit."
+            )
 
     actor_update_interval = int(config.trainer.get("actor_update_interval", 1))
     if actor_update_interval < 1:

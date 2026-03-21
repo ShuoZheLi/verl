@@ -20,6 +20,7 @@ from tensordict import TensorDict
 from verl.trainer.ppo.core_algos import (
     agg_loss,
     compute_categorical_value_loss,
+    compute_prompt_baseline_bce_value_loss,
     compute_value_loss,
     get_policy_loss_fn,
     kl_penalty,
@@ -213,7 +214,21 @@ def value_loss(config: CriticConfig, model_output, data: TensorDict, dp_group=No
     response_mask = data["response_mask"].to(bool)
     value_spec = extract_value_head_spec(config)
 
-    if value_spec.is_categorical():
+    if config.value_loss_mode == "prompt_baseline_bce":
+        if value_spec.is_categorical():
+            raise ValueError("critic.value_loss_mode=prompt_baseline_bce requires critic.value_head_type=scalar.")
+        vpred_logits = _slice_response_from_unpad_output(model_output["values"], data)  # (bsz, response_length)
+        if vpred_logits.dim() > 2 and vpred_logits.shape[-1] == 1:
+            vpred_logits = vpred_logits.squeeze(-1)
+        vf_loss, vf_clipfrac, vpreds, categorical_metrics = compute_prompt_baseline_bce_value_loss(
+            vpred_logits=vpred_logits,
+            values=values,
+            returns=returns,
+            response_mask=response_mask,
+            cliprange_value=config.cliprange_value,
+            loss_agg_mode=config.loss_agg_mode,
+        )
+    elif value_spec.is_categorical():
         value_logits = model_output.get("value_logits", model_output["values"])
         value_logits = _slice_response_from_unpad_output(value_logits, data)  # (bsz, response_length, num_bins)
         vf_loss, vf_clipfrac, vpreds, categorical_metrics = compute_categorical_value_loss(

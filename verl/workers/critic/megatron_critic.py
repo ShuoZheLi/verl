@@ -235,7 +235,19 @@ class MegatronPPOCritic(BasePPOCritic):
             cliprange_value = self.config.cliprange_value
 
             vpreds_or_logits = output[:, -response_length - 1 : -1]
-            if self.value_spec.is_categorical():
+            if self.config.value_loss_mode == "prompt_baseline_bce":
+                if self.value_spec.is_categorical():
+                    raise ValueError("critic.value_loss_mode=prompt_baseline_bce requires critic.value_head_type=scalar.")
+                vpreds = None
+                vf_loss, vf_clipfrac, vpreds, categorical_metrics = core_algos.compute_prompt_baseline_bce_value_loss(
+                    vpred_logits=vpreds_or_logits,
+                    values=values,
+                    returns=returns,
+                    response_mask=response_mask,
+                    cliprange_value=cliprange_value,
+                    loss_agg_mode=self.config.loss_agg_mode,
+                )
+            elif self.value_spec.is_categorical():
                 vf_loss, vf_clipfrac, vpreds, categorical_metrics = core_algos.compute_categorical_value_loss(
                     value_logits=vpreds_or_logits,
                     values=values,

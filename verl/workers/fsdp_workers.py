@@ -1445,6 +1445,7 @@ class CriticWorker(Worker, DistProfilerExtension):
                 config.model.get("trust_remote_code", False),
                 value_head_init_mean=config.model.get("value_head_init_mean", 0.0),
                 value_head_init_std=config.model.get("value_head_init_std", None),
+                value_head_init_method=config.model.get("value_head_init_method", None),
             )
 
             use_remove_padding = config.model.get("use_remove_padding", False)

@@ -70,6 +70,7 @@ class CriticConfig(BaseConfig):
         value_target_scale_min (float): Raw scalar minimum for affine scaling mode.
         value_target_scale_max (float): Raw scalar maximum for affine scaling mode.
         value_target_out_of_range (str): Behavior when scaled targets are outside support.
+        value_loss_mode (str): Critic objective variant, e.g. "ppo_regression" or "prompt_baseline_bce".
         loss_agg_mode (str): Loss aggregation mode.
         checkpoint (Dict[str, Any]): Checkpoint configuration.
         profiler (Dict[str, Any]): Profiler configuration.
@@ -81,6 +82,7 @@ class CriticConfig(BaseConfig):
         "ppo_mini_batch_size",
         "ppo_micro_batch_size",
         "model_config",
+        "value_loss_mode",
     }
 
     strategy: str = MISSING
@@ -112,6 +114,7 @@ class CriticConfig(BaseConfig):
     value_target_scale_min: float = 0.0
     value_target_scale_max: float = 1.0
     value_target_out_of_range: str = "error"
+    value_loss_mode: str = "ppo_regression"
     loss_agg_mode: str = "token-mean"
     ppo_micro_batch_size: Optional[int] = None
     engine: BaseConfig = field(default_factory=BaseConfig)
@@ -154,6 +157,12 @@ class CriticConfig(BaseConfig):
         # Keep HF model config synchronized with critic head setup.
         apply_value_head_spec_to_hf_config(self.model_config.hf_config, value_spec)
         apply_value_head_architecture_spec_to_hf_config(self.model_config.hf_config, value_head_arch_spec)
+
+        if self.value_loss_mode not in {"ppo_regression", "prompt_baseline_bce"}:
+            raise ValueError(
+                f"critic.value_loss_mode must be one of ['ppo_regression', 'prompt_baseline_bce'], "
+                f"got {self.value_loss_mode!r}."
+            )
 
         if value_head_arch_spec.is_recurrent() and self.strategy not in {"fsdp", "fsdp2"}:
             raise ValueError(
@@ -328,6 +337,8 @@ class FSDPCriticModelCfg(BaseModelConfig):
         value_head_init_mean (float): Mean for critic value-head parameter initialization.
         value_head_init_std (Optional[float]): Std for critic value-head parameter initialization.
             If None, keep the default initialization from transformers/trl.
+        value_head_init_method (Optional[str]): Optional init method override for critic value-head parameters.
+            Supported values are "normal", "xavier_uniform", and "xavier_normal".
     """
 
     use_shm: bool = False
@@ -340,5 +351,6 @@ class FSDPCriticModelCfg(BaseModelConfig):
     target_modules: str | list[str] = "all-linear"
     value_head_init_mean: float = 0.0
     value_head_init_std: Optional[float] = None
+    value_head_init_method: Optional[str] = None
     # TiledMLP configuration for memory-efficient MLP computation
     tiled_mlp: dict = field(default_factory=lambda: {"enabled": False, "num_shards": 4})

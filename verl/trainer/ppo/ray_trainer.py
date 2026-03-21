@@ -176,6 +176,31 @@ def compute_advantage(
                 config.pf_ppo.get("reweight_method"),
                 config.pf_ppo.get("weight_pow"),
             )
+    elif adv_estimator in (
+        AdvantageEstimator.PROMPT_BASELINE,
+        AdvantageEstimator.PROMPT_BASELINE_BCE,
+    ):
+        if "values" not in data.batch:
+            raise ValueError(
+                f"algorithm.adv_estimator={adv_estimator.value} requires critic values. "
+                "Ensure the critic worker is enabled and values were computed before advantage calculation."
+            )
+        advantages, returns = core_algos.compute_prompt_baseline_advantage_return(
+            token_level_rewards=data.batch["token_level_rewards"],
+            values=data.batch["values"],
+            response_mask=data.batch["response_mask"],
+            gamma=gamma,
+            lam=lam,
+            config=config,
+        )
+        data.batch["advantages"] = advantages
+        data.batch["returns"] = returns
+        if config.get("use_pf_ppo", False):
+            data = core_algos.compute_pf_ppo_reweight_data(
+                data,
+                config.pf_ppo.get("reweight_method"),
+                config.pf_ppo.get("weight_pow"),
+            )
     elif adv_estimator == AdvantageEstimator.ZERO_CRITIC:
         if lam != 1.0:
             raise ValueError("algorithm.lam must be 1.0 when algorithm.adv_estimator=zero_critic.")
@@ -787,6 +812,8 @@ class RayPPOTrainer:
             from verl.workers.config import CriticConfig
 
             critic_cfg: CriticConfig = omega_conf_to_dataclass(self.config.critic)
+            if self.config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_BCE:
+                critic_cfg.value_loss_mode = "prompt_baseline_bce"
 
             if self.use_legacy_worker_impl == "disable":
                 # convert critic_cfg into TrainingWorkerConfig
@@ -1181,6 +1208,11 @@ class RayPPOTrainer:
             values = DataProto.from_tensordict(values)
         else:
             values = self.critic_wg.compute_values(batch)
+        if self.config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_BCE:
+            response_mask = batch.batch.get("response_mask")
+            if response_mask is None:
+                response_mask = compute_response_mask(batch)
+            values.batch["values"] = torch.sigmoid(values.batch["values"].float()) * response_mask.to(torch.float32)
         return values
 
     def _compute_ref_log_prob(self, batch: DataProto) -> DataProto:
