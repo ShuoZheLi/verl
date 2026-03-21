@@ -195,6 +195,7 @@ def compute_advantage(
             )
     elif adv_estimator in (
         AdvantageEstimator.PROMPT_BASELINE,
+        AdvantageEstimator.PROMPT_BASELINE_REGRESSION,
         AdvantageEstimator.PROMPT_BASELINE_BCE,
     ):
         if "values" not in data.batch:
@@ -765,7 +766,9 @@ class RayPPOTrainer:
         if self.use_critic:
             resource_pool = self.resource_pool_manager.get_resource_pool(Role.Critic)
             critic_cfg = omega_conf_to_dataclass(self.config.critic)
-            if self.config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_BCE:
+            if self.config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_REGRESSION:
+                critic_cfg.value_loss_mode = "prompt_baseline_regression"
+            elif self.config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_BCE:
                 critic_cfg.value_loss_mode = "prompt_baseline_bce"
             critic_cls = RayClassWithInitArgs(cls=self.role_worker_mapping[Role.Critic], config=critic_cfg)
             self.resource_pool_to_cls[resource_pool]["critic"] = critic_cls
@@ -1440,6 +1443,7 @@ class RayPPOTrainer:
                         if self.config.algorithm.adv_estimator in (
                             AdvantageEstimator.GAE,
                             AdvantageEstimator.PROMPT_BASELINE,
+                            AdvantageEstimator.PROMPT_BASELINE_REGRESSION,
                             AdvantageEstimator.PROMPT_BASELINE_BCE,
                         ):
                             compute_advantage_fields.append("values")

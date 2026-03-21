@@ -93,6 +93,17 @@ def validate_config(
             "algorithm.lam is ignored for algorithm.adv_estimator=zero_critic. "
             "Set algorithm.lam=1.0 to keep the configuration unambiguous."
         )
+    if config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_REGRESSION:
+        if config.algorithm.lam != 1.0:
+            raise ValueError(
+                "algorithm.adv_estimator=prompt_baseline_regression requires algorithm.lam=1.0 "
+                "because it reuses the prompt-baseline reward-to-go estimator."
+            )
+        if config.critic.value_head_type != "scalar":
+            raise ValueError(
+                "algorithm.adv_estimator=prompt_baseline_regression requires critic.value_head_type=scalar "
+                "because the prompt-only regression loss is currently implemented for scalar heads."
+            )
     if config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_BCE:
         if config.algorithm.lam != 1.0:
             raise ValueError(

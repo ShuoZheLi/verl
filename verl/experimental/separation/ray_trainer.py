@@ -142,7 +142,9 @@ class SeparateRayPPOTrainer(RayPPOTrainer):
         if self.use_critic:
             resource_pool = self.resource_pool_manager.get_resource_pool(Role.Critic)
             critic_cfg = omega_conf_to_dataclass(self.config.critic)
-            if self.config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_BCE:
+            if self.config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_REGRESSION:
+                critic_cfg.value_loss_mode = "prompt_baseline_regression"
+            elif self.config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_BCE:
                 critic_cfg.value_loss_mode = "prompt_baseline_bce"
 
             if self.use_legacy_worker_impl == "disable":

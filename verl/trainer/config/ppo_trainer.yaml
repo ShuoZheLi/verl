@@ -69,7 +69,7 @@ algorithm:
   # Trade-off between bias and variance in the GAE estimator
   lam: 1.0
 
-  # Advantage estimator type: "gae", "zero_critic", "grpo", "reinforce_plus_plus", etc.
+  # Advantage estimator type: "gae", "prompt_baseline_regression", "zero_critic", "grpo", etc.
   adv_estimator: gae
 
   # Whether to normalize advantages by std (specific to GRPO)

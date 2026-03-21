@@ -21,6 +21,7 @@ from verl.trainer.ppo.core_algos import (
     agg_loss,
     compute_categorical_value_loss,
     compute_prompt_baseline_bce_value_loss,
+    compute_prompt_baseline_regression_value_loss,
     compute_value_loss,
     get_policy_loss_fn,
     kl_penalty,
@@ -214,7 +215,21 @@ def value_loss(config: CriticConfig, model_output, data: TensorDict, dp_group=No
     response_mask = data["response_mask"].to(bool)
     value_spec = extract_value_head_spec(config)
 
-    if config.value_loss_mode == "prompt_baseline_bce":
+    if config.value_loss_mode == "prompt_baseline_regression":
+        if value_spec.is_categorical():
+            raise ValueError("critic.value_loss_mode=prompt_baseline_regression requires critic.value_head_type=scalar.")
+        vpreds = _slice_response_from_unpad_output(model_output["values"], data)  # (bsz, response_length)
+        if vpreds.dim() > 2 and vpreds.shape[-1] == 1:
+            vpreds = vpreds.squeeze(-1)
+        vf_loss, vf_clipfrac, vpreds, categorical_metrics = compute_prompt_baseline_regression_value_loss(
+            vpreds=vpreds,
+            values=values,
+            returns=returns,
+            response_mask=response_mask,
+            cliprange_value=config.cliprange_value,
+            loss_agg_mode=config.loss_agg_mode,
+        )
+    elif config.value_loss_mode == "prompt_baseline_bce":
         if value_spec.is_categorical():
             raise ValueError("critic.value_loss_mode=prompt_baseline_bce requires critic.value_head_type=scalar.")
         vpred_logits = _slice_response_from_unpad_output(model_output["values"], data)  # (bsz, response_length)

@@ -123,7 +123,7 @@ value_target_scale_max: 1.0
 # Behavior when scaled targets are outside [value_min, value_max]: "error", "warn", or "clip"
 value_target_out_of_range: error
 
-# Critic objective variant: "ppo_regression" or "prompt_baseline_bce"
+# Critic objective variant: "ppo_regression", "prompt_baseline_regression", or "prompt_baseline_bce"
 value_loss_mode: ppo_regression
 
 # Loss aggregation mode: "token-mean", "seq-mean-token-sum", or "seq-mean-token-mean"

@@ -70,7 +70,8 @@ class CriticConfig(BaseConfig):
         value_target_scale_min (float): Raw scalar minimum for affine scaling mode.
         value_target_scale_max (float): Raw scalar maximum for affine scaling mode.
         value_target_out_of_range (str): Behavior when scaled targets are outside support.
-        value_loss_mode (str): Critic objective variant, e.g. "ppo_regression" or "prompt_baseline_bce".
+        value_loss_mode (str): Critic objective variant, e.g. "ppo_regression",
+            "prompt_baseline_regression", or "prompt_baseline_bce".
         loss_agg_mode (str): Loss aggregation mode.
         checkpoint (Dict[str, Any]): Checkpoint configuration.
         profiler (Dict[str, Any]): Profiler configuration.
@@ -158,9 +159,10 @@ class CriticConfig(BaseConfig):
         apply_value_head_spec_to_hf_config(self.model_config.hf_config, value_spec)
         apply_value_head_architecture_spec_to_hf_config(self.model_config.hf_config, value_head_arch_spec)
 
-        if self.value_loss_mode not in {"ppo_regression", "prompt_baseline_bce"}:
+        if self.value_loss_mode not in {"ppo_regression", "prompt_baseline_regression", "prompt_baseline_bce"}:
             raise ValueError(
-                f"critic.value_loss_mode must be one of ['ppo_regression', 'prompt_baseline_bce'], "
+                "critic.value_loss_mode must be one of "
+                "['ppo_regression', 'prompt_baseline_regression', 'prompt_baseline_bce'], "
                 f"got {self.value_loss_mode!r}."
             )
 

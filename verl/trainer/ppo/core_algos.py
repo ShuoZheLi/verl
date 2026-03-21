@@ -109,6 +109,7 @@ class AdvantageEstimator(str, Enum):
     GAE = "gae"
     PROMPT_BASELINE = "prompt_baseline"
     PROMPT_BASELINE_BCE = "prompt_baseline_bce"
+    PROMPT_BASELINE_REGRESSION = "prompt_baseline_regression"
     ZERO_CRITIC = "zero_critic"
     GRPO = "grpo"
     REINFORCE_PLUS_PLUS = "reinforce_plus_plus"
@@ -306,6 +307,7 @@ def compute_zero_critic_advantage_return(
 
 @register_adv_est("prompt_end_baseline")
 @register_adv_est(AdvantageEstimator.PROMPT_BASELINE)
+@register_adv_est(AdvantageEstimator.PROMPT_BASELINE_REGRESSION)
 def compute_prompt_baseline_advantage_return(
     token_level_rewards: torch.Tensor,
     values: torch.Tensor,
@@ -2088,6 +2090,49 @@ def compute_value_loss(
     return vf_loss, vf_clipfrac
 
 
+def _compute_prompt_baseline_loss_mask(response_mask: torch.Tensor) -> torch.Tensor:
+    """Return a single valid supervision slot per sample at the prompt end."""
+    prompt_mask = response_mask.new_zeros((response_mask.shape[0], 1))
+    valid_rows = (response_mask > 0).any(dim=-1, keepdim=True)
+    return prompt_mask.masked_fill(valid_rows, 1)
+
+
+def compute_prompt_baseline_regression_value_loss(
+    vpreds: torch.Tensor,
+    returns: torch.Tensor,
+    values: torch.Tensor,
+    response_mask: torch.Tensor,
+    cliprange_value: float,
+    loss_agg_mode: str = "token-mean",
+):
+    """Train the prompt-end baseline with clipped regression on prompt return."""
+    prompt_vpreds = vpreds[:, :1].float()
+    prompt_targets = returns[:, :1].float()
+    prompt_old_values = values[:, :1].float()
+    prompt_mask = _compute_prompt_baseline_loss_mask(response_mask)
+
+    vpredclipped = verl_F.clip_by_value(
+        prompt_vpreds,
+        prompt_old_values - cliprange_value,
+        prompt_old_values + cliprange_value,
+    )
+    vf_losses1 = (prompt_vpreds - prompt_targets) ** 2
+    vf_losses2 = (vpredclipped - prompt_targets) ** 2
+    clipped_vf_losses = torch.max(vf_losses1, vf_losses2)
+
+    vf_loss = 0.5 * agg_loss(loss_mat=clipped_vf_losses, loss_mask=prompt_mask, loss_agg_mode=loss_agg_mode)
+    vf_clipfrac = verl_F.masked_mean(torch.gt(vf_losses2, vf_losses1).float(), prompt_mask)
+
+    # Mirror the prompt-end prediction across valid response positions so the
+    # existing sequence-level masked metrics still reflect the supervised value.
+    mirrored_vpreds = prompt_vpreds.expand_as(values) * response_mask.to(prompt_vpreds.dtype)
+    metrics = {
+        "critic/prompt_value_pred_mean": verl_F.masked_mean(prompt_vpreds, prompt_mask),
+        "critic/prompt_value_target_mean": verl_F.masked_mean(prompt_targets, prompt_mask),
+    }
+    return vf_loss, vf_clipfrac, mirrored_vpreds, metrics
+
+
 def compute_prompt_baseline_bce_value_loss(
     vpred_logits: torch.Tensor,
     returns: torch.Tensor,
@@ -2134,9 +2179,7 @@ def compute_prompt_baseline_bce_value_loss(
     vf_losses2 = torch_F.binary_cross_entropy(prompt_probs_clipped, prompt_targets, reduction="none")
     clipped_vf_losses = torch.max(vf_losses1, vf_losses2)
 
-    prompt_mask = response_mask.new_zeros((response_mask.shape[0], 1))
-    valid_rows = (response_mask > 0).any(dim=-1, keepdim=True)
-    prompt_mask = prompt_mask.masked_fill(valid_rows, 1)
+    prompt_mask = _compute_prompt_baseline_loss_mask(response_mask)
 
     vf_loss = agg_loss(loss_mat=clipped_vf_losses, loss_mask=prompt_mask, loss_agg_mode=loss_agg_mode)
     vf_clipfrac = verl_F.masked_mean(torch.gt(vf_losses2, vf_losses1).float(), prompt_mask)
