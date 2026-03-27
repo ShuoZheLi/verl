@@ -576,6 +576,11 @@ class AlgoConfig(BaseConfig):
         adv_estimator (str): Advantage estimator type: "gae", "prompt_baseline",
             "prompt_baseline_regression", "prompt_baseline_bce", "prompt_residual_baseline",
             "prompt_residual_baseline_ramp", "zero_critic", "grpo", "reinforce_plus_plus", etc.
+        adv_mode (str): Actor-side advantage mode. "token" keeps the existing estimator output,
+            while "chunk" replaces the actor advantages with chunk-level rollout-return minus
+            chunk baseline advantages while leaving critic returns/losses unchanged.
+        chunk_size (int): Number of valid response tokens per chunk when adv_mode="chunk".
+        chunk_reduce (str): Chunk baseline reduction rule: "first", "last", or "mean".
         prompt_residual_alpha (float): Final residual weight used by prompt-residual actor baselines.
         prompt_residual_alpha_ramp_steps (int): Number of PPO steps used to ramp the residual
             weight when adv_estimator="prompt_residual_baseline_ramp". A value of 0 disables the
@@ -608,6 +613,9 @@ class AlgoConfig(BaseConfig):
     gamma: float = 1.0
     lam: float = 1.0
     adv_estimator: str = "gae"
+    adv_mode: str = "token"
+    chunk_size: int = 8
+    chunk_reduce: str = "first"
     prompt_residual_alpha: float = 1.0
     prompt_residual_alpha_ramp_steps: int = 0
     norm_adv_by_std_in_grpo: bool = True
@@ -620,3 +628,19 @@ class AlgoConfig(BaseConfig):
     # Rollout Correction: corrects off-policy issues (policy mismatch, model staleness, distribution shifts)
     # Set to None to disable, use RolloutCorrectionConfig presets (e.g., .tis(), .mis()), or pass dict
     rollout_correction: Optional[RolloutCorrectionConfig] = None
+
+    def __post_init__(self):
+        """Validate algorithm configuration parameters."""
+        valid_adv_modes = {"token", "chunk"}
+        if self.adv_mode not in valid_adv_modes:
+            raise ValueError(f"Invalid adv_mode: {self.adv_mode}. Must be one of {sorted(valid_adv_modes)}")
+
+        if self.chunk_size < 1:
+            raise ValueError(f"chunk_size must be >= 1, got {self.chunk_size}")
+
+        if self.adv_mode == "chunk":
+            valid_chunk_reductions = {"first", "last", "mean"}
+            if self.chunk_reduce not in valid_chunk_reductions:
+                raise ValueError(
+                    f"Invalid chunk_reduce: {self.chunk_reduce}. Must be one of {sorted(valid_chunk_reductions)}"
+                )

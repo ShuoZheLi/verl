@@ -41,6 +41,7 @@ from verl.single_controller.ray import RayClassWithInitArgs, RayWorkerGroup, Res
 from verl.single_controller.ray.base import create_colocated_worker_cls
 from verl.trainer.config import AlgoConfig
 from verl.trainer.ppo import core_algos
+from verl.trainer.ppo.chunk_advantage import compute_chunked_advantages
 from verl.trainer.ppo.core_algos import AdvantageEstimator, agg_loss
 from verl.trainer.ppo.metric_utils import (
     compute_data_metrics,
@@ -256,6 +257,43 @@ def compute_advantage(
     Returns:
         DataProto: The updated data with computed advantages and returns.
     """
+
+    def _apply_chunk_advantage_override() -> None:
+        adv_mode = config.get("adv_mode", "token") if config is not None else "token"
+        if adv_mode != "chunk":
+            return
+
+        adv_estimator_name = adv_estimator.value if isinstance(adv_estimator, AdvantageEstimator) else str(adv_estimator)
+        if adv_estimator_name != AdvantageEstimator.GAE.value:
+            raise ValueError(
+                "algorithm.adv_mode=chunk currently requires algorithm.adv_estimator=gae so only the actor "
+                "advantage tensor changes while the critic path stays on standard PPO targets/losses."
+            )
+        if "values" not in data.batch:
+            raise ValueError(
+                "algorithm.adv_mode=chunk requires critic values. Ensure the critic worker is enabled and "
+                "token-level value predictions were computed before advantage calculation."
+            )
+
+        rollout_returns = core_algos.compute_outcome_rollout_returns(
+            token_level_rewards=data.batch["token_level_rewards"],
+            response_mask=data.batch["response_mask"],
+            gamma=gamma,
+        )
+        advantages, chunk_metrics = compute_chunked_advantages(
+            values=data.batch["values"],
+            rollout_returns=rollout_returns,
+            response_mask=data.batch["response_mask"],
+            chunk_size=int(config.get("chunk_size", 8)) if config is not None else 8,
+            chunk_reduce=str(config.get("chunk_reduce", "first")) if config is not None else "first",
+        )
+        data.batch["advantages"] = advantages
+        advantage_metrics = data.meta_info.get("advantage_metrics")
+        if advantage_metrics is None:
+            advantage_metrics = {}
+            data.meta_info["advantage_metrics"] = advantage_metrics
+        advantage_metrics.update(chunk_metrics)
+
     # Back-compatible with trainers that do not compute response mask in fit
     if "response_mask" not in data.batch.keys():
         data.batch["response_mask"] = compute_response_mask(data)
@@ -296,6 +334,7 @@ def compute_advantage(
         )
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
+        _apply_chunk_advantage_override()
         if config.get("use_pf_ppo", False) and valid_sample_mask.any():
             data = core_algos.compute_pf_ppo_reweight_data(
                 data,
@@ -328,6 +367,7 @@ def compute_advantage(
             gamma=gamma,
         )
         data.batch["prompt_prior_values"] = data.batch["values"][:, 0]
+        _apply_chunk_advantage_override()
         if config.get("use_pf_ppo", False) and valid_sample_mask.any():
             data = core_algos.compute_pf_ppo_reweight_data(
                 data,
@@ -375,6 +415,7 @@ def compute_advantage(
         data.batch["rollout_returns"] = rollout_returns
         data.batch["values"] = combined_values
         data.meta_info["advantage_metrics"] = {"actor/residual_weight_alpha": alpha}
+        _apply_chunk_advantage_override()
         if config.get("use_pf_ppo", False) and valid_sample_mask.any():
             data = core_algos.compute_pf_ppo_reweight_data(
                 data,
@@ -393,6 +434,7 @@ def compute_advantage(
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
         data.batch["values"] = torch.zeros_like(returns)
+        _apply_chunk_advantage_override()
         if config.get("use_pf_ppo", False) and valid_sample_mask.any():
             data = core_algos.compute_pf_ppo_reweight_data(
                 data,
@@ -416,6 +458,7 @@ def compute_advantage(
             returns = torch.zeros_like(data.batch["token_level_rewards"])
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
+        _apply_chunk_advantage_override()
     else:
         # handle all other adv estimator type other than GAE and GRPO
         adv_estimator_fn = core_algos.get_adv_estimator_fn(adv_estimator)
@@ -466,6 +509,7 @@ def compute_advantage(
             advantages, returns = adv_estimator_fn(**adv_kwargs)
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
+        _apply_chunk_advantage_override()
     return data
 
 
@@ -1872,6 +1916,9 @@ class RayPPOTrainer:
                                 "actor/grad_norm": 0.0,
                             }
                         )
+                        if self.config.algorithm.get("adv_mode", "token") == "chunk":
+                            metrics["actor_chunk/clipfrac"] = 0.0
+                            metrics["actor_chunk/approx_kl"] = 0.0
                         if self.config.actor_rollout_ref.actor.use_kl_loss:
                             metrics["actor/kl_loss"] = 0.0
 
@@ -1908,6 +1955,9 @@ class RayPPOTrainer:
                     if should_update_actor:
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
+                        if self.config.algorithm.get("adv_mode", "token") == "chunk":
+                            metrics["actor_chunk/clipfrac"] = actor_output_metrics.get("actor/pg_clipfrac", 0.0)
+                            metrics["actor_chunk/approx_kl"] = actor_output_metrics.get("actor/ppo_kl", 0.0)
 
                     # Log rollout generations if enabled
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)

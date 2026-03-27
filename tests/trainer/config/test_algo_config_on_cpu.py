@@ -98,10 +98,62 @@ class TestAlgoConfig(unittest.TestCase):
         self.assertEqual(config.gamma, 0.8)
         self.assertEqual(config.lam, 1.0)  # default value
         self.assertEqual(config.adv_estimator, "gae")  # default value
+        self.assertEqual(config.adv_mode, "token")  # default value
+        self.assertEqual(config.chunk_size, 8)  # default value
+        self.assertEqual(config.chunk_reduce, "first")  # default value
         self.assertTrue(config.norm_adv_by_std_in_grpo)  # default value
         self.assertFalse(config.use_kl_in_reward)  # default value
         self.assertEqual(config.kl_penalty, "kl")  # default value
         self.assertFalse(config.use_pf_ppo)  # default value
+
+    def test_adv_mode_token_ignores_chunk_reduce_validation(self):
+        config = AlgoConfig(adv_mode="token", chunk_reduce="not_used")
+        self.assertEqual(config.adv_mode, "token")
+        self.assertEqual(config.chunk_reduce, "not_used")
+
+    def test_chunk_mode_rejects_nonpositive_chunk_size(self):
+        with self.assertRaisesRegex(ValueError, "chunk_size must be >= 1"):
+            AlgoConfig(adv_mode="chunk", chunk_size=0)
+
+    def test_validate_config_rejects_chunk_mode_without_gae(self):
+        config = OmegaConf.create(
+            {
+                "trainer": {"n_gpus_per_node": 1, "nnodes": 1},
+                "data": {"train_batch_size": 1},
+                "algorithm": {
+                    "adv_estimator": "prompt_baseline",
+                    "adv_mode": "chunk",
+                    "chunk_size": 8,
+                    "chunk_reduce": "first",
+                    "lam": 1.0,
+                    "gamma": 1.0,
+                    "use_kl_in_reward": False,
+                },
+                "actor_rollout_ref": {
+                    "actor": {
+                        "strategy": "fsdp",
+                        "rollout_n": 1,
+                        "ppo_mini_batch_size": 1,
+                        "ppo_micro_batch_size_per_gpu": 1,
+                        "use_dynamic_bsz": False,
+                    },
+                    "rollout": {
+                        "log_prob_micro_batch_size": None,
+                        "log_prob_micro_batch_size_per_gpu": 1,
+                    },
+                    "model": {},
+                },
+                "critic": {
+                    "enable": True,
+                    "strategy": "fsdp",
+                    "ppo_micro_batch_size_per_gpu": 1,
+                    "value_head_type": "scalar",
+                },
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "adv_mode=chunk currently requires algorithm.adv_estimator=gae"):
+            validate_config(config, use_reference_policy=False, use_critic=True)
 
     def test_get_method_backward_compatibility(self):
         """Test the get method for backward compatibility."""

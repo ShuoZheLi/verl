@@ -7,7 +7,6 @@ export SLURM_JOB_ID="05b_vh_init_e5_metamath_v_warmup_e2"
 
 # When true, math_dapo incorrect answers get reward 0.0 instead of -1.0.
 MATH_DAPO_BINARY_REWARD=true
-
   # data.train_files=/data/shuozhe/saved_dataset/verl_math_7500_500_5000/train.parquet \
   # data.val_files=/data/shuozhe/saved_dataset/verl_math_7500_500_5000/test.parquet \
 
@@ -46,7 +45,6 @@ python3 -m verl.trainer.main_ppo \
   critic.model.fsdp_config.param_offload=False \
   critic.ppo_micro_batch_size_per_gpu=4 \
   +reward.reward_kwargs.math_dapo_binary_reward=${MATH_DAPO_BINARY_REWARD} \
-  trainer.critic_warmup=101 \
   trainer.val_before_train=True \
   trainer.n_gpus_per_node=4 \
   trainer.nnodes=1 \

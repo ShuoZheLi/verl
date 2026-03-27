@@ -3,18 +3,12 @@ export VLLM_USE_V1=0
 export HYDRA_FULL_ERROR=0
 export VLLM_USE_V1=1
 export WANDB_PROJECT="PPO_midi"
-export SLURM_JOB_ID="05b_prompt_residual"
+export SLURM_JOB_ID="05b_v_chunk_mean_sz16"
 
 # When true, math_dapo incorrect answers get reward 0.0 instead of -1.0.
 MATH_DAPO_BINARY_REWARD=true
-# When true, responses that only stop because they hit max response length are
-# fully masked out of PPO/critic optimization.
-OVERLONG_FILTERING=false
-# RayPPOTrainer starts counting global PPO steps from 1 and begins actor
-# updates once global_steps >= trainer.critic_warmup.
-# Use +1 here to get exactly 50 critic-only optimization steps.
-CRITIC_ONLY_STEPS=50
-  # trainer.critic_warmup=$((CRITIC_ONLY_STEPS + 1)) \
+  # data.train_files=/data/shuozhe/saved_dataset/verl_math_7500_500_5000/train.parquet \
+  # data.val_files=/data/shuozhe/saved_dataset/verl_math_7500_500_5000/test.parquet \
 
 python3 -m verl.trainer.main_ppo \
   data.train_files=/data/shuozhe/saved_dataset/MetaMathQA-math-500/train.parquet \
@@ -43,31 +37,25 @@ python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=4096 \
   actor_rollout_ref.hybrid_engine=True \
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
-  algorithm.adv_estimator=prompt_residual_baseline \
-  algorithm.gamma=1.0 \
-  algorithm.lam=1.0 \
-  ++algorithm.prompt_residual_alpha=1.0 \
-  critic.enable=True \
   critic.optim.lr=1e-5 \
   critic.model.path=/data/shuozhe/saved_model/Qwen2.5-0.5B \
   critic.model.external_lib=trl \
   critic.model.value_head_init_mean=0.0 \
   critic.model.value_head_init_std=0.00001 \
   critic.model.fsdp_config.param_offload=False \
-  critic.prompt_residual_prompt_loss_weight=1.0 \
-  critic.prompt_residual_residual_loss_weight=1.0 \
   critic.ppo_micro_batch_size_per_gpu=4 \
+  algorithm.adv_mode=chunk \
+  algorithm.chunk_size=16 \
+  algorithm.chunk_reduce=mean \
   +reward.reward_kwargs.math_dapo_binary_reward=${MATH_DAPO_BINARY_REWARD} \
-  trainer.use_legacy_worker_impl=enable \
   trainer.val_before_train=True \
   trainer.n_gpus_per_node=4 \
   trainer.nnodes=1 \
   trainer.test_freq=50 \
   trainer.save_freq=50 \
   trainer.total_epochs=5 \
-  trainer.overlong_filtering=${OVERLONG_FILTERING} \
   trainer.logger='["console","wandb"]' \
   trainer.project_name="PPO_metamath" \
-  trainer.experiment_name="qwen2.5_0.5B_prompt_residual_${SLURM_JOB_ID}" \
+  trainer.experiment_name="qwen2.5_0.5B_ppo_valuehead_${SLURM_JOB_ID}" \
   trainer.default_local_dir="/data/shuozhe/verl/train_log/job_${SLURM_JOB_ID}" \
   2>&1 | tee /data/shuozhe/verl/train_log/job_${SLURM_JOB_ID}.txt

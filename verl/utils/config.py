@@ -88,6 +88,19 @@ def validate_config(
     # number of GPUs total
     n_gpus = config.trainer.n_gpus_per_node * config.trainer.nnodes
 
+    adv_mode = config.algorithm.get("adv_mode", "token")
+    if adv_mode == "chunk":
+        if config.algorithm.adv_estimator != AdvantageEstimator.GAE:
+            raise ValueError(
+                "algorithm.adv_mode=chunk currently requires algorithm.adv_estimator=gae so the critic "
+                "continues to use the standard PPO value path while only the actor advantage tensor changes."
+            )
+        if not use_critic:
+            raise ValueError(
+                "algorithm.adv_mode=chunk requires a learned critic because it builds chunk baselines from "
+                "token-level critic predictions."
+            )
+
     if config.algorithm.adv_estimator == AdvantageEstimator.ZERO_CRITIC and config.algorithm.lam != 1.0:
         raise ValueError(
             "algorithm.lam is ignored for algorithm.adv_estimator=zero_critic. "

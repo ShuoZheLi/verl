@@ -72,6 +72,15 @@ algorithm:
   # Advantage estimator type: "gae", "prompt_baseline_regression", "zero_critic", "grpo", etc.
   adv_estimator: gae
 
+  # Actor-side advantage mode: "token" keeps the existing path, "chunk" uses rollout-return minus chunk baseline
+  adv_mode: token
+
+  # Number of valid response tokens per chunk when algorithm.adv_mode="chunk"
+  chunk_size: 8
+
+  # Reduction used to form one chunk baseline from token-aligned critic values: "first", "last", or "mean"
+  chunk_reduce: first
+
   # Final residual weight used by prompt-residual actor baselines
   prompt_residual_alpha: 1.0
 
