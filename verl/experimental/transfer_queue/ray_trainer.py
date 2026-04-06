@@ -152,6 +152,8 @@ def compute_advantage(
     adv_estimator: AdvantageEstimator,
     gamma: float = 1.0,
     lam: float = 1.0,
+    actor_lam: Optional[float] = None,
+    critic_lam: Optional[float] = None,
     num_repeat: int = 1,
     norm_adv_by_std_in_grpo: bool = True,
     config: Optional[AlgoConfig] = None,
@@ -165,7 +167,9 @@ def compute_advantage(
         data (DataProto): The data containing batched model outputs and inputs.
         adv_estimator (AdvantageEstimator): The advantage estimator to use (e.g., GAE, GRPO, REINFORCE++).
         gamma (float, optional): Discount factor for future rewards. Defaults to 1.0.
-        lam (float, optional): Lambda parameter for GAE. Defaults to 1.0.
+        lam (float, optional): Backward-compatible lambda fallback. Defaults to 1.0.
+        actor_lam (float, optional): Optional actor-side lambda override for policy advantages.
+        critic_lam (float, optional): Optional critic-side lambda override for value-learning returns.
         num_repeat (int, optional): Number of times to repeat the computation. Defaults to 1.
         norm_adv_by_std_in_grpo (bool, optional): Whether to normalize advantages by standard deviation in
             GRPO. Defaults to True.
@@ -176,15 +180,55 @@ def compute_advantage(
             - advantages: The computed advantage estimates.
             - returns: The computed returns.
     """
+    adv_estimator_name = adv_estimator.value if isinstance(adv_estimator, AdvantageEstimator) else str(adv_estimator)
+    actor_lam, critic_lam = core_algos.resolve_advantage_lambdas(
+        lam=lam,
+        config=config,
+        actor_lam=actor_lam,
+        critic_lam=critic_lam,
+    )
+    if actor_lam != critic_lam and adv_estimator_name not in (
+        AdvantageEstimator.GAE.value,
+        AdvantageEstimator.REVERSE_DECAY_GAE.value,
+    ):
+        raise ValueError(
+            "Different actor_lam and critic_lam are currently supported only for "
+            "algorithm.adv_estimator in {'gae', 'reverse_decay_gae'}."
+        )
+
     # prepare response group
     if adv_estimator == AdvantageEstimator.GAE:
         # Compute advantages and returns using Generalized Advantage Estimation (GAE)
-        advantages, returns = core_algos.compute_gae_advantage_return(
+        advantages, returns = core_algos.compute_advantage_return_with_separate_lams(
+            core_algos.compute_gae_advantage_return,
+            actor_lam=actor_lam,
+            critic_lam=critic_lam,
             token_level_rewards=data.batch["token_level_rewards"],
             values=data.batch["values"],
             response_mask=data.batch["response_mask"],
             gamma=gamma,
-            lam=lam,
+        )
+        # TODO (TQ): adapt core_algos.compute_pf_ppo_reweight_data function to support transfer queue
+        if config.get("use_pf_ppo", False):
+            data = core_algos.compute_pf_ppo_reweight_data(
+                data,
+                config.pf_ppo.get("reweight_method"),
+                config.pf_ppo.get("weight_pow"),
+            )
+    elif adv_estimator == AdvantageEstimator.REVERSE_DECAY_GAE:
+        if "values" not in data.batch:
+            raise ValueError(
+                f"algorithm.adv_estimator={adv_estimator.value} requires critic values. "
+                "Ensure the critic worker is enabled and values were computed before advantage calculation."
+            )
+        advantages, returns = core_algos.compute_advantage_return_with_separate_lams(
+            core_algos.compute_reverse_decay_gae_advantage_return,
+            actor_lam=actor_lam,
+            critic_lam=critic_lam,
+            token_level_rewards=data.batch["token_level_rewards"],
+            values=data.batch["values"],
+            response_mask=data.batch["response_mask"],
+            gamma=gamma,
         )
         # TODO (TQ): adapt core_algos.compute_pf_ppo_reweight_data function to support transfer queue
         if config.get("use_pf_ppo", False):
@@ -208,12 +252,14 @@ def compute_advantage(
             values=data.batch["values"],
             response_mask=data.batch["response_mask"],
             gamma=gamma,
-            lam=lam,
+            lam=actor_lam,
             config=config,
         )
     elif adv_estimator == AdvantageEstimator.ZERO_CRITIC:
-        if lam != 1.0:
-            raise ValueError("algorithm.lam must be 1.0 when algorithm.adv_estimator=zero_critic.")
+        if actor_lam != 1.0 or critic_lam != 1.0:
+            raise ValueError(
+                "algorithm.adv_estimator=zero_critic requires effective actor and critic lambdas to be 1.0."
+            )
         advantages, returns = core_algos.compute_zero_critic_advantage_return(
             token_level_rewards=data.batch["token_level_rewards"],
             response_mask=data.batch["response_mask"],
@@ -1442,6 +1488,7 @@ class RayPPOTrainer:
                         ]
                         if self.config.algorithm.adv_estimator in (
                             AdvantageEstimator.GAE,
+                            AdvantageEstimator.REVERSE_DECAY_GAE,
                             AdvantageEstimator.PROMPT_BASELINE,
                             AdvantageEstimator.PROMPT_BASELINE_REGRESSION,
                             AdvantageEstimator.PROMPT_BASELINE_BCE,

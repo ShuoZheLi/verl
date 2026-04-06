@@ -96,6 +96,7 @@ def need_critic(config: DictConfig) -> bool:
         return bool(config.critic.enable)
     elif config.algorithm.adv_estimator in (
         AdvantageEstimator.GAE,
+        AdvantageEstimator.REVERSE_DECAY_GAE,
         AdvantageEstimator.PROMPT_BASELINE,
         AdvantageEstimator.PROMPT_BASELINE_REGRESSION,
         AdvantageEstimator.PROMPT_BASELINE_BCE,

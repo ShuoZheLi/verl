@@ -23,6 +23,7 @@ from verl.trainer.ppo.core_algos import (
     compute_gae_advantage_return,
     compute_grpo_outcome_advantage,
     get_adv_estimator_fn,
+    resolve_advantage_lambdas,
 )
 from verl.trainer.ppo.utils import need_critic
 from verl.utils.config import omega_conf_to_dataclass, validate_config
@@ -97,6 +98,8 @@ class TestAlgoConfig(unittest.TestCase):
 
         self.assertEqual(config.gamma, 0.8)
         self.assertEqual(config.lam, 1.0)  # default value
+        self.assertIsNone(config.actor_lam)  # default value
+        self.assertIsNone(config.critic_lam)  # default value
         self.assertEqual(config.adv_estimator, "gae")  # default value
         self.assertEqual(config.adv_mode, "token")  # default value
         self.assertEqual(config.chunk_size, 8)  # default value
@@ -208,6 +211,16 @@ class TestAlgoConfig(unittest.TestCase):
 
         self.assertTrue(need_critic(config))
 
+    def test_reverse_decay_gae_enables_critic_by_default(self):
+        config = OmegaConf.create(
+            {
+                "algorithm": {"adv_estimator": "reverse_decay_gae"},
+                "critic": {"enable": None},
+            }
+        )
+
+        self.assertTrue(need_critic(config))
+
     def test_prompt_baseline_regression_enables_critic_by_default(self):
         config = OmegaConf.create(
             {
@@ -232,8 +245,31 @@ class TestAlgoConfig(unittest.TestCase):
             }
         )
 
-        with self.assertRaisesRegex(ValueError, "algorithm.lam=1.0"):
+        with self.assertRaisesRegex(ValueError, "effective actor and critic lambdas"):
             validate_config(config, use_reference_policy=False, use_critic=True)
+
+    def test_reverse_decay_gae_validate_config_requires_positive_lambda(self):
+        config = OmegaConf.create(
+            {
+                "trainer": {"n_gpus_per_node": 1, "nnodes": 1},
+                "algorithm": {
+                    "adv_estimator": "reverse_decay_gae",
+                    "lam": 0.0,
+                },
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "> 0"):
+            validate_config(config, use_reference_policy=False, use_critic=True)
+
+    def test_reverse_decay_gae_lambda_resolution_uses_actor_and_critic_overrides(self):
+        actor_lam, critic_lam = resolve_advantage_lambdas(
+            lam=0.0,
+            config=OmegaConf.create({"actor_lam": 0.8, "critic_lam": 0.9}),
+        )
+
+        self.assertEqual(actor_lam, 0.8)
+        self.assertEqual(critic_lam, 0.9)
 
     def test_prompt_baseline_regression_validate_config_requires_scalar_value_head(self):
         config = OmegaConf.create(
@@ -277,7 +313,7 @@ class TestAlgoConfig(unittest.TestCase):
             }
         )
 
-        with self.assertRaisesRegex(ValueError, "algorithm.lam=1.0"):
+        with self.assertRaisesRegex(ValueError, "effective actor and critic lambdas"):
             validate_config(config, use_reference_policy=False, use_critic=True)
 
     def test_prompt_residual_baseline_validate_config_requires_scalar_value_head(self):

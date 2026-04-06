@@ -107,6 +107,7 @@ class AdvantageEstimator(str, Enum):
     """
 
     GAE = "gae"
+    REVERSE_DECAY_GAE = "reverse_decay_gae"
     PROMPT_BASELINE = "prompt_baseline"
     PROMPT_BASELINE_BCE = "prompt_baseline_bce"
     PROMPT_BASELINE_REGRESSION = "prompt_baseline_regression"
@@ -165,6 +166,60 @@ def get_adv_estimator_fn(name_or_enum):
     if name not in ADV_ESTIMATOR_REGISTRY:
         raise ValueError(f"Unknown advantage estimator simply: {name}")
     return ADV_ESTIMATOR_REGISTRY[name]
+
+
+def _maybe_get_config_attr(config: Optional[AlgoConfig | DictConfig], key: str) -> Any:
+    """Read an optional attribute from either AlgoConfig or DictConfig."""
+    if config is None:
+        return None
+    if hasattr(config, "get"):
+        value = config.get(key, None)
+        if value is not None:
+            return value
+    return getattr(config, key, None)
+
+
+def resolve_advantage_lambdas(
+    lam: float,
+    config: Optional[AlgoConfig | DictConfig] = None,
+    actor_lam: Optional[float] = None,
+    critic_lam: Optional[float] = None,
+) -> tuple[float, float]:
+    """Resolve actor/critic lambdas with ``lam`` as the backward-compatible fallback.
+
+    Resolution order for each side is:
+    1. explicit function argument
+    2. config field (``actor_lam`` or ``critic_lam``)
+    3. fallback ``lam``
+    """
+    fallback_lam = float(lam)
+    resolved_actor_lam = _maybe_get_config_attr(config, "actor_lam") if actor_lam is None else actor_lam
+    resolved_critic_lam = _maybe_get_config_attr(config, "critic_lam") if critic_lam is None else critic_lam
+
+    resolved_actor_lam = fallback_lam if resolved_actor_lam is None else float(resolved_actor_lam)
+    resolved_critic_lam = fallback_lam if resolved_critic_lam is None else float(resolved_critic_lam)
+    return resolved_actor_lam, resolved_critic_lam
+
+
+def compute_advantage_return_with_separate_lams(
+    adv_fn: Callable[..., tuple[torch.Tensor, torch.Tensor]],
+    *,
+    actor_lam: float,
+    critic_lam: float,
+    **kwargs,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compute actor advantages and critic returns with optionally different lambdas.
+
+    When the two lambdas are equal, the estimator is evaluated once. Otherwise we
+    reuse the same estimator twice: once for actor advantages, and once for critic
+    return targets.
+    """
+    if actor_lam == critic_lam:
+        return adv_fn(**kwargs, lam=actor_lam)
+
+    advantages, _ = adv_fn(**kwargs, lam=actor_lam)
+    _, returns = adv_fn(**kwargs, lam=critic_lam)
+    return advantages, returns
 
 
 class AdaptiveKLController:
@@ -277,6 +332,97 @@ def compute_gae_advantage_return(
 
         returns = advantages + values
         advantages = verl_F.masked_whiten(advantages, response_mask)
+    return advantages, returns
+
+
+@register_adv_est(AdvantageEstimator.REVERSE_DECAY_GAE)
+def compute_reverse_decay_gae_advantage_return(
+    token_level_rewards: torch.Tensor,
+    values: torch.Tensor,
+    response_mask: torch.Tensor,
+    gamma: float,
+    lam: float,
+):
+    r"""Compute reverse-decay GAE with response masking.
+
+    For the valid response-token indices ``i_0 < i_1 < ... < i_{L-1}`` in each row
+    (that is, positions where ``response_mask == 1``), define:
+
+    .. math::
+
+        \delta_{i_k} = r_{i_k} + \gamma V_{i_{k+1}} - V_{i_k},
+        \qquad
+        \hat A^{\mathrm{rev}}_{i_k}
+        = \sum_{l=0}^{L-1-k} \gamma^l \lambda^{L-1-k-l} \delta_{i_{k+l}}.
+
+    This is not standard GAE: it emphasizes TD residuals closer to the end of the
+    valid response more heavily. At ``lam=1`` it reduces exactly to standard
+    ``lam=1`` GAE. Masked positions are skipped during accumulation and zeroed in
+    the returned advantages and returns.
+
+    Note:
+        The mathematically equivalent recursion
+
+        .. math::
+
+            g_t = \delta_t + \frac{\gamma}{\lambda} g_{t+1},
+            \qquad
+            \hat A_t = \lambda^{H_t} g_t
+
+        is implemented here in the equivalent advantage space
+
+        .. math::
+
+            \hat A_t = \gamma \hat A_{t+1} + \lambda^{H_t} \delta_t
+
+        so we avoid large intermediate ``(\gamma / \lambda)^k`` terms when
+        ``lam`` is small.
+    """
+    if float(lam) <= 0.0:
+        raise ValueError("Reverse-Decay GAE requires lam > 0.")
+    if token_level_rewards.shape != values.shape:
+        raise ValueError(
+            "reverse_decay_gae requires values and token_level_rewards to have identical shapes, "
+            f"got {tuple(values.shape)} and {tuple(token_level_rewards.shape)}."
+        )
+    if response_mask.shape != token_level_rewards.shape:
+        raise ValueError(
+            "reverse_decay_gae requires response_mask and token_level_rewards to have identical shapes, "
+            f"got {tuple(response_mask.shape)} and {tuple(token_level_rewards.shape)}."
+        )
+
+    with torch.no_grad():
+        batch_size, gen_len = token_level_rewards.shape
+        deltas = torch.zeros_like(values)
+        raw_advantages = torch.zeros_like(values)
+        mask_bool = response_mask.bool()
+        mask = response_mask.to(dtype=values.dtype)
+        gamma_t = torch.as_tensor(gamma, dtype=values.dtype, device=values.device)
+        lam_t = torch.as_tensor(lam, dtype=values.dtype, device=values.device)
+
+        next_valid_value = torch.zeros(batch_size, dtype=values.dtype, device=values.device)
+        for t in reversed(range(gen_len)):
+            is_valid = mask_bool[:, t]
+            delta_t = token_level_rewards[:, t] + gamma_t * next_valid_value - values[:, t]
+            deltas[:, t] = torch.where(is_valid, delta_t, torch.zeros_like(delta_t))
+            next_valid_value = torch.where(is_valid, values[:, t], next_valid_value)
+
+        running_advantage = torch.zeros(batch_size, dtype=values.dtype, device=values.device)
+        running_lambda_power = torch.ones(batch_size, dtype=values.dtype, device=values.device)
+        for t in reversed(range(gen_len)):
+            is_valid = mask_bool[:, t]
+
+            # H_t counts future valid response tokens only, so masked observation
+            # slots do not change the lambda exponent or the running advantage.
+            current_advantage = deltas[:, t] * running_lambda_power + gamma_t * running_advantage
+            raw_advantages[:, t] = torch.where(is_valid, current_advantage, torch.zeros_like(current_advantage))
+            running_advantage = torch.where(is_valid, current_advantage, running_advantage)
+            running_lambda_power = torch.where(is_valid, running_lambda_power * lam_t, running_lambda_power)
+
+        returns = (raw_advantages + values) * mask
+        advantages = verl_F.masked_whiten(raw_advantages, response_mask)
+        advantages = advantages * mask
+
     return advantages, returns
 
 

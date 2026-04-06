@@ -83,7 +83,7 @@ def validate_config(
         use_reference_policy (bool): is ref policy needed
         use_critic (bool): is critic needed
     """
-    from verl.trainer.ppo.core_algos import AdvantageEstimator
+    from verl.trainer.ppo.core_algos import AdvantageEstimator, resolve_advantage_lambdas
 
     # number of GPUs total
     n_gpus = config.trainer.n_gpus_per_node * config.trainer.nnodes
@@ -101,16 +101,39 @@ def validate_config(
                 "token-level critic predictions."
             )
 
-    if config.algorithm.adv_estimator == AdvantageEstimator.ZERO_CRITIC and config.algorithm.lam != 1.0:
+    actor_lam, critic_lam = resolve_advantage_lambdas(
+        lam=config.algorithm.lam,
+        config=config.algorithm,
+    )
+    if (
+        actor_lam != critic_lam
+        and config.algorithm.adv_estimator
+        not in (AdvantageEstimator.GAE, AdvantageEstimator.REVERSE_DECAY_GAE)
+    ):
         raise ValueError(
-            "algorithm.lam is ignored for algorithm.adv_estimator=zero_critic. "
-            "Set algorithm.lam=1.0 to keep the configuration unambiguous."
+            "Different algorithm.actor_lam and algorithm.critic_lam are currently supported only for "
+            "algorithm.adv_estimator in {'gae', 'reverse_decay_gae'}."
+        )
+
+    if config.algorithm.adv_estimator == AdvantageEstimator.ZERO_CRITIC and (
+        actor_lam != 1.0 or critic_lam != 1.0
+    ):
+        raise ValueError(
+            "algorithm.adv_estimator=zero_critic requires effective actor and critic lambdas to be 1.0. "
+            "Set algorithm.lam=1.0 or override both algorithm.actor_lam and algorithm.critic_lam to 1.0."
+        )
+    if config.algorithm.adv_estimator == AdvantageEstimator.REVERSE_DECAY_GAE and (
+        actor_lam <= 0.0 or critic_lam <= 0.0
+    ):
+        raise ValueError(
+            "algorithm.adv_estimator=reverse_decay_gae requires effective actor and critic lambdas > 0 "
+            "because the reverse-decay kernel is undefined at lam <= 0."
         )
     if config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_REGRESSION:
-        if config.algorithm.lam != 1.0:
+        if actor_lam != 1.0 or critic_lam != 1.0:
             raise ValueError(
-                "algorithm.adv_estimator=prompt_baseline_regression requires algorithm.lam=1.0 "
-                "because it reuses the prompt-baseline reward-to-go estimator."
+                "algorithm.adv_estimator=prompt_baseline_regression requires effective actor and critic lambdas "
+                "= 1.0 because it reuses the prompt-baseline reward-to-go estimator."
             )
         if config.critic.value_head_type != "scalar":
             raise ValueError(
@@ -118,9 +141,9 @@ def validate_config(
                 "because the prompt-only regression loss is currently implemented for scalar heads."
             )
     if config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_BCE:
-        if config.algorithm.lam != 1.0:
+        if actor_lam != 1.0 or critic_lam != 1.0:
             raise ValueError(
-                "algorithm.adv_estimator=prompt_baseline_bce requires algorithm.lam=1.0 "
+                "algorithm.adv_estimator=prompt_baseline_bce requires effective actor and critic lambdas = 1.0 "
                 "because it reuses the prompt-baseline reward-to-go estimator."
             )
         if config.algorithm.gamma != 1.0:
@@ -142,9 +165,10 @@ def validate_config(
         AdvantageEstimator.PROMPT_RESIDUAL_BASELINE,
         AdvantageEstimator.PROMPT_RESIDUAL_BASELINE_RAMP,
     ):
-        if config.algorithm.lam != 1.0:
+        if actor_lam != 1.0 or critic_lam != 1.0:
             raise ValueError(
-                f"algorithm.adv_estimator={config.algorithm.adv_estimator} requires algorithm.lam=1.0 "
+                f"algorithm.adv_estimator={config.algorithm.adv_estimator} requires effective actor and critic "
+                "lambdas = 1.0 "
                 "because it uses a rollout-return minus combined baseline estimator."
             )
         if config.critic.value_head_type != "scalar":

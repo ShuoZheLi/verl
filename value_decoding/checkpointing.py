@@ -42,29 +42,47 @@ def merge_fsdp_checkpoint(local_dir: Path, target_dir: Path) -> None:
     subprocess.run(cmd, check=True)
 
 
+def ensure_merged_component_checkpoint(
+    checkpoint_dir: Path,
+    *,
+    component: str,
+    merged_root: Path | None = None,
+    skip_merge: bool = False,
+) -> Path:
+    if component not in {"actor", "critic"}:
+        raise ValueError(f"Unsupported checkpoint component: {component}")
+
+    merged_root = merged_root or (checkpoint_dir / "merged_hf")
+    target_dir = merged_root / component
+
+    if not skip_merge:
+        local_dir = checkpoint_dir / component
+        if not has_hf_weights(target_dir):
+            merge_fsdp_checkpoint(local_dir, target_dir)
+
+    if not has_hf_weights(target_dir):
+        raise FileNotFoundError(f"{component.capitalize()} HF weights not found in {target_dir}")
+    return target_dir
+
+
 def ensure_merged_checkpoints(
     checkpoint_dir: Path,
     *,
     merged_root: Path | None = None,
     skip_merge: bool = False,
 ) -> tuple[Path, Path]:
-    merged_root = merged_root or (checkpoint_dir / "merged_hf")
-    actor_hf = merged_root / "actor"
-    critic_hf = merged_root / "critic"
-
-    if not skip_merge:
-        actor_ckpt = checkpoint_dir / "actor"
-        critic_ckpt = checkpoint_dir / "critic"
-        if not has_hf_weights(actor_hf):
-            merge_fsdp_checkpoint(actor_ckpt, actor_hf)
-        if not has_hf_weights(critic_hf):
-            merge_fsdp_checkpoint(critic_ckpt, critic_hf)
-
-    if not has_hf_weights(actor_hf):
-        raise FileNotFoundError(f"Actor HF weights not found in {actor_hf}")
-    if not has_hf_weights(critic_hf):
-        raise FileNotFoundError(f"Critic HF weights not found in {critic_hf}")
-
+    actor_hf = ensure_merged_component_checkpoint(
+        checkpoint_dir,
+        component="actor",
+        merged_root=merged_root,
+        skip_merge=skip_merge,
+    )
+    critic_hf = ensure_merged_component_checkpoint(
+        checkpoint_dir,
+        component="critic",
+        merged_root=merged_root,
+        skip_merge=skip_merge,
+    )
     return actor_hf, critic_hf
 
 
@@ -148,4 +166,3 @@ def resolve_eos_token_ids(model_dir: Path, tokenizer) -> tuple[int, ...]:
         eos_token_ids.extend(int(token_id) for token_id in candidate if token_id is not None)
 
     return tuple(sorted(set(eos_token_ids)))
-

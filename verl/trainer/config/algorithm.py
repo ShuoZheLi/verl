@@ -572,10 +572,16 @@ class AlgoConfig(BaseConfig):
 
     Args:
         gamma (float): Discount factor for future rewards.
-        lam (float): Trade-off between bias and variance in the GAE estimator.
-        adv_estimator (str): Advantage estimator type: "gae", "prompt_baseline",
-            "prompt_baseline_regression", "prompt_baseline_bce", "prompt_residual_baseline",
-            "prompt_residual_baseline_ramp", "zero_critic", "grpo", "reinforce_plus_plus", etc.
+        lam (float): Backward-compatible lambda fallback used for both actor advantages and
+            critic returns unless actor_lam and/or critic_lam override it.
+        actor_lam (Optional[float]): Optional actor-side lambda override used when computing
+            policy advantages. If None, falls back to lam.
+        critic_lam (Optional[float]): Optional critic-side lambda override used when computing
+            value-learning returns. If None, falls back to lam.
+        adv_estimator (str): Advantage estimator type: "gae", "reverse_decay_gae",
+            "prompt_baseline", "prompt_baseline_regression", "prompt_baseline_bce",
+            "prompt_residual_baseline", "prompt_residual_baseline_ramp", "zero_critic",
+            "grpo", "reinforce_plus_plus", etc.
         adv_mode (str): Actor-side advantage mode. "token" keeps the existing estimator output,
             while "chunk" replaces the actor advantages with chunk-level rollout-return minus
             chunk baseline advantages while leaving critic returns/losses unchanged.
@@ -612,6 +618,8 @@ class AlgoConfig(BaseConfig):
 
     gamma: float = 1.0
     lam: float = 1.0
+    actor_lam: Optional[float] = None
+    critic_lam: Optional[float] = None
     adv_estimator: str = "gae"
     adv_mode: str = "token"
     chunk_size: int = 8

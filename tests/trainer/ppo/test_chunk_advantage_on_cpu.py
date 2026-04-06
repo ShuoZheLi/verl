@@ -21,9 +21,13 @@ from verl.trainer.ppo.chunk_advantage import (
     compute_chunked_advantages,
     reduce_values_by_chunk,
 )
-from verl.trainer.ppo.core_algos import AdvantageEstimator, compute_gae_advantage_return
+from verl.trainer.ppo.core_algos import (
+    AdvantageEstimator,
+    compute_gae_advantage_return,
+)
 from verl.trainer.ppo.ray_trainer import compute_advantage
 import verl.utils.torch_functional as verl_F
+import pytest
 
 
 def test_build_response_chunk_ids_respects_valid_token_order():
@@ -173,6 +177,25 @@ def test_compute_advantage_chunk_mode_handles_empty_responses_without_crashing()
 
     torch.testing.assert_close(output.batch["advantages"][0], torch.zeros_like(output.batch["advantages"][0]))
     assert torch.isfinite(output.batch["advantages"]).all()
+
+
+def test_compute_advantage_chunk_mode_rejects_reverse_decay_gae():
+    data = DataProto.from_single_dict(
+        {
+            "token_level_rewards": torch.tensor([[0.0, 1.0, 0.0]], dtype=torch.float32),
+            "response_mask": torch.tensor([[1, 1, 0]], dtype=torch.float32),
+            "values": torch.tensor([[0.2, 0.4, 0.0]], dtype=torch.float32),
+        }
+    )
+
+    with pytest.raises(ValueError, match="adv_mode=chunk currently requires algorithm.adv_estimator=gae"):
+        compute_advantage(
+            data,
+            adv_estimator=AdvantageEstimator.REVERSE_DECAY_GAE,
+            gamma=1.0,
+            lam=0.95,
+            config=AlgoConfig(adv_estimator="reverse_decay_gae", adv_mode="chunk", chunk_size=2, chunk_reduce="mean"),
+        )
 
 
 def test_chunk_size_one_matches_token_level_rollout_minus_value_baseline_for_final_reward_rlvr():

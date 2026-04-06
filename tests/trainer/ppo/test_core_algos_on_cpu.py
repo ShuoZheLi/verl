@@ -31,6 +31,7 @@ from verl.trainer.ppo.core_algos import (
     compute_prompt_baseline_regression_value_loss,
     compute_prompt_residual_advantage_return,
     compute_prompt_residual_regression_value_loss,
+    compute_reverse_decay_gae_advantage_return,
     compute_grpo_vectorized_outcome_advantage,
     compute_zero_critic_advantage_return,
     compute_rloo_outcome_advantage,
@@ -232,6 +233,340 @@ def test_zero_critic_matches_zero_value_gae():
     torch.testing.assert_close(advantages, expected_advantages)
 
 
+def test_reverse_decay_gae_masks_invalid_tokens_and_skips_masked_values():
+    rewards = torch.tensor(
+        [
+            [0.4, 0.0, 1.0, 0.0],
+            [0.2, 0.5, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    response_mask = torch.tensor(
+        [
+            [1, 0, 1, 0],
+            [1, 1, 0, 0],
+        ],
+        dtype=torch.float32,
+    )
+    values_a = torch.tensor(
+        [
+            [0.3, 999.0, 0.7, -888.0],
+            [0.1, 0.4, 123.0, 456.0],
+        ],
+        dtype=torch.float32,
+    )
+    values_b = torch.tensor(
+        [
+            [0.3, -999.0, 0.7, 888.0],
+            [0.1, 0.4, -123.0, -456.0],
+        ],
+        dtype=torch.float32,
+    )
+
+    advantages_a, returns_a = compute_reverse_decay_gae_advantage_return(
+        token_level_rewards=rewards,
+        values=values_a,
+        response_mask=response_mask,
+        gamma=0.7,
+        lam=0.6,
+    )
+    advantages_b, returns_b = compute_reverse_decay_gae_advantage_return(
+        token_level_rewards=rewards,
+        values=values_b,
+        response_mask=response_mask,
+        gamma=0.7,
+        lam=0.6,
+    )
+
+    torch.testing.assert_close(advantages_a, advantages_b)
+    torch.testing.assert_close(returns_a, returns_b)
+    torch.testing.assert_close(advantages_a * (1.0 - response_mask), torch.zeros_like(advantages_a))
+    torch.testing.assert_close(returns_a * (1.0 - response_mask), torch.zeros_like(returns_a))
+
+
+def test_reverse_decay_gae_matches_standard_gae_when_lambda_one_and_gamma_one():
+    torch.manual_seed(0)
+    rewards = torch.randn(3, 6, dtype=torch.float32)
+    values = torch.randn(3, 6, dtype=torch.float32)
+    response_mask = torch.tensor(
+        [
+            [1, 1, 1, 0, 0, 0],
+            [1, 0, 1, 1, 0, 0],
+            [0, 1, 0, 1, 1, 1],
+        ],
+        dtype=torch.float32,
+    )
+
+    reverse_advantages, reverse_returns = compute_reverse_decay_gae_advantage_return(
+        token_level_rewards=rewards,
+        values=values,
+        response_mask=response_mask,
+        gamma=1.0,
+        lam=1.0,
+    )
+    gae_advantages, gae_returns = compute_gae_advantage_return(
+        token_level_rewards=rewards,
+        values=values,
+        response_mask=response_mask,
+        gamma=1.0,
+        lam=1.0,
+    )
+
+    torch.testing.assert_close(reverse_returns, gae_returns * response_mask)
+    torch.testing.assert_close(reverse_advantages, gae_advantages * response_mask)
+
+
+def test_reverse_decay_gae_matches_standard_gae_when_lambda_one_with_general_gamma():
+    torch.manual_seed(1)
+    rewards = torch.randn(4, 5, dtype=torch.float32)
+    values = torch.randn(4, 5, dtype=torch.float32)
+    response_mask = torch.tensor(
+        [
+            [1, 1, 1, 1, 0],
+            [1, 0, 1, 0, 1],
+            [0, 1, 1, 0, 0],
+            [1, 1, 0, 1, 1],
+        ],
+        dtype=torch.float32,
+    )
+
+    reverse_advantages, reverse_returns = compute_reverse_decay_gae_advantage_return(
+        token_level_rewards=rewards,
+        values=values,
+        response_mask=response_mask,
+        gamma=0.83,
+        lam=1.0,
+    )
+    gae_advantages, gae_returns = compute_gae_advantage_return(
+        token_level_rewards=rewards,
+        values=values,
+        response_mask=response_mask,
+        gamma=0.83,
+        lam=1.0,
+    )
+
+    torch.testing.assert_close(reverse_returns, gae_returns * response_mask)
+    torch.testing.assert_close(reverse_advantages, gae_advantages * response_mask)
+
+
+def test_reverse_decay_gae_matches_hand_computed_toy_example():
+    rewards = torch.tensor([[1.0, 2.0, 3.0, 0.0]], dtype=torch.float32)
+    values = torch.tensor([[0.5, 1.0, 1.5, 10.0]], dtype=torch.float32)
+    response_mask = torch.tensor([[1, 1, 1, 0]], dtype=torch.float32)
+
+    advantages, returns = compute_reverse_decay_gae_advantage_return(
+        token_level_rewards=rewards,
+        values=values,
+        response_mask=response_mask,
+        gamma=0.9,
+        lam=0.5,
+    )
+
+    expected_raw_advantages = torch.tensor([[2.6225, 2.5250, 1.5000, 0.0]], dtype=torch.float32)
+    expected_returns = torch.tensor([[3.1225, 3.5250, 3.0000, 0.0]], dtype=torch.float32)
+    expected_advantages = verl_F.masked_whiten(expected_raw_advantages, response_mask) * response_mask
+
+    torch.testing.assert_close(returns, expected_returns)
+    torch.testing.assert_close(advantages, expected_advantages)
+
+
+def test_reverse_decay_gae_remains_finite_for_tiny_positive_lambda():
+    torch.manual_seed(2)
+    rewards = torch.randn(2, 6, dtype=torch.float32)
+    values = torch.randn(2, 6, dtype=torch.float32)
+    response_mask = torch.tensor(
+        [
+            [1, 1, 1, 1, 0, 0],
+            [1, 0, 1, 1, 1, 0],
+        ],
+        dtype=torch.float32,
+    )
+
+    advantages, returns = compute_reverse_decay_gae_advantage_return(
+        token_level_rewards=rewards,
+        values=values,
+        response_mask=response_mask,
+        gamma=0.95,
+        lam=1e-3,
+    )
+
+    assert torch.isfinite(advantages).all()
+    assert torch.isfinite(returns).all()
+
+
+def test_compute_advantage_reverse_decay_gae_matches_core_algo():
+    data = DataProto.from_single_dict(
+        {
+            "token_level_rewards": torch.tensor(
+                [
+                    [0.4, 0.0, 1.0, 0.0],
+                    [0.2, 0.5, 0.0, 0.0],
+                ],
+                dtype=torch.float32,
+            ),
+            "response_mask": torch.tensor(
+                [
+                    [1, 0, 1, 0],
+                    [1, 1, 0, 0],
+                ],
+                dtype=torch.float32,
+            ),
+            "values": torch.tensor(
+                [
+                    [0.3, 0.0, 0.7, 0.0],
+                    [0.1, 0.4, 0.0, 0.0],
+                ],
+                dtype=torch.float32,
+            ),
+        }
+    )
+
+    output = compute_advantage(
+        data,
+        adv_estimator=AdvantageEstimator.REVERSE_DECAY_GAE,
+        gamma=0.7,
+        lam=0.6,
+        config=AlgoConfig(adv_estimator="reverse_decay_gae", lam=0.6),
+    )
+
+    expected_advantages, expected_returns = compute_reverse_decay_gae_advantage_return(
+        token_level_rewards=data.batch["token_level_rewards"],
+        values=data.batch["values"],
+        response_mask=data.batch["response_mask"],
+        gamma=0.7,
+        lam=0.6,
+    )
+
+    torch.testing.assert_close(output.batch["advantages"], expected_advantages)
+    torch.testing.assert_close(output.batch["returns"], expected_returns)
+
+
+def test_compute_advantage_gae_supports_split_actor_and_critic_lam():
+    data = DataProto.from_single_dict(
+        {
+            "token_level_rewards": torch.tensor(
+                [
+                    [0.1, 0.2, 0.3, 0.0],
+                    [0.4, -0.2, 0.0, 0.0],
+                ],
+                dtype=torch.float32,
+            ),
+            "response_mask": torch.tensor(
+                [
+                    [1, 1, 1, 0],
+                    [1, 1, 0, 0],
+                ],
+                dtype=torch.float32,
+            ),
+            "values": torch.tensor(
+                [
+                    [0.5, 0.4, 0.2, 0.0],
+                    [0.1, -0.1, 0.0, 0.0],
+                ],
+                dtype=torch.float32,
+            ),
+        }
+    )
+
+    config = AlgoConfig(adv_estimator="gae", lam=0.95, actor_lam=0.5, critic_lam=0.9)
+    output = compute_advantage(
+        data,
+        adv_estimator=AdvantageEstimator.GAE,
+        gamma=0.8,
+        lam=config.lam,
+        config=config,
+    )
+
+    expected_advantages, _ = compute_gae_advantage_return(
+        token_level_rewards=data.batch["token_level_rewards"],
+        values=data.batch["values"],
+        response_mask=data.batch["response_mask"],
+        gamma=0.8,
+        lam=0.5,
+    )
+    _, expected_returns = compute_gae_advantage_return(
+        token_level_rewards=data.batch["token_level_rewards"],
+        values=data.batch["values"],
+        response_mask=data.batch["response_mask"],
+        gamma=0.8,
+        lam=0.9,
+    )
+
+    torch.testing.assert_close(output.batch["advantages"], expected_advantages)
+    torch.testing.assert_close(output.batch["returns"], expected_returns)
+
+
+def test_compute_advantage_reverse_decay_gae_uses_algorithm_lam_as_critic_fallback():
+    data = DataProto.from_single_dict(
+        {
+            "token_level_rewards": torch.tensor([[0.4, 0.0, 1.0, 0.0]], dtype=torch.float32),
+            "response_mask": torch.tensor([[1, 0, 1, 0]], dtype=torch.float32),
+            "values": torch.tensor([[0.3, 0.0, 0.7, 0.0]], dtype=torch.float32),
+        }
+    )
+
+    config = AlgoConfig(adv_estimator="reverse_decay_gae", lam=0.9, actor_lam=0.6, critic_lam=None)
+    output = compute_advantage(
+        data,
+        adv_estimator=AdvantageEstimator.REVERSE_DECAY_GAE,
+        gamma=0.7,
+        lam=config.lam,
+        config=config,
+    )
+
+    expected_advantages, _ = compute_reverse_decay_gae_advantage_return(
+        token_level_rewards=data.batch["token_level_rewards"],
+        values=data.batch["values"],
+        response_mask=data.batch["response_mask"],
+        gamma=0.7,
+        lam=0.6,
+    )
+    _, expected_returns = compute_reverse_decay_gae_advantage_return(
+        token_level_rewards=data.batch["token_level_rewards"],
+        values=data.batch["values"],
+        response_mask=data.batch["response_mask"],
+        gamma=0.7,
+        lam=0.9,
+    )
+
+    torch.testing.assert_close(output.batch["advantages"], expected_advantages)
+    torch.testing.assert_close(output.batch["returns"], expected_returns)
+
+
+def test_compute_advantage_rejects_split_lams_for_prompt_baseline():
+    data = DataProto.from_single_dict(
+        {
+            "token_level_rewards": torch.tensor([[0.0, 1.0, 0.0]], dtype=torch.float32),
+            "response_mask": torch.tensor([[1, 1, 0]], dtype=torch.float32),
+            "values": torch.tensor([[0.5, 1.0, 1.0]], dtype=torch.float32),
+        }
+    )
+
+    with pytest.raises(ValueError, match="Different actor_lam and critic_lam"):
+        compute_advantage(
+            data,
+            adv_estimator=AdvantageEstimator.PROMPT_BASELINE,
+            gamma=1.0,
+            lam=1.0,
+            config=AlgoConfig(adv_estimator="prompt_baseline", lam=1.0, actor_lam=0.8, critic_lam=1.0),
+        )
+
+
+def test_reverse_decay_gae_rejects_nonpositive_lambda():
+    rewards = torch.tensor([[1.0, 0.0]], dtype=torch.float32)
+    values = torch.tensor([[0.5, 0.0]], dtype=torch.float32)
+    response_mask = torch.tensor([[1, 0]], dtype=torch.float32)
+
+    with pytest.raises(ValueError, match="lam > 0"):
+        compute_reverse_decay_gae_advantage_return(
+            token_level_rewards=rewards,
+            values=values,
+            response_mask=response_mask,
+            gamma=1.0,
+            lam=0.0,
+        )
+
+
 def test_compute_advantage_zero_critic_injects_zero_values():
     data = DataProto.from_single_dict(
         {
@@ -260,7 +595,7 @@ def test_compute_advantage_zero_critic_rejects_nonunit_lambda():
         }
     )
 
-    with pytest.raises(ValueError, match="lam must be 1.0"):
+    with pytest.raises(ValueError, match="effective actor and critic lambdas"):
         compute_advantage(
             data,
             adv_estimator=AdvantageEstimator.ZERO_CRITIC,

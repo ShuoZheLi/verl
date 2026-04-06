@@ -189,11 +189,35 @@ def _extract_scalar_values_from_critic_outputs(critic, outputs) -> torch.Tensor:
 
 
 @torch.inference_mode()
-def critic_last_token_values(critic, input_ids: torch.Tensor) -> torch.Tensor:
-    attention_mask = torch.ones_like(input_ids, device=input_ids.device)
+def critic_sequence_values(
+    critic,
+    input_ids: torch.Tensor,
+    *,
+    attention_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    if attention_mask is None:
+        attention_mask = torch.ones_like(input_ids, device=input_ids.device)
     outputs = critic(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
-    values = _extract_scalar_values_from_critic_outputs(critic, outputs)
-    return values[:, -1]
+    return _extract_scalar_values_from_critic_outputs(critic, outputs)
+
+
+@torch.inference_mode()
+def critic_sequence_last_values(
+    critic,
+    input_ids: torch.Tensor,
+    *,
+    attention_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    values = critic_sequence_values(critic, input_ids, attention_mask=attention_mask)
+    last_indices = attention_mask.long().sum(dim=-1) - 1
+    if torch.any(last_indices < 0):
+        raise ValueError("Each sequence must contain at least one unmasked token.")
+    return values.gather(dim=1, index=last_indices[:, None]).squeeze(1)
+
+
+@torch.inference_mode()
+def critic_last_token_values(critic, input_ids: torch.Tensor) -> torch.Tensor:
+    return critic_sequence_last_values(critic, input_ids)
 
 
 @torch.inference_mode()

@@ -66,10 +66,17 @@ algorithm:
   # Discount factor for future rewards
   gamma: 1.0
 
-  # Trade-off between bias and variance in the GAE estimator
+  # Backward-compatible lambda fallback used for both actor advantages and critic returns
+  # unless algorithm.actor_lam and/or algorithm.critic_lam override it.
   lam: 1.0
 
-  # Advantage estimator type: "gae", "prompt_baseline_regression", "zero_critic", "grpo", etc.
+  # Optional actor-side lambda override. Set to null to fall back to algorithm.lam
+  actor_lam: null
+
+  # Optional critic-side lambda override. Set to null to fall back to algorithm.lam
+  critic_lam: null
+
+  # Advantage estimator type: "gae", "reverse_decay_gae", "prompt_baseline_regression", "zero_critic", "grpo", etc.
   adv_estimator: gae
 
   # Actor-side advantage mode: "token" keeps the existing path, "chunk" uses rollout-return minus chunk baseline
