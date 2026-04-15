@@ -85,6 +85,9 @@ def need_reward_model(
 
 def need_critic(config: DictConfig) -> bool:
     """Given a config, do we need critic."""
+    chunk_boundary_cfg = config.algorithm.get("chunk_boundary_critic", None)
+    if chunk_boundary_cfg is not None and chunk_boundary_cfg.get("enable", False):
+        return True
     if config.algorithm.adv_estimator == AdvantageEstimator.ZERO_CRITIC:
         if config.critic.enable not in (None, False):
             warnings.warn(

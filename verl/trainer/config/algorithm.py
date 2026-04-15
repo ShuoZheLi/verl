@@ -17,7 +17,13 @@ from typing import Any, Optional
 
 from verl.base_config import BaseConfig
 
-__all__ = ["AlgoConfig", "FilterGroupsConfig", "KLControlConfig", "RolloutCorrectionConfig"]
+__all__ = [
+    "AlgoConfig",
+    "ChunkBoundaryCriticConfig",
+    "FilterGroupsConfig",
+    "KLControlConfig",
+    "RolloutCorrectionConfig",
+]
 
 
 @dataclass
@@ -565,6 +571,33 @@ class RolloutCorrectionConfig(BaseConfig):
 
 
 @dataclass
+class ChunkBoundaryCriticConfig(BaseConfig):
+    """Configuration for critic-only chunk-boundary value training.
+
+    Args:
+        enable (bool): Whether to replace standard PPO critic supervision with chunk-boundary supervision.
+        chunk_size (int): Boundary spacing in generated-token coordinates.
+        loss_type (str): Critic objective on boundary states: "bce" or "mse".
+        uniform_per_state_weight (bool): If True, every boundary state gets equal weight. If False,
+            each rollout contributes equal total weight regardless of length.
+    """
+
+    enable: bool = False
+    chunk_size: int = 32
+    loss_type: str = "bce"
+    uniform_per_state_weight: bool = False
+
+    def __post_init__(self):
+        if self.chunk_size < 1:
+            raise ValueError(f"chunk_boundary_critic.chunk_size must be >= 1, got {self.chunk_size}.")
+        if self.loss_type not in {"bce", "mse"}:
+            raise ValueError(
+                "chunk_boundary_critic.loss_type must be one of ['bce', 'mse'], "
+                f"got {self.loss_type!r}."
+            )
+
+
+@dataclass
 class AlgoConfig(BaseConfig):
     """Configuration for the algorithm.
 
@@ -598,6 +631,7 @@ class AlgoConfig(BaseConfig):
         use_pf_ppo (bool): Whether to enable preference feedback PPO.
         pf_ppo (dict[str, Any]): Preference feedback PPO settings.
         filter_groups (Optional[FilterGroupsConfig]): Filter groups configuration, used in DAPO and Entropy
+        chunk_boundary_critic (ChunkBoundaryCriticConfig): Optional critic-only chunk-boundary training mode.
         rollout_correction (Optional[RolloutCorrectionConfig]): Rollout Correction configuration.
             Addresses off-policy issues from policy mismatch, model staleness, and general distribution shifts.
 
@@ -633,6 +667,7 @@ class AlgoConfig(BaseConfig):
     use_pf_ppo: bool = False
     pf_ppo: dict[str, Any] = field(default_factory=dict)
     filter_groups: Optional[FilterGroupsConfig] = None
+    chunk_boundary_critic: ChunkBoundaryCriticConfig = field(default_factory=ChunkBoundaryCriticConfig)
     # Rollout Correction: corrects off-policy issues (policy mismatch, model staleness, distribution shifts)
     # Set to None to disable, use RolloutCorrectionConfig presets (e.g., .tis(), .mis()), or pass dict
     rollout_correction: Optional[RolloutCorrectionConfig] = None
@@ -652,3 +687,6 @@ class AlgoConfig(BaseConfig):
                 raise ValueError(
                     f"Invalid chunk_reduce: {self.chunk_reduce}. Must be one of {sorted(valid_chunk_reductions)}"
                 )
+
+        if self.chunk_boundary_critic is None:
+            self.chunk_boundary_critic = ChunkBoundaryCriticConfig()

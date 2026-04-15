@@ -1242,8 +1242,11 @@ class CriticWorker(MegatronWorker, DistProfilerExtension):
         data = data.to(get_device_id())
         if self._is_offload_param:
             load_megatron_model_to_gpu(self.critic_module)
-        values = self.critic.compute_values(data=data)
-        output = DataProto.from_dict(tensors={"values": values})
+        critic_outputs = self.critic.compute_values(data=data)
+        if isinstance(critic_outputs, dict):
+            output = DataProto.from_dict(tensors=critic_outputs)
+        else:
+            output = DataProto.from_dict(tensors={"values": critic_outputs})
         output = output.to("cpu")
         if self._is_offload_param:
             offload_megatron_model_to_cpu(self.critic_module)

@@ -89,6 +89,10 @@ def validate_config(
     n_gpus = config.trainer.n_gpus_per_node * config.trainer.nnodes
 
     adv_mode = config.algorithm.get("adv_mode", "token")
+    chunk_boundary_critic_cfg = config.algorithm.get("chunk_boundary_critic", None)
+    use_chunk_boundary_critic = bool(
+        chunk_boundary_critic_cfg is not None and chunk_boundary_critic_cfg.get("enable", False)
+    )
     if adv_mode == "chunk":
         if config.algorithm.adv_estimator != AdvantageEstimator.GAE:
             raise ValueError(
@@ -99,6 +103,38 @@ def validate_config(
             raise ValueError(
                 "algorithm.adv_mode=chunk requires a learned critic because it builds chunk baselines from "
                 "token-level critic predictions."
+            )
+    if use_chunk_boundary_critic:
+        if not use_critic:
+            raise ValueError(
+                "algorithm.chunk_boundary_critic.enable=True requires a learned critic because the actor is frozen "
+                "and all supervision flows through chunk-boundary value training."
+            )
+        if config.algorithm.adv_estimator == AdvantageEstimator.ZERO_CRITIC:
+            raise ValueError(
+                "algorithm.chunk_boundary_critic.enable=True is incompatible with "
+                "algorithm.adv_estimator=zero_critic because the experiment requires a learned critic."
+            )
+        if config.algorithm.use_kl_in_reward:
+            raise ValueError(
+                "algorithm.chunk_boundary_critic.enable=True does not support algorithm.use_kl_in_reward=True "
+                "because chunk-boundary targets must stay equal to the final task reward."
+            )
+        if config.actor_rollout_ref.actor.use_kl_loss:
+            raise ValueError(
+                "algorithm.chunk_boundary_critic.enable=True requires actor_rollout_ref.actor.use_kl_loss=False "
+                "because the actor is frozen and no actor-side KL loss is applied in this mode."
+            )
+        if config.critic.value_head_type != "scalar":
+            raise ValueError(
+                "algorithm.chunk_boundary_critic.enable=True requires critic.value_head_type=scalar because "
+                "chunk-boundary BCE/MSE supervision is implemented only for scalar critics."
+            )
+        use_legacy_worker_impl = config.trainer.get("use_legacy_worker_impl", "auto")
+        if use_legacy_worker_impl == "disable":
+            raise ValueError(
+                "algorithm.chunk_boundary_critic.enable=True is currently supported only with the legacy critic "
+                "workers. Set trainer.use_legacy_worker_impl to 'auto' or 'enable'."
             )
 
     actor_lam, critic_lam = resolve_advantage_lambdas(

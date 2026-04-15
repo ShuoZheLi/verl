@@ -42,6 +42,12 @@ from verl.single_controller.ray.base import create_colocated_worker_cls
 from verl.trainer.config import AlgoConfig
 from verl.trainer.ppo import core_algos
 from verl.trainer.ppo.chunk_advantage import compute_chunked_advantages
+from verl.trainer.ppo.chunk_boundary_value import (
+    build_chunk_boundary_training_tensors,
+    build_response_state_mask,
+    compute_chunk_boundary_metric_sums,
+    finalize_chunk_boundary_metric_sums,
+)
 from verl.trainer.ppo.core_algos import AdvantageEstimator, agg_loss
 from verl.trainer.ppo.metric_utils import (
     compute_data_metrics,
@@ -621,6 +627,8 @@ class RayPPOTrainer:
         self.use_rm = need_reward_model(self.config)
 
         self.use_critic = need_critic(self.config)
+        chunk_boundary_cfg = self.config.algorithm.get("chunk_boundary_critic", None)
+        self.use_chunk_boundary_critic = bool(chunk_boundary_cfg is not None and chunk_boundary_cfg.get("enable", False))
         self.use_zero_critic = self.config.algorithm.adv_estimator == AdvantageEstimator.ZERO_CRITIC
         self.ray_worker_group_cls = ray_worker_group_cls
         self.device_name = device_name if device_name else self.config.trainer.device
@@ -645,6 +653,42 @@ class RayPPOTrainer:
 
         self._create_dataloader(train_dataset, val_dataset, collate_fn, train_sampler)
 
+    def _get_chunk_boundary_critic_cfg(self):
+        return self.config.algorithm.chunk_boundary_critic
+
+    def _chunk_boundary_loss_type(self) -> str:
+        return str(self._get_chunk_boundary_critic_cfg().loss_type)
+
+    def _freeze_actor_updates(self) -> bool:
+        return self.use_chunk_boundary_critic
+
+    def _prepare_chunk_boundary_critic_batch(
+        self,
+        batch: DataProto,
+        rollout_targets: torch.Tensor,
+    ) -> tuple[DataProto, dict[str, Any]]:
+        response_mask_for_boundaries = batch.batch.get("raw_response_mask", batch.batch["response_mask"])
+        sample_weight = batch.batch.get("sample_weight")
+        chunk_boundary_cfg = self._get_chunk_boundary_critic_cfg()
+        boundary_mask, boundary_targets, boundary_weights, metrics = build_chunk_boundary_training_tensors(
+            response_mask=response_mask_for_boundaries,
+            rollout_targets=rollout_targets,
+            chunk_size=int(chunk_boundary_cfg.chunk_size),
+            sample_weight=sample_weight,
+            uniform_per_state_weight=bool(chunk_boundary_cfg.uniform_per_state_weight),
+        )
+        batch.batch["chunk_boundary_mask"] = boundary_mask
+        batch.batch["chunk_boundary_targets"] = boundary_targets
+        batch.batch["chunk_boundary_weights"] = boundary_weights
+        rollout_targets = rollout_targets.float()
+        batch.batch["rollout_returns"] = rollout_targets
+        batch.batch["returns"] = core_algos.broadcast_outcome_rollout_returns(
+            rollout_returns=rollout_targets,
+            response_mask=batch.batch["response_mask"],
+        )
+        batch.batch["advantages"] = torch.zeros_like(batch.batch["returns"])
+        return batch, metrics
+
     def _get_actor_update_interval(self) -> int:
         interval = int(self.config.trainer.get("actor_update_interval", 1))
         if interval < 1:
@@ -652,6 +696,8 @@ class RayPPOTrainer:
         return interval
 
     def _get_effective_actor_update_interval(self) -> int:
+        if self._freeze_actor_updates():
+            return 0
         return 1 if self.use_zero_critic else self._get_actor_update_interval()
 
     def _get_first_actor_update_step(self) -> int:
@@ -661,6 +707,8 @@ class RayPPOTrainer:
         return critic_warmup if critic_warmup > 0 else self._get_actor_update_interval()
 
     def _count_actor_updates_through_step(self, global_step: int) -> int:
+        if self._freeze_actor_updates():
+            return 0
         if self.use_zero_critic:
             return global_step
 
@@ -672,6 +720,8 @@ class RayPPOTrainer:
         return 1 + (global_step - first_actor_update_step) // actor_update_interval
 
     def _should_update_actor(self) -> bool:
+        if self._freeze_actor_updates():
+            return False
         if self.use_zero_critic:
             return True
 
@@ -890,6 +940,7 @@ class RayPPOTrainer:
     def _validate(self, merged: bool = False):
         data_source_lst = []
         reward_extra_infos_dict: dict[str, list] = defaultdict(list)
+        chunk_boundary_metric_sums: dict[str, torch.Tensor] | None = None
 
         # Lists to collect samples for the table
         sample_inputs = []
@@ -961,6 +1012,8 @@ class RayPPOTrainer:
 
             test_batch = test_batch.union(test_output_gen_batch)
             test_batch.meta_info["validate"] = True
+            if "response_mask" not in test_batch.batch.keys():
+                test_batch.batch["response_mask"] = compute_response_mask(test_batch)
 
             # Store original inputs
             input_ids = test_batch.batch["prompts"]
@@ -971,6 +1024,29 @@ class RayPPOTrainer:
 
             # evaluate using reward_function
             reward_tensor, reward_extra_info = extract_reward(test_batch)
+
+            if self.use_chunk_boundary_critic and self.use_critic:
+                rollout_targets = reward_tensor.sum(dim=-1).float()
+                test_batch, _ = self._prepare_chunk_boundary_critic_batch(
+                    batch=test_batch,
+                    rollout_targets=rollout_targets,
+                )
+                values = self._compute_values(test_batch)
+                test_batch = test_batch.union(values)
+                batch_chunk_boundary_metric_sums = compute_chunk_boundary_metric_sums(
+                    predictions=test_batch.batch["chunk_boundary_values"],
+                    targets=test_batch.batch["chunk_boundary_targets"],
+                    boundary_mask=test_batch.batch["chunk_boundary_mask"],
+                    boundary_weights=test_batch.batch["chunk_boundary_weights"],
+                    loss_type=self._chunk_boundary_loss_type(),
+                )
+                if chunk_boundary_metric_sums is None:
+                    chunk_boundary_metric_sums = {
+                        key: value.detach().cpu() for key, value in batch_chunk_boundary_metric_sums.items()
+                    }
+                else:
+                    for key, value in batch_chunk_boundary_metric_sums.items():
+                        chunk_boundary_metric_sums[key] = chunk_boundary_metric_sums[key] + value.detach().cpu()
 
             scores = reward_tensor.sum(-1).cpu().tolist()
             sample_scores.extend(scores)
@@ -1009,15 +1085,32 @@ class RayPPOTrainer:
 
         if merged:
             print("_merge_validation_results validate result will be merged")
-            return {
+            merged_result = {
                 "data_sources": data_source_lst,
                 "sample_uids": sample_uids,
                 "sample_turns": sample_turns,
                 "reward_extra_infos_dict": reward_extra_infos_dict,
                 "sample_response_lengths": sample_response_lengths,
             }
+            if chunk_boundary_metric_sums is not None:
+                merged_result["chunk_boundary_metric_sums"] = chunk_boundary_metric_sums
+            return merged_result
         data_sources = np.concatenate(data_source_lst, axis=0)
-        return self._val_metrics_update(data_sources, sample_uids, reward_extra_infos_dict, sample_turns, sample_response_lengths)
+        metric_dict = self._val_metrics_update(
+            data_sources,
+            sample_uids,
+            reward_extra_infos_dict,
+            sample_turns,
+            sample_response_lengths,
+        )
+        if chunk_boundary_metric_sums is not None:
+            metric_dict.update(
+                finalize_chunk_boundary_metric_sums(
+                    chunk_boundary_metric_sums,
+                    prefix="val-aux/chunk_boundary",
+                )
+            )
+        return metric_dict
 
     def _val_metrics_update(self, data_sources, sample_uids, reward_extra_infos_dict, sample_turns, sample_response_lengths=None):
         data_src2var2metric2val = process_validation_metrics(data_sources, sample_uids, reward_extra_infos_dict)
@@ -1056,9 +1149,21 @@ class RayPPOTrainer:
         if result_a is None and result_b is None:
             return {}
         if result_a is None:
-            result_a = {"data_sources": [], "sample_uids": [], "sample_turns": [], "reward_extra_infos_dict": {}, "sample_response_lengths": []}
+            result_a = {
+                "data_sources": [],
+                "sample_uids": [],
+                "sample_turns": [],
+                "reward_extra_infos_dict": {},
+                "sample_response_lengths": [],
+            }
         if result_b is None:
-            result_b = {"data_sources": [], "sample_uids": [], "sample_turns": [], "reward_extra_infos_dict": {}, "sample_response_lengths": []}
+            result_b = {
+                "data_sources": [],
+                "sample_uids": [],
+                "sample_turns": [],
+                "reward_extra_infos_dict": {},
+                "sample_response_lengths": [],
+            }
 
         if not result_a.get("data_sources") and not result_b.get("data_sources"):
             return {}
@@ -1075,7 +1180,29 @@ class RayPPOTrainer:
             list_b = result_b["reward_extra_infos_dict"].get(key, [])
             reward_extra_infos_dict[key] = list_a + list_b
 
-        return self._val_metrics_update(data_sources, sample_uids, reward_extra_infos_dict, sample_turns, sample_response_lengths)
+        metric_dict = self._val_metrics_update(
+            data_sources,
+            sample_uids,
+            reward_extra_infos_dict,
+            sample_turns,
+            sample_response_lengths,
+        )
+        chunk_boundary_metric_sums_a = result_a.get("chunk_boundary_metric_sums")
+        chunk_boundary_metric_sums_b = result_b.get("chunk_boundary_metric_sums")
+        if chunk_boundary_metric_sums_a is not None or chunk_boundary_metric_sums_b is not None:
+            merged_chunk_boundary_metric_sums = {}
+            for source_metric_sums in (chunk_boundary_metric_sums_a, chunk_boundary_metric_sums_b):
+                if source_metric_sums is None:
+                    continue
+                for key, value in source_metric_sums.items():
+                    merged_chunk_boundary_metric_sums[key] = merged_chunk_boundary_metric_sums.get(key, 0) + value
+            metric_dict.update(
+                finalize_chunk_boundary_metric_sums(
+                    merged_chunk_boundary_metric_sums,
+                    prefix="val-aux/chunk_boundary",
+                )
+            )
+        return metric_dict
 
     def init_workers(self):
         """Initialize distributed training workers using Ray backend.
@@ -1108,7 +1235,9 @@ class RayPPOTrainer:
             from verl.workers.config import CriticConfig
 
             critic_cfg: CriticConfig = omega_conf_to_dataclass(self.config.critic)
-            if self.config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_REGRESSION:
+            if self.use_chunk_boundary_critic:
+                critic_cfg.value_loss_mode = f"chunk_boundary_{self._chunk_boundary_loss_type()}"
+            elif self.config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_REGRESSION:
                 critic_cfg.value_loss_mode = "prompt_baseline_regression"
             elif self.config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_BCE:
                 critic_cfg.value_loss_mode = "prompt_baseline_bce"
@@ -1119,10 +1248,10 @@ class RayPPOTrainer:
                 critic_cfg.value_loss_mode = "prompt_residual_regression"
 
             if self.use_legacy_worker_impl == "disable":
-                if critic_cfg.value_loss_mode == "prompt_residual_regression":
+                if critic_cfg.value_loss_mode in {"prompt_residual_regression", "chunk_boundary_bce", "chunk_boundary_mse"}:
                     raise ValueError(
-                        f"algorithm.adv_estimator={self.config.algorithm.adv_estimator} is currently supported only "
-                        "with the legacy FSDP critic worker. Set trainer.use_legacy_worker_impl to 'auto' or 'enable'."
+                        f"critic.value_loss_mode={critic_cfg.value_loss_mode} is currently supported only "
+                        "with the legacy critic worker. Set trainer.use_legacy_worker_impl to 'auto' or 'enable'."
                     )
                 # convert critic_cfg into TrainingWorkerConfig
                 from verl.workers.engine_workers import TrainingWorkerConfig
@@ -1521,6 +1650,16 @@ class RayPPOTrainer:
             if response_mask is None:
                 response_mask = compute_response_mask(batch)
             values.batch["values"] = torch.sigmoid(values.batch["values"].float()) * response_mask.to(torch.float32)
+        if self.use_chunk_boundary_critic and self._chunk_boundary_loss_type() == "bce":
+            response_mask = batch.batch.get("response_mask")
+            if response_mask is None:
+                response_mask = compute_response_mask(batch)
+            state_mask = build_response_state_mask(batch.batch.get("raw_response_mask", response_mask))
+            values.batch["values"] = torch.sigmoid(values.batch["values"].float()) * response_mask.to(torch.float32)
+            if "chunk_boundary_values" in values.batch:
+                values.batch["chunk_boundary_values"] = (
+                    torch.sigmoid(values.batch["chunk_boundary_values"].float()) * state_mask.to(torch.float32)
+                )
         return values
 
     def _compute_ref_log_prob(self, batch: DataProto) -> DataProto:
@@ -1809,132 +1948,162 @@ class RayPPOTrainer:
                     #   Note: π_old computed once per data batch, serves as stable reference during mini-batch updates
                     rollout_corr_config = self.config.algorithm.get("rollout_correction", None)
                     bypass_recomputing_logprobs = rollout_corr_config and rollout_corr_config.get("bypass_mode", False)
-                    if bypass_recomputing_logprobs:  # Use `rollout_log_probs`
-                        from verl.trainer.ppo.rollout_corr_helper import apply_bypass_mode
-
-                        apply_bypass_mode(
-                            batch=batch,
-                            rollout_corr_config=rollout_corr_config,
-                            policy_loss_config=self.config.actor_rollout_ref.actor.policy_loss,
-                        )
-                    else:  # Recompute old_log_probs
-                        with marked_timer("old_log_prob", timing_raw, color="blue"):
-                            old_log_prob, old_log_prob_mfu = self._compute_old_log_prob(batch)
-                            entropys = old_log_prob.batch["entropys"]
-                            response_masks = batch.batch["response_mask"]
-                            actor_config = self.config.actor_rollout_ref.actor
-                            entropy_agg = agg_loss(
-                                loss_mat=entropys,
-                                loss_mask=response_masks,
-                                loss_agg_mode=actor_config.loss_agg_mode,
-                                loss_scale_factor=actor_config.loss_scale_factor,
-                            )
-                            old_log_prob_metrics = {
-                                "actor/entropy": entropy_agg.detach().item(),
-                                "perf/mfu/actor_infer": old_log_prob_mfu,
-                            }
-                            metrics.update(old_log_prob_metrics)
-                            old_log_prob.batch.pop("entropys")
-                            if "routed_experts" in batch.batch and "routed_experts" in old_log_prob.batch:
-                                router_mode = getattr(
-                                    self.config.actor_rollout_ref.actor.router_replay, "mode", "disabled"
-                                )
-                                if router_mode == "R2":
-                                    batch.batch.pop("routed_experts")
-                                else:
-                                    old_log_prob.batch.pop("routed_experts")
-                            batch = batch.union(old_log_prob)
-                            if "rollout_log_probs" in batch.batch.keys():
-                                # TODO: we may want to add diff of probs too.
-                                from verl.utils.debug.metrics import calculate_debug_metrics
-
-                                metrics.update(calculate_debug_metrics(batch))
-
-                    assert "old_log_probs" in batch.batch, f'"old_log_prob" not in {batch.batch.keys()=}'
-
-                    if self.use_reference_policy:
-                        # compute reference log_prob
-                        with marked_timer(str(Role.RefPolicy), timing_raw, color="olive"):
-                            ref_log_prob = self._compute_ref_log_prob(batch)
-                            batch = batch.union(ref_log_prob)
-
-                    # compute values
-                    if self.use_critic:
-                        with marked_timer("values", timing_raw, color="cyan"):
-                            values = self._compute_values(batch)
-                            batch = batch.union(values)
-
                     all_training_tokens_masked = False
-                    with marked_timer("adv", timing_raw, color="brown"):
-                        # we combine with rule-based rm
-                        reward_extra_infos_dict: dict[str, list]
-                        batch.batch["token_level_scores"] = reward_tensor
-                        has_training_tokens = batch.batch["response_mask"].sum().item() > 0
-
-                        if reward_extra_infos_dict:
-                            batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
-
-                        # compute rewards. apply_kl_penalty if available
-                        if self.config.algorithm.use_kl_in_reward:
-                            batch, kl_metrics = apply_kl_penalty(
-                                batch, kl_ctrl=self.kl_ctrl_in_reward, kl_penalty=self.config.algorithm.kl_penalty
-                            )
-                            metrics.update(kl_metrics)
-                        else:
+                    if self.use_chunk_boundary_critic:
+                        with marked_timer("chunk_boundary_prepare", timing_raw, color="brown"):
+                            reward_extra_infos_dict: dict[str, list]
+                            batch.batch["token_level_scores"] = reward_tensor
                             batch.batch["token_level_rewards"] = batch.batch["token_level_scores"]
+                            if reward_extra_infos_dict:
+                                batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
 
-                        # Compute rollout correction: IS weights, rejection sampling, and metrics
-                        # Only runs in decoupled mode (computes once per batch using stable π_old)
-                        # In bypass mode, this is skipped - actor computes metrics from evolving π_θ vs π_rollout
-                        if (
-                            rollout_corr_config is not None
-                            and "rollout_log_probs" in batch.batch
-                            and not bypass_recomputing_logprobs  # Only in decoupled mode
-                            and has_training_tokens
-                        ):
-                            from verl.trainer.ppo.rollout_corr_helper import compute_rollout_correction_and_add_to_batch
+                            rollout_targets = reward_tensor.sum(dim=-1).float()
+                            batch, chunk_boundary_metrics = self._prepare_chunk_boundary_critic_batch(
+                                batch=batch,
+                                rollout_targets=rollout_targets,
+                            )
+                            metrics.update(chunk_boundary_metrics)
+                            all_training_tokens_masked = batch.batch["chunk_boundary_weights"].sum().item() == 0
+                            metrics["chunk_boundary/all_training_states_masked"] = int(all_training_tokens_masked)
+                            if self.config.trainer.get("overlong_filtering", False):
+                                metrics["overlong_filtering/all_training_tokens_masked"] = int(all_training_tokens_masked)
+                    else:
+                        if bypass_recomputing_logprobs:  # Use `rollout_log_probs`
+                            from verl.trainer.ppo.rollout_corr_helper import apply_bypass_mode
 
-                            # Compute IS weights, apply rejection sampling, compute metrics
-                            batch, is_metrics = compute_rollout_correction_and_add_to_batch(batch, rollout_corr_config)
-                            # IS and off-policy metrics already have rollout_corr/ prefix
-                            metrics.update(is_metrics)
+                            apply_bypass_mode(
+                                batch=batch,
+                                rollout_corr_config=rollout_corr_config,
+                                policy_loss_config=self.config.actor_rollout_ref.actor.policy_loss,
+                            )
+                        else:  # Recompute old_log_probs
+                            with marked_timer("old_log_prob", timing_raw, color="blue"):
+                                old_log_prob, old_log_prob_mfu = self._compute_old_log_prob(batch)
+                                entropys = old_log_prob.batch["entropys"]
+                                response_masks = batch.batch["response_mask"]
+                                actor_config = self.config.actor_rollout_ref.actor
+                                entropy_agg = agg_loss(
+                                    loss_mat=entropys,
+                                    loss_mask=response_masks,
+                                    loss_agg_mode=actor_config.loss_agg_mode,
+                                    loss_scale_factor=actor_config.loss_scale_factor,
+                                )
+                                old_log_prob_metrics = {
+                                    "actor/entropy": entropy_agg.detach().item(),
+                                    "perf/mfu/actor_infer": old_log_prob_mfu,
+                                }
+                                metrics.update(old_log_prob_metrics)
+                                old_log_prob.batch.pop("entropys")
+                                if "routed_experts" in batch.batch and "routed_experts" in old_log_prob.batch:
+                                    router_mode = getattr(
+                                        self.config.actor_rollout_ref.actor.router_replay, "mode", "disabled"
+                                    )
+                                    if router_mode == "R2":
+                                        batch.batch.pop("routed_experts")
+                                    else:
+                                        old_log_prob.batch.pop("routed_experts")
+                                batch = batch.union(old_log_prob)
+                                if "rollout_log_probs" in batch.batch.keys():
+                                    # TODO: we may want to add diff of probs too.
+                                    from verl.utils.debug.metrics import calculate_debug_metrics
 
-                        # compute advantages, executed on the driver process
-                        norm_adv_by_std_in_grpo = self.config.algorithm.get(
-                            "norm_adv_by_std_in_grpo", True
-                        )  # GRPO adv normalization factor
+                                    metrics.update(calculate_debug_metrics(batch))
 
-                        batch = compute_advantage(
-                            batch,
-                            adv_estimator=self.config.algorithm.adv_estimator,
-                            gamma=self.config.algorithm.gamma,
-                            lam=self.config.algorithm.lam,
-                            num_repeat=self.config.actor_rollout_ref.rollout.n,
-                            norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
-                            config=self.config.algorithm,
-                            global_step=self.global_steps,
-                        )
-                        advantage_metrics = batch.meta_info.pop("advantage_metrics", None)
-                        if advantage_metrics is not None:
-                            metrics.update(advantage_metrics)
-                        all_training_tokens_masked = batch.batch["response_mask"].sum().item() == 0
-                        if self.config.trainer.get("overlong_filtering", False):
-                            metrics["overlong_filtering/all_training_tokens_masked"] = int(all_training_tokens_masked)
+                        assert "old_log_probs" in batch.batch, f'"old_log_prob" not in {batch.batch.keys()=}'
+
+                        if self.use_reference_policy:
+                            # compute reference log_prob
+                            with marked_timer(str(Role.RefPolicy), timing_raw, color="olive"):
+                                ref_log_prob = self._compute_ref_log_prob(batch)
+                                batch = batch.union(ref_log_prob)
+
+                        # compute values
+                        if self.use_critic:
+                            with marked_timer("values", timing_raw, color="cyan"):
+                                values = self._compute_values(batch)
+                                batch = batch.union(values)
+
+                        with marked_timer("adv", timing_raw, color="brown"):
+                            # we combine with rule-based rm
+                            reward_extra_infos_dict: dict[str, list]
+                            batch.batch["token_level_scores"] = reward_tensor
+                            has_training_tokens = batch.batch["response_mask"].sum().item() > 0
+
+                            if reward_extra_infos_dict:
+                                batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
+
+                            # compute rewards. apply_kl_penalty if available
+                            if self.config.algorithm.use_kl_in_reward:
+                                batch, kl_metrics = apply_kl_penalty(
+                                    batch, kl_ctrl=self.kl_ctrl_in_reward, kl_penalty=self.config.algorithm.kl_penalty
+                                )
+                                metrics.update(kl_metrics)
+                            else:
+                                batch.batch["token_level_rewards"] = batch.batch["token_level_scores"]
+
+                            # Compute rollout correction: IS weights, rejection sampling, and metrics
+                            # Only runs in decoupled mode (computes once per batch using stable π_old)
+                            # In bypass mode, this is skipped - actor computes metrics from evolving π_θ vs π_rollout
+                            if (
+                                rollout_corr_config is not None
+                                and "rollout_log_probs" in batch.batch
+                                and not bypass_recomputing_logprobs  # Only in decoupled mode
+                                and has_training_tokens
+                            ):
+                                from verl.trainer.ppo.rollout_corr_helper import compute_rollout_correction_and_add_to_batch
+
+                                # Compute IS weights, apply rejection sampling, compute metrics
+                                batch, is_metrics = compute_rollout_correction_and_add_to_batch(batch, rollout_corr_config)
+                                # IS and off-policy metrics already have rollout_corr/ prefix
+                                metrics.update(is_metrics)
+
+                            # compute advantages, executed on the driver process
+                            norm_adv_by_std_in_grpo = self.config.algorithm.get(
+                                "norm_adv_by_std_in_grpo", True
+                            )  # GRPO adv normalization factor
+
+                            batch = compute_advantage(
+                                batch,
+                                adv_estimator=self.config.algorithm.adv_estimator,
+                                gamma=self.config.algorithm.gamma,
+                                lam=self.config.algorithm.lam,
+                                num_repeat=self.config.actor_rollout_ref.rollout.n,
+                                norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
+                                config=self.config.algorithm,
+                                global_step=self.global_steps,
+                            )
+                            advantage_metrics = batch.meta_info.pop("advantage_metrics", None)
+                            if advantage_metrics is not None:
+                                metrics.update(advantage_metrics)
+                            all_training_tokens_masked = batch.batch["response_mask"].sum().item() == 0
+                            if self.config.trainer.get("overlong_filtering", False):
+                                metrics["overlong_filtering/all_training_tokens_masked"] = int(all_training_tokens_masked)
 
                     # update critic
                     refresh_rollout_after_skip = False
                     if self.use_critic:
                         if all_training_tokens_masked:
                             refresh_rollout_after_skip = True
-                            metrics.update(
-                                {
-                                    "critic/vf_loss": 0.0,
-                                    "critic/vf_clipfrac": 0.0,
-                                    "critic/vpred_mean": 0.0,
-                                    "critic/grad_norm": 0.0,
-                                    "training/critic_update_skipped_no_valid_samples": 1,
-                                }
-                            )
+                            skipped_critic_metrics = {
+                                "critic/vf_loss": 0.0,
+                                "critic/vf_clipfrac": 0.0,
+                                "critic/vpred_mean": 0.0,
+                                "critic/grad_norm": 0.0,
+                                "training/critic_update_skipped_no_valid_samples": 1,
+                            }
+                            if self.use_chunk_boundary_critic:
+                                skipped_critic_metrics.update(
+                                    {
+                                        "critic/chunk_boundary/prediction_mean": 0.0,
+                                        "critic/chunk_boundary/prediction_mean_positive": 0.0,
+                                        "critic/chunk_boundary/prediction_mean_negative": 0.0,
+                                        "critic/chunk_boundary/mse": 0.0,
+                                        "critic/chunk_boundary/state_count": 0.0,
+                                    }
+                                )
+                                if self._chunk_boundary_loss_type() == "bce":
+                                    skipped_critic_metrics["critic/chunk_boundary/bce"] = 0.0
+                            metrics.update(skipped_critic_metrics)
                         else:
                             with marked_timer("update_critic", timing_raw, color="pink"):
                                 critic_output = self._update_critic(batch)
@@ -2042,10 +2211,17 @@ class RayPPOTrainer:
                     {
                         "training/global_step": self.global_steps,
                         "training/epoch": epoch,
+                        "training/actor_frozen": int(self._freeze_actor_updates()),
+                        "training/chunk_boundary_critic_enabled": int(self.use_chunk_boundary_critic),
                     }
                 )
                 # collect metrics
-                metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
+                metrics.update(
+                    compute_data_metrics(
+                        batch=batch,
+                        use_critic=self.use_critic and not self.use_chunk_boundary_critic,
+                    )
+                )
                 if self.config.trainer.get("overlong_filtering", False):
                     metrics.update(compute_overlong_filtering_metrics(batch=batch))
                 if self.config.algorithm.adv_estimator in {

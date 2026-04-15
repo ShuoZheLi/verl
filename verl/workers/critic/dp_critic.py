@@ -25,6 +25,7 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 from verl import DataProto
 from verl.trainer.ppo import core_algos
+from verl.trainer.ppo.chunk_boundary_value import build_response_state_mask
 from verl.trainer.ppo.value_categorical import extract_value_head_spec, value_logits_to_scalar_expectation
 from verl.utils.attention_utils import index_first_axis, pad_input, rearrange, unpad_input
 from verl.utils.device import get_device_id, get_device_name
@@ -68,6 +69,21 @@ class DataParallelPPOCritic(BasePPOCritic):
 
     def _use_prompt_residual_regression(self) -> bool:
         return self.config.value_loss_mode == "prompt_residual_regression"
+
+    def _use_chunk_boundary_value_loss(self) -> bool:
+        return self.config.value_loss_mode in {"chunk_boundary_bce", "chunk_boundary_mse"}
+
+    def _chunk_boundary_loss_type(self) -> str:
+        if self.config.value_loss_mode == "chunk_boundary_bce":
+            return "bce"
+        if self.config.value_loss_mode == "chunk_boundary_mse":
+            return "mse"
+        raise ValueError(f"Unsupported chunk-boundary value_loss_mode: {self.config.value_loss_mode}.")
+
+    def _value_output_slice(self, response_length: int) -> slice:
+        if self._use_chunk_boundary_value_loss():
+            return slice(-response_length - 1, None)
+        return slice(-response_length - 1, -1)
 
     def _prompt_prior_head(self) -> nn.Module:
         prompt_prior_head = getattr(self.critic_module, "prompt_prior_head", None)
@@ -188,7 +204,7 @@ class DataParallelPPOCritic(BasePPOCritic):
                 values = pad_input(values_rmpad, indices=indices, batch=batch, seqlen=seqlen)
                 if not is_categorical_value:
                     values = values.squeeze(-1)
-                values = values[:, -response_length - 1 : -1]
+                values = values[:, self._value_output_slice(response_length)]
                 hidden_states = None
                 if hidden_states_rmpad is not None:
                     hidden_states = pad_input(hidden_states_rmpad, indices=indices, batch=batch, seqlen=seqlen)
@@ -211,7 +227,7 @@ class DataParallelPPOCritic(BasePPOCritic):
                     values = output[2]
                 else:
                     values = output.logits
-                values = values[:, -response_length - 1 : -1]
+                values = values[:, self._value_output_slice(response_length)]
                 if not is_categorical_value:
                     values = values.squeeze(-1)
                 hidden_states = output.hidden_states[-1] if use_prompt_residual else None
@@ -300,7 +316,13 @@ class DataParallelPPOCritic(BasePPOCritic):
 
         if "response_mask" in data.batch:
             response_mask = data.batch["response_mask"].to(critic_outputs["values"].device)
-            critic_outputs["values"] = critic_outputs["values"] * response_mask  # Only action tokens have values
+            if self._use_chunk_boundary_value_loss():
+                boundary_values = critic_outputs["values"]
+                state_mask = build_response_state_mask(response_mask)
+                critic_outputs["chunk_boundary_values"] = boundary_values * state_mask.to(dtype=boundary_values.dtype)
+                critic_outputs["values"] = boundary_values[:, :-1] * response_mask.to(dtype=boundary_values.dtype)
+            else:
+                critic_outputs["values"] = critic_outputs["values"] * response_mask  # Only action tokens have values
             if "residual_values" in critic_outputs:
                 critic_outputs["residual_values"] = critic_outputs["residual_values"] * response_mask
 
@@ -319,6 +341,8 @@ class DataParallelPPOCritic(BasePPOCritic):
         select_keys = ["input_ids", "responses", "response_mask", "attention_mask", "position_ids"]
         if self._use_prompt_residual_regression():
             select_keys.append("rollout_returns")
+        elif self._use_chunk_boundary_value_loss():
+            select_keys.extend(["chunk_boundary_mask", "chunk_boundary_targets", "chunk_boundary_weights"])
         else:
             select_keys.extend(["values", "returns"])
         has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
@@ -373,6 +397,28 @@ class DataParallelPPOCritic(BasePPOCritic):
                                 cliprange_value=self.config.cliprange_value,
                                 loss_agg_mode=self.config.loss_agg_mode,
                             )
+                        )
+                    elif self.config.value_loss_mode == "chunk_boundary_bce":
+                        if self.value_spec.is_categorical():
+                            raise ValueError(
+                                "critic.value_loss_mode=chunk_boundary_bce requires critic.value_head_type=scalar."
+                            )
+                        vf_loss, vf_clipfrac, vpreds, categorical_metrics = core_algos.compute_chunk_boundary_bce_value_loss(
+                            vpred_logits=model_output,
+                            boundary_targets=model_inputs["chunk_boundary_targets"],
+                            boundary_mask=model_inputs["chunk_boundary_mask"],
+                            boundary_weights=model_inputs["chunk_boundary_weights"],
+                        )
+                    elif self.config.value_loss_mode == "chunk_boundary_mse":
+                        if self.value_spec.is_categorical():
+                            raise ValueError(
+                                "critic.value_loss_mode=chunk_boundary_mse requires critic.value_head_type=scalar."
+                            )
+                        vf_loss, vf_clipfrac, vpreds, categorical_metrics = core_algos.compute_chunk_boundary_mse_value_loss(
+                            vpreds=model_output,
+                            boundary_targets=model_inputs["chunk_boundary_targets"],
+                            boundary_mask=model_inputs["chunk_boundary_mask"],
+                            boundary_weights=model_inputs["chunk_boundary_weights"],
                         )
                     elif self.config.value_loss_mode == "prompt_baseline_regression":
                         if self.value_spec.is_categorical():
@@ -446,12 +492,21 @@ class DataParallelPPOCritic(BasePPOCritic):
 
                     loss.backward()
 
-                    micro_batch_metrics.update(
-                        {
-                            "critic/vf_clipfrac": vf_clipfrac.detach().item(),
-                            "critic/vpred_mean": masked_mean(vpreds, response_mask).detach().item(),
-                        }
-                    )
+                    if self._use_chunk_boundary_value_loss():
+                        boundary_mask = model_inputs["chunk_boundary_mask"].to(dtype=torch.float32)
+                        micro_batch_metrics.update(
+                            {
+                                "critic/vf_clipfrac": vf_clipfrac.detach().item(),
+                                "critic/vpred_mean": masked_mean(vpreds, boundary_mask).detach().item(),
+                            }
+                        )
+                    else:
+                        micro_batch_metrics.update(
+                            {
+                                "critic/vf_clipfrac": vf_clipfrac.detach().item(),
+                                "critic/vpred_mean": masked_mean(vpreds, response_mask).detach().item(),
+                            }
+                        )
                     micro_batch_metrics.update(self._collect_stateful_value_head_metrics())
                     for metric_name, metric_value in categorical_metrics.items():
                         if isinstance(metric_value, torch.Tensor):
@@ -462,7 +517,11 @@ class DataParallelPPOCritic(BasePPOCritic):
                     append_to_dict(metrics, micro_batch_metrics)
 
                 grad_norm = self._optimizer_step()
-                mini_batch_metrics = {"critic/grad_norm": grad_norm.detach().item()}
+                learning_rate = self.critic_optimizer.param_groups[-1]["lr"]
+                mini_batch_metrics = {
+                    "critic/grad_norm": grad_norm.detach().item(),
+                    "critic/lr": learning_rate,
+                }
                 append_to_dict(metrics, mini_batch_metrics)
         self.critic_optimizer.zero_grad()
         return metrics

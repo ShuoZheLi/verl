@@ -18,7 +18,7 @@ import numpy as np
 import torch
 from omegaconf import OmegaConf
 
-from verl.trainer.config import AlgoConfig, KLControlConfig
+from verl.trainer.config import AlgoConfig, ChunkBoundaryCriticConfig, KLControlConfig
 from verl.trainer.ppo.core_algos import (
     compute_gae_advantage_return,
     compute_grpo_outcome_advantage,
@@ -108,6 +108,10 @@ class TestAlgoConfig(unittest.TestCase):
         self.assertFalse(config.use_kl_in_reward)  # default value
         self.assertEqual(config.kl_penalty, "kl")  # default value
         self.assertFalse(config.use_pf_ppo)  # default value
+        self.assertIsInstance(config.chunk_boundary_critic, ChunkBoundaryCriticConfig)
+        self.assertFalse(config.chunk_boundary_critic.enable)
+        self.assertEqual(config.chunk_boundary_critic.chunk_size, 32)
+        self.assertEqual(config.chunk_boundary_critic.loss_type, "bce")
 
     def test_adv_mode_token_ignores_chunk_reduce_validation(self):
         config = AlgoConfig(adv_mode="token", chunk_reduce="not_used")
@@ -211,6 +215,16 @@ class TestAlgoConfig(unittest.TestCase):
 
         self.assertTrue(need_critic(config))
 
+    def test_chunk_boundary_critic_enables_critic_by_default(self):
+        config = OmegaConf.create(
+            {
+                "algorithm": {"adv_estimator": "grpo", "chunk_boundary_critic": {"enable": True}},
+                "critic": {"enable": None},
+            }
+        )
+
+        self.assertTrue(need_critic(config))
+
     def test_reverse_decay_gae_enables_critic_by_default(self):
         config = OmegaConf.create(
             {
@@ -286,6 +300,52 @@ class TestAlgoConfig(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ValueError, "critic.value_head_type=scalar"):
+            validate_config(config, use_reference_policy=False, use_critic=True)
+
+    def test_chunk_boundary_critic_validate_config_rejects_kl_in_reward(self):
+        config = OmegaConf.create(
+            {
+                "trainer": {
+                    "n_gpus_per_node": 1,
+                    "nnodes": 1,
+                    "actor_update_interval": 1,
+                    "critic_warmup": 0,
+                    "use_legacy_worker_impl": "enable",
+                },
+                "data": {"train_batch_size": 1},
+                "algorithm": {
+                    "adv_estimator": "gae",
+                    "lam": 1.0,
+                    "gamma": 1.0,
+                    "use_kl_in_reward": True,
+                    "chunk_boundary_critic": {"enable": True, "chunk_size": 32, "loss_type": "bce"},
+                },
+                "actor_rollout_ref": {
+                    "actor": {
+                        "strategy": "fsdp",
+                        "rollout_n": 1,
+                        "ppo_mini_batch_size": 1,
+                        "ppo_micro_batch_size_per_gpu": 1,
+                        "use_dynamic_bsz": False,
+                        "use_kl_loss": False,
+                    },
+                    "rollout": {
+                        "n": 1,
+                        "log_prob_micro_batch_size": None,
+                        "log_prob_micro_batch_size_per_gpu": 1,
+                    },
+                    "model": {},
+                },
+                "critic": {
+                    "enable": True,
+                    "strategy": "fsdp",
+                    "ppo_micro_batch_size_per_gpu": 1,
+                    "value_head_type": "scalar",
+                },
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "chunk_boundary_critic.enable=True does not support algorithm.use_kl_in_reward=True"):
             validate_config(config, use_reference_policy=False, use_critic=True)
 
     def test_prompt_residual_baseline_enables_critic_by_default(self):

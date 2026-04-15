@@ -31,6 +31,10 @@ from omegaconf import DictConfig
 
 import verl.utils.torch_functional as verl_F
 from verl.trainer.config import AlgoConfig
+from verl.trainer.ppo.chunk_boundary_value import (
+    compute_chunk_boundary_metric_sums,
+    finalize_chunk_boundary_metric_sums,
+)
 from verl.trainer.ppo.value_categorical import (
     ValueHeadSpec,
     categorical_entropy,
@@ -2539,6 +2543,133 @@ def compute_prompt_baseline_bce_value_loss(
         "critic/prompt_success_target_mean": verl_F.masked_mean(prompt_targets, prompt_mask),
     }
     return vf_loss, vf_clipfrac, vpreds, metrics
+
+
+def _validate_chunk_boundary_value_inputs(
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+    boundary_mask: torch.Tensor,
+    boundary_weights: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    if predictions.dim() != 2 or targets.dim() != 2 or boundary_mask.dim() != 2 or boundary_weights.dim() != 2:
+        raise ValueError(
+            "Chunk-boundary value loss expects predictions, targets, boundary_mask, and boundary_weights to all "
+            f"have shape [batch, num_states], got {tuple(predictions.shape)}, {tuple(targets.shape)}, "
+            f"{tuple(boundary_mask.shape)}, and {tuple(boundary_weights.shape)}."
+        )
+    if (
+        predictions.shape != targets.shape
+        or predictions.shape != boundary_mask.shape
+        or predictions.shape != boundary_weights.shape
+    ):
+        raise ValueError(
+            "Chunk-boundary value loss expects predictions, targets, boundary_mask, and boundary_weights to "
+            f"have identical shapes, got {tuple(predictions.shape)}, {tuple(targets.shape)}, "
+            f"{tuple(boundary_mask.shape)}, and {tuple(boundary_weights.shape)}."
+        )
+    targets = targets.float()
+    boundary_mask = boundary_mask.to(dtype=torch.float32)
+    boundary_weights = boundary_weights.float()
+    if torch.any(boundary_weights < 0):
+        raise ValueError(
+            "chunk-boundary boundary_weights must be non-negative, "
+            f"got minimum {boundary_weights.min().item():.6f}."
+        )
+    return predictions.float(), targets, boundary_mask, boundary_weights
+
+
+def compute_chunk_boundary_bce_value_loss(
+    vpred_logits: torch.Tensor,
+    boundary_targets: torch.Tensor,
+    boundary_mask: torch.Tensor,
+    boundary_weights: torch.Tensor,
+):
+    """Train the critic as Bernoulli success prediction on chunk-boundary states."""
+    vpred_logits, boundary_targets, boundary_mask, boundary_weights = _validate_chunk_boundary_value_inputs(
+        vpred_logits,
+        boundary_targets,
+        boundary_mask,
+        boundary_weights,
+    )
+
+    if torch.any(boundary_targets < 0.0) or torch.any(boundary_targets > 1.0):
+        raise ValueError(
+            "chunk_boundary_bce requires boundary_targets in [0, 1], "
+            f"got range [{boundary_targets.min().item():.6f}, {boundary_targets.max().item():.6f}]."
+        )
+
+    effective_weights = boundary_mask * boundary_weights
+    weight_sum = effective_weights.sum()
+    vpreds = torch.sigmoid(vpred_logits) * boundary_mask
+    if weight_sum.item() <= 0:
+        zero = (vpred_logits * 0).sum()
+        metrics = finalize_chunk_boundary_metric_sums(
+            compute_chunk_boundary_metric_sums(
+                predictions=vpreds,
+                targets=boundary_targets,
+                boundary_mask=boundary_mask.to(dtype=torch.bool),
+                boundary_weights=boundary_weights,
+                loss_type="bce",
+            ),
+            prefix="critic/chunk_boundary",
+        )
+        return zero, vpred_logits.new_tensor(0.0), vpreds, metrics
+
+    per_pos_loss = torch_F.binary_cross_entropy_with_logits(vpred_logits, boundary_targets, reduction="none")
+    vf_loss = (per_pos_loss * effective_weights).sum() / weight_sum
+    metric_sums = compute_chunk_boundary_metric_sums(
+        predictions=vpreds,
+        targets=boundary_targets,
+        boundary_mask=boundary_mask.to(dtype=torch.bool),
+        boundary_weights=boundary_weights,
+        loss_type="bce",
+    )
+    metrics = finalize_chunk_boundary_metric_sums(metric_sums, prefix="critic/chunk_boundary")
+    return vf_loss, vpred_logits.new_tensor(0.0), vpreds, metrics
+
+
+def compute_chunk_boundary_mse_value_loss(
+    vpreds: torch.Tensor,
+    boundary_targets: torch.Tensor,
+    boundary_mask: torch.Tensor,
+    boundary_weights: torch.Tensor,
+):
+    """Train the critic with weighted MSE on chunk-boundary states."""
+    vpreds, boundary_targets, boundary_mask, boundary_weights = _validate_chunk_boundary_value_inputs(
+        vpreds,
+        boundary_targets,
+        boundary_mask,
+        boundary_weights,
+    )
+
+    effective_weights = boundary_mask * boundary_weights
+    weight_sum = effective_weights.sum()
+    masked_vpreds = vpreds * boundary_mask
+    if weight_sum.item() <= 0:
+        zero = (vpreds * 0).sum()
+        metrics = finalize_chunk_boundary_metric_sums(
+            compute_chunk_boundary_metric_sums(
+                predictions=masked_vpreds,
+                targets=boundary_targets,
+                boundary_mask=boundary_mask.to(dtype=torch.bool),
+                boundary_weights=boundary_weights,
+                loss_type="mse",
+            ),
+            prefix="critic/chunk_boundary",
+        )
+        return zero, vpreds.new_tensor(0.0), masked_vpreds, metrics
+
+    per_pos_loss = (vpreds - boundary_targets) ** 2
+    vf_loss = (per_pos_loss * effective_weights).sum() / weight_sum
+    metric_sums = compute_chunk_boundary_metric_sums(
+        predictions=masked_vpreds,
+        targets=boundary_targets,
+        boundary_mask=boundary_mask.to(dtype=torch.bool),
+        boundary_weights=boundary_weights,
+        loss_type="mse",
+    )
+    metrics = finalize_chunk_boundary_metric_sums(metric_sums, prefix="critic/chunk_boundary")
+    return vf_loss, vpreds.new_tensor(0.0), masked_vpreds, metrics
 
 
 def compute_categorical_value_loss(

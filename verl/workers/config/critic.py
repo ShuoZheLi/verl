@@ -170,12 +170,19 @@ class CriticConfig(BaseConfig):
             "prompt_baseline_regression",
             "prompt_baseline_bce",
             "prompt_residual_regression",
+            "chunk_boundary_bce",
+            "chunk_boundary_mse",
         }:
             raise ValueError(
                 "critic.value_loss_mode must be one of "
                 "['ppo_regression', 'prompt_baseline_regression', 'prompt_baseline_bce', "
-                "'prompt_residual_regression'], "
+                "'prompt_residual_regression', 'chunk_boundary_bce', 'chunk_boundary_mse'], "
                 f"got {self.value_loss_mode!r}."
+            )
+        if self.value_loss_mode in {"chunk_boundary_bce", "chunk_boundary_mse"} and self.value_head_type != "scalar":
+            raise ValueError(
+                f"critic.value_loss_mode={self.value_loss_mode} requires critic.value_head_type='scalar' "
+                "because chunk-boundary supervision is implemented only for scalar heads."
             )
         if self.prompt_residual_prompt_loss_weight < 0 or self.prompt_residual_residual_loss_weight < 0:
             raise ValueError(

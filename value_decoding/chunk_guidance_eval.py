@@ -5,12 +5,14 @@ import csv
 import json
 import multiprocessing as mp
 from queue import Empty
+import re
 import shutil
 import subprocess
 import time
 import traceback
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -46,6 +48,8 @@ from value_decoding.multi_worker import (
 DEFAULT_CHUNK_SIZES = (2, 4)
 DEFAULT_NUM_CHUNK_CANDIDATES_VALUES = (2,)
 DEFAULT_BETAS = (0.0, 0.05, 0.1, 0.25)
+STANDARD_TAIL_SUMMARY_LENGTHS = (2, 4, 8, 16)
+DEFAULT_COMPARISON_BOOTSTRAP_SAMPLES = 1_000
 
 
 @dataclass(frozen=True)
@@ -57,6 +61,7 @@ class ChunkRunSpec:
     num_chunk_candidates: int | None = None
     beta: float | None = None
     value_reducer: str | None = None
+    comparison_value_reducer: str | None = None
     actor_sampling_mode: str = ActorSamplingMode.SAMPLE.value
     actor_temperature: float = 1.0
     actor_top_p: float = 1.0
@@ -74,9 +79,13 @@ class ChunkCandidate:
     chunk_text: str
     chunk_length: int
     chunk_logprob: float
-    end_value: float
-    mean_value: float
+    chunk_values: tuple[float, ...]
+    end_value: float | None
+    mean_value: float | None
     contains_eos: bool
+    token_logprobs: tuple[float, ...] = ()
+    token_entropies: tuple[float, ...] = ()
+    chunk_uncertainty: float = 0.0
 
 
 @dataclass
@@ -85,11 +94,84 @@ class ChunkDecodeArtifacts:
     chunk_decision_results: list[dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class ParsedValueReducer:
+    raw_name: str
+    canonical_name: str
+    kind: str
+    method_suffix: str
+    tail_length: int | None = None
+    alpha: float | None = None
+
+    @property
+    def alpha_id(self) -> str | None:
+        if self.alpha is None:
+            return None
+        return _format_float_for_id(self.alpha)
+
+    @property
+    def selected_metric_key(self) -> str:
+        if self.kind == "end":
+            return "selected_chunk_end_value"
+        if self.kind == "chunk_mean":
+            return "selected_chunk_mean_value"
+        if self.kind == "tail_mean":
+            if self.tail_length is None:
+                raise ValueError("tail_mean reducer is missing tail_length.")
+            return f"selected_chunk_tail_mean_h{self.tail_length}"
+        if self.kind == "tail_exp":
+            if self.tail_length is None or self.alpha_id is None:
+                raise ValueError("tail_exp reducer is missing tail_length or alpha.")
+            return f"selected_chunk_exp_tail_value__h{self.tail_length}__a{self.alpha_id}"
+        raise ValueError(f"Unsupported reducer kind: {self.kind}")
+
+    @property
+    def aggregate_metric_key(self) -> str:
+        return "mean_" + self.selected_metric_key
+
+    @property
+    def winner_metric_fragment(self) -> str:
+        if self.kind == "end":
+            return "endvalue"
+        if self.kind == "chunk_mean":
+            return "meanvalue"
+        return self.canonical_name
+
+    @property
+    def winner_candidate_values_key(self) -> str:
+        return f"candidate_chunk_{self.winner_metric_fragment}_values"
+
+    @property
+    def winner_index_key(self) -> str:
+        return f"{self.winner_metric_fragment}_chunk_winner_index"
+
+    @property
+    def winner_tied_indices_key(self) -> str:
+        return f"{self.winner_metric_fragment}_chunk_winner_tied_indices"
+
+    @property
+    def winner_value_key(self) -> str:
+        return f"{self.winner_metric_fragment}_chunk_winner_value"
+
+    @property
+    def selected_differs_from_winner_key(self) -> str:
+        return f"selected_differs_from_{self.winner_metric_fragment}_winner"
+
+    @property
+    def fraction_diff_from_winner_key(self) -> str:
+        return f"fraction_chunk_decisions_different_from_{self.winner_metric_fragment}_winner"
+
+    @property
+    def mean_fraction_diff_from_winner_key(self) -> str:
+        return "mean_" + self.fraction_diff_from_winner_key
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Chunk-level guidance evaluation with a frozen actor and the new critic. "
-            "Supports ordinary actor sampling, chunk actor-only reranking, and chunk actor+critic reranking."
+            "Supports ordinary actor sampling, chunk actor-only reranking, critic end-value reranking, "
+            "and actor-uncertainty reranking."
         )
     )
     parser.add_argument("--actor_checkpoint_dir", type=str, required=True, help="Checkpoint dir for the frozen actor.")
@@ -121,6 +203,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trust_remote_code", action="store_true")
     parser.add_argument("--skip_merge", action="store_true")
     parser.add_argument("--disable_actor_cache", action="store_true")
+    parser.add_argument(
+        "--disable_critic_model",
+        action="store_true",
+        help=(
+            "Skip merging, loading, and scoring the critic. Only valid when every requested config is actor-only "
+            "or uncertainty-only and no critic-based comparison reducer is requested."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--actor_sampling_mode",
@@ -143,10 +233,48 @@ def parse_args() -> argparse.Namespace:
         "--value_reducers",
         nargs="+",
         default=["end"],
-        choices=["end", "mean"],
-        help="Value reducers for actor+critic chunk guidance. Default is the primary end-of-chunk reducer only.",
+        help=(
+            "Value reducers for actor+critic chunk guidance. Supported forms: "
+            "'end', 'mean' (legacy whole-chunk mean), 'tail_mean_h4', 'tail_exp_h8_a0p85'."
+        ),
+    )
+    parser.add_argument(
+        "--comparison_value_reducer",
+        type=str,
+        default=None,
+        help=(
+            "Optional explicit shared-bank comparison reducer override used for diagnostics. "
+            "Supported forms match --value_reducers. If unset, the runner auto-resolves a same-h comparison "
+            "for tail-based reducers."
+        ),
+    )
+    parser.add_argument(
+        "--comparison_tail_h",
+        type=int,
+        default=None,
+        help=(
+            "Optional tail length for auto-resolved comparison reducers. If unset, a tail-based method reuses "
+            "its own h for same-h comparison; non-tail methods skip the auto comparison unless this is set."
+        ),
+    )
+    parser.add_argument(
+        "--comparison_tail_exp_alpha",
+        type=float,
+        default=None,
+        help=(
+            "Optional alpha for auto-resolved tail-exp comparison reducers. If unset, the auto comparison uses "
+            "tail_mean_h. If set, it uses tail_exp_h_aalpha with the chosen h."
+        ),
     )
     parser.add_argument("--include_critic_only", action="store_true", help="Add optional critic-only chunk rerank configs.")
+    parser.add_argument(
+        "--include_uncertainty_only",
+        action="store_true",
+        help=(
+            "Add chunk rerank configs that use the shared actor chunk bank and select the candidate with the "
+            "minimum mean actor entropy."
+        ),
+    )
     parser.add_argument(
         "--skip_actor_only_baselines",
         action="store_true",
@@ -197,6 +325,190 @@ def _format_float_for_id(value: float) -> str:
     return formatted.replace("-", "m").replace(".", "p")
 
 
+def _parse_alpha_token(token: str) -> float:
+    normalized = token.strip().replace("p", ".")
+    try:
+        parsed = float(normalized)
+    except ValueError as exc:
+        raise ValueError(f"Unable to parse reducer alpha from token '{token}'.") from exc
+    if not (0.0 < parsed < 1.0):
+        raise ValueError(f"Reducer alpha must be strictly between 0 and 1, got {parsed}.")
+    return parsed
+
+
+def parse_optional_value_reducer(value_reducer: str | None) -> ParsedValueReducer | None:
+    if value_reducer is None:
+        return None
+    normalized = str(value_reducer).strip()
+    if normalized == "" or normalized.lower() == "none":
+        return None
+    return parse_value_reducer(normalized)
+
+
+@lru_cache(maxsize=None)
+def parse_value_reducer(value_reducer: str) -> ParsedValueReducer:
+    reducer = str(value_reducer).strip()
+    if reducer == "end":
+        return ParsedValueReducer(
+            raw_name=reducer,
+            canonical_name="end",
+            kind="end",
+            method_suffix="endvalue",
+        )
+    if reducer in {"mean", "chunk_mean", "full_mean"}:
+        return ParsedValueReducer(
+            raw_name=reducer,
+            canonical_name="mean",
+            kind="chunk_mean",
+            method_suffix="meanvalue",
+        )
+
+    tail_mean_match = re.fullmatch(r"(?:tail_mean|tailmean)_h(\d+)", reducer)
+    if tail_mean_match is not None:
+        tail_length = int(tail_mean_match.group(1))
+        if tail_length <= 0:
+            raise ValueError(f"Reducer tail length must be > 0, got {tail_length}.")
+        return ParsedValueReducer(
+            raw_name=reducer,
+            canonical_name=f"tail_mean_h{tail_length}",
+            kind="tail_mean",
+            method_suffix=f"tailmean_h{tail_length}",
+            tail_length=tail_length,
+        )
+
+    tail_exp_match = re.fullmatch(r"(?:tail_exp|tailexp)_h(\d+)_(?:a|alpha)([0-9p.]+)", reducer)
+    if tail_exp_match is not None:
+        tail_length = int(tail_exp_match.group(1))
+        if tail_length <= 0:
+            raise ValueError(f"Reducer tail length must be > 0, got {tail_length}.")
+        alpha = _parse_alpha_token(tail_exp_match.group(2))
+        alpha_id = _format_float_for_id(alpha)
+        return ParsedValueReducer(
+            raw_name=reducer,
+            canonical_name=f"tail_exp_h{tail_length}_a{alpha_id}",
+            kind="tail_exp",
+            method_suffix=f"tailexp_h{tail_length}_a{alpha_id}",
+            tail_length=tail_length,
+            alpha=alpha,
+        )
+
+    raise ValueError(
+        "Unsupported value reducer "
+        f"'{value_reducer}'. Supported forms: 'end', 'mean', 'tail_mean_h4', 'tail_exp_h8_a0p85'."
+    )
+
+
+def reduce_end(chunk_values: Sequence[float]) -> float:
+    if len(chunk_values) == 0:
+        raise ValueError("chunk_values must contain at least one value.")
+    return float(chunk_values[-1])
+
+
+def reduce_mean(chunk_values: Sequence[float]) -> float:
+    if len(chunk_values) == 0:
+        raise ValueError("chunk_values must contain at least one value.")
+    values = np.asarray(chunk_values, dtype=np.float64)
+    return float(values.mean())
+
+
+def reduce_tail_mean(chunk_values: Sequence[float], tail_length: int) -> float:
+    if tail_length <= 0:
+        raise ValueError(f"tail_length must be > 0, got {tail_length}.")
+    if len(chunk_values) == 0:
+        raise ValueError("chunk_values must contain at least one value.")
+    effective_tail_length = min(int(tail_length), len(chunk_values))
+    values = np.asarray(chunk_values[-effective_tail_length:], dtype=np.float64)
+    return float(values.mean())
+
+
+def reduce_tail_exp(chunk_values: Sequence[float], tail_length: int, alpha: float) -> float:
+    if tail_length <= 0:
+        raise ValueError(f"tail_length must be > 0, got {tail_length}.")
+    if not (0.0 < alpha < 1.0):
+        raise ValueError(f"alpha must be strictly between 0 and 1, got {alpha}.")
+    if len(chunk_values) == 0:
+        raise ValueError("chunk_values must contain at least one value.")
+
+    effective_tail_length = min(int(tail_length), len(chunk_values))
+    tail_values = np.asarray(chunk_values[-effective_tail_length:], dtype=np.float64)
+    raw_weights = np.asarray(
+        [alpha ** (effective_tail_length - 1 - index) for index in range(effective_tail_length)],
+        dtype=np.float64,
+    )
+    normalized_weights = raw_weights / raw_weights.sum()
+    return float(np.dot(tail_values, normalized_weights))
+
+
+def reduce_chunk_values(chunk_values: Sequence[float], reducer: ParsedValueReducer | str) -> float:
+    reducer_spec = parse_value_reducer(reducer) if isinstance(reducer, str) else reducer
+    if reducer_spec.kind == "end":
+        return reduce_end(chunk_values)
+    if reducer_spec.kind == "chunk_mean":
+        return reduce_mean(chunk_values)
+    if reducer_spec.kind == "tail_mean":
+        if reducer_spec.tail_length is None:
+            raise ValueError("tail_mean reducer is missing tail_length.")
+        return reduce_tail_mean(chunk_values, reducer_spec.tail_length)
+    if reducer_spec.kind == "tail_exp":
+        if reducer_spec.tail_length is None or reducer_spec.alpha is None:
+            raise ValueError("tail_exp reducer is missing tail_length or alpha.")
+        return reduce_tail_exp(chunk_values, reducer_spec.tail_length, reducer_spec.alpha)
+    raise ValueError(f"Unsupported reducer kind: {reducer_spec.kind}")
+
+
+def _standard_tail_mean_summary(chunk_values: Sequence[float]) -> dict[int, float]:
+    return {
+        tail_length: reduce_tail_mean(chunk_values, tail_length)
+        for tail_length in STANDARD_TAIL_SUMMARY_LENGTHS
+    }
+
+
+def _empty_tail_mean_summary() -> dict[int, None]:
+    return {tail_length: None for tail_length in STANDARD_TAIL_SUMMARY_LENGTHS}
+
+
+def _spec_requires_critic(spec: ChunkRunSpec) -> bool:
+    return bool(
+        spec.score_mode in {"actor_plus_critic", "critic_only"}
+        or spec.value_reducer is not None
+        or spec.comparison_value_reducer is not None
+    )
+
+
+def resolve_comparison_value_reducer(
+    *,
+    value_reducer: str | None,
+    explicit_comparison_value_reducer: str | None,
+    comparison_tail_h: int | None,
+    comparison_tail_exp_alpha: float | None,
+) -> str | None:
+    explicit_reducer_spec = parse_optional_value_reducer(explicit_comparison_value_reducer)
+    if explicit_reducer_spec is not None:
+        return explicit_reducer_spec.canonical_name
+
+    current_reducer_spec = parse_optional_value_reducer(value_reducer)
+    reference_tail_h = comparison_tail_h
+    if reference_tail_h is None and current_reducer_spec is not None:
+        reference_tail_h = current_reducer_spec.tail_length
+
+    if reference_tail_h is None:
+        return None
+    if reference_tail_h <= 0:
+        raise ValueError(f"comparison_tail_h must be > 0, got {reference_tail_h}.")
+
+    if comparison_tail_exp_alpha is None:
+        reference_reducer_spec = parse_value_reducer(f"tail_mean_h{reference_tail_h}")
+    else:
+        if not (0.0 < comparison_tail_exp_alpha < 1.0):
+            raise ValueError(
+                "comparison_tail_exp_alpha must be strictly between 0 and 1, "
+                f"got {comparison_tail_exp_alpha}."
+            )
+        alpha_id = _format_float_for_id(comparison_tail_exp_alpha)
+        reference_reducer_spec = parse_value_reducer(f"tail_exp_h{reference_tail_h}_a{alpha_id}")
+    return reference_reducer_spec.canonical_name
+
+
 def _prompt_ids_tensor(
     *,
     example: ExampleRecord,
@@ -224,12 +536,19 @@ def build_run_specs(args: argparse.Namespace) -> list[ChunkRunSpec]:
     include_only_critic_only = bool(args.only_critic_only)
     skip_actor_only_baselines = bool(args.skip_actor_only_baselines or args.only_critic_only)
     include_critic_only = bool(args.include_critic_only or args.only_critic_only)
+    include_uncertainty_only = bool(args.include_uncertainty_only and not args.only_critic_only)
 
     if not skip_actor_only_baselines:
         actor_only_spec = ChunkRunSpec(
             config_id="",
             method_name="actor_only_sample",
             score_mode="actor_only_sample",
+            comparison_value_reducer=resolve_comparison_value_reducer(
+                value_reducer=None,
+                explicit_comparison_value_reducer=args.comparison_value_reducer,
+                comparison_tail_h=args.comparison_tail_h,
+                comparison_tail_exp_alpha=args.comparison_tail_exp_alpha,
+            ),
             actor_sampling_mode=args.actor_sampling_mode,
             actor_temperature=args.actor_temperature,
             actor_top_p=args.actor_top_p,
@@ -262,6 +581,12 @@ def build_run_specs(args: argparse.Namespace) -> list[ChunkRunSpec]:
                     score_mode="actor_logprob_only",
                     chunk_size=chunk_size,
                     num_chunk_candidates=num_chunk_candidates,
+                    comparison_value_reducer=resolve_comparison_value_reducer(
+                        value_reducer=None,
+                        explicit_comparison_value_reducer=args.comparison_value_reducer,
+                        comparison_tail_h=args.comparison_tail_h,
+                        comparison_tail_exp_alpha=args.comparison_tail_exp_alpha,
+                    ),
                     actor_sampling_mode=args.actor_sampling_mode,
                     actor_temperature=args.actor_temperature,
                     actor_top_p=args.actor_top_p,
@@ -271,16 +596,30 @@ def build_run_specs(args: argparse.Namespace) -> list[ChunkRunSpec]:
                     specs.append(actor_only_chunk)
                     seen_config_ids.add(actor_only_chunk.config_id)
 
+            if include_uncertainty_only:
+                uncertainty_only_chunk = ChunkRunSpec(
+                    config_id=f"chunk_rerank_uncertainty_meanentropy__m{chunk_size}__k{num_chunk_candidates}",
+                    method_name="chunk_rerank_uncertainty_meanentropy",
+                    score_mode="uncertainty_meanentropy",
+                    chunk_size=chunk_size,
+                    num_chunk_candidates=num_chunk_candidates,
+                    comparison_value_reducer=None,
+                    actor_sampling_mode=args.actor_sampling_mode,
+                    actor_temperature=args.actor_temperature,
+                    actor_top_p=args.actor_top_p,
+                    actor_top_k=args.actor_top_k,
+                )
+                if uncertainty_only_chunk.config_id not in seen_config_ids:
+                    specs.append(uncertainty_only_chunk)
+                    seen_config_ids.add(uncertainty_only_chunk.config_id)
+
             for value_reducer in args.value_reducers:
+                reducer_spec = parse_value_reducer(value_reducer)
                 if not include_only_critic_only:
                     for beta in args.betas:
                         if beta <= 0.0:
                             continue
-                        method_name = (
-                            "chunk_rerank_newcritic_endvalue"
-                            if value_reducer == "end"
-                            else "chunk_rerank_newcritic_meanvalue"
-                        )
+                        method_name = f"chunk_rerank_newcritic_{reducer_spec.method_suffix}"
                         spec = ChunkRunSpec(
                             config_id=(
                                 f"{method_name}__m{chunk_size}__k{num_chunk_candidates}"
@@ -291,7 +630,13 @@ def build_run_specs(args: argparse.Namespace) -> list[ChunkRunSpec]:
                             chunk_size=chunk_size,
                             num_chunk_candidates=num_chunk_candidates,
                             beta=float(beta),
-                            value_reducer=value_reducer,
+                            value_reducer=reducer_spec.canonical_name,
+                            comparison_value_reducer=resolve_comparison_value_reducer(
+                                value_reducer=reducer_spec.canonical_name,
+                                explicit_comparison_value_reducer=args.comparison_value_reducer,
+                                comparison_tail_h=args.comparison_tail_h,
+                                comparison_tail_exp_alpha=args.comparison_tail_exp_alpha,
+                            ),
                             actor_sampling_mode=args.actor_sampling_mode,
                             actor_temperature=args.actor_temperature,
                             actor_top_p=args.actor_top_p,
@@ -302,11 +647,7 @@ def build_run_specs(args: argparse.Namespace) -> list[ChunkRunSpec]:
                             seen_config_ids.add(spec.config_id)
 
                 if include_critic_only:
-                    method_name = (
-                        "chunk_rerank_critic_only_endvalue"
-                        if value_reducer == "end"
-                        else "chunk_rerank_critic_only_meanvalue"
-                    )
+                    method_name = f"chunk_rerank_critic_only_{reducer_spec.method_suffix}"
                     spec = ChunkRunSpec(
                         config_id=f"{method_name}__m{chunk_size}__k{num_chunk_candidates}",
                         method_name=method_name,
@@ -314,7 +655,13 @@ def build_run_specs(args: argparse.Namespace) -> list[ChunkRunSpec]:
                         chunk_size=chunk_size,
                         num_chunk_candidates=num_chunk_candidates,
                         beta=None,
-                        value_reducer=value_reducer,
+                        value_reducer=reducer_spec.canonical_name,
+                        comparison_value_reducer=resolve_comparison_value_reducer(
+                            value_reducer=reducer_spec.canonical_name,
+                            explicit_comparison_value_reducer=args.comparison_value_reducer,
+                            comparison_tail_h=args.comparison_tail_h,
+                            comparison_tail_exp_alpha=args.comparison_tail_exp_alpha,
+                        ),
                         actor_sampling_mode=args.actor_sampling_mode,
                         actor_temperature=args.actor_temperature,
                         actor_top_p=args.actor_top_p,
@@ -360,6 +707,14 @@ def _zscore(values: Sequence[float], *, eps: float) -> list[float]:
     return [float(value) for value in normalized.tolist()]
 
 
+def _entropy_from_logits(logits: torch.Tensor) -> float:
+    logits_fp32 = logits.float()
+    log_probs = torch.log_softmax(logits_fp32, dim=-1)
+    probs = log_probs.exp()
+    entropy = -(probs * log_probs).sum(dim=-1)
+    return float(entropy.item())
+
+
 def _select_argmax(values: Sequence[float]) -> tuple[int, list[int], float]:
     best_value = max(values)
     tied_indices = [index for index, value in enumerate(values) if value == best_value]
@@ -374,7 +729,7 @@ def sample_actor_chunk(
     tokenizer,
     prefix_ids: torch.Tensor,
     actor_device: torch.device,
-    critic_device: torch.device,
+    critic_device: torch.device | None,
     max_chunk_len: int,
     sampling_mode: str,
     temperature: float,
@@ -392,12 +747,15 @@ def sample_actor_chunk(
     prefix_length = int(prefix_ids.shape[1])
     actor_state = ActorStepper(actor, prefix_ids, use_cache=use_actor_cache)
     chunk_token_ids: list[int] = []
+    token_logprobs: list[float] = []
+    token_entropies: list[float] = []
     chunk_logprob = 0.0
     contains_eos = False
 
     for _chunk_token_index in range(max_chunk_len):
         logits = actor_state.current_logits
         actor_log_probs = torch.log_softmax(logits.float(), dim=-1)
+        token_entropy = _entropy_from_logits(logits)
         token_id = sample_token_from_actor(
             logits.squeeze(0),
             sampling_mode=sampling_mode,
@@ -405,7 +763,10 @@ def sample_actor_chunk(
             top_p=top_p,
             top_k=top_k,
         )
-        chunk_logprob += float(actor_log_probs[0, token_id].item())
+        sampled_token_logprob = float(actor_log_probs[0, token_id].item())
+        token_logprobs.append(sampled_token_logprob)
+        token_entropies.append(token_entropy)
+        chunk_logprob += sampled_token_logprob
         chunk_token_ids.append(token_id)
         actor_state.append(token_id)
         if token_id in eos_token_ids:
@@ -415,11 +776,21 @@ def sample_actor_chunk(
     if not chunk_token_ids:
         raise RuntimeError("Chunk candidate generation produced zero tokens, which should be impossible.")
 
-    full_sequence_ids = actor_state.sequence_ids.to(critic_device)
-    values = critic_sequence_values(critic, full_sequence_ids)[0]
-    chunk_values = values[prefix_length : prefix_length + len(chunk_token_ids)]
-    if chunk_values.numel() != len(chunk_token_ids):
-        raise RuntimeError("Chunk value extraction length mismatch.")
+    if critic is not None:
+        if critic_device is None:
+            raise ValueError("critic_device must be provided when critic scoring is enabled.")
+        full_sequence_ids = actor_state.sequence_ids.to(critic_device)
+        values = critic_sequence_values(critic, full_sequence_ids)[0]
+        chunk_values = values[prefix_length : prefix_length + len(chunk_token_ids)]
+        if chunk_values.numel() != len(chunk_token_ids):
+            raise RuntimeError("Chunk value extraction length mismatch.")
+        chunk_values_tuple = tuple(float(value) for value in chunk_values.tolist())
+        end_value: float | None = float(chunk_values[-1].item())
+        mean_value: float | None = float(chunk_values.mean().item())
+    else:
+        chunk_values_tuple = ()
+        end_value = None
+        mean_value = None
 
     return ChunkCandidate(
         candidate_index=candidate_index,
@@ -427,9 +798,13 @@ def sample_actor_chunk(
         chunk_text=tokenizer.decode(chunk_token_ids, skip_special_tokens=True),
         chunk_length=len(chunk_token_ids),
         chunk_logprob=float(chunk_logprob),
-        end_value=float(chunk_values[-1].item()),
-        mean_value=float(chunk_values.mean().item()),
+        chunk_values=chunk_values_tuple,
+        end_value=end_value,
+        mean_value=mean_value,
         contains_eos=contains_eos,
+        token_logprobs=tuple(token_logprobs),
+        token_entropies=tuple(token_entropies),
+        chunk_uncertainty=float(np.mean(np.asarray(token_entropies, dtype=np.float64))),
     )
 
 
@@ -446,6 +821,7 @@ def sample_actor_only_response(
     use_actor_cache: bool,
 ) -> ChunkDecodeArtifacts:
     set_decode_seed(seed)
+    comparison_reducer_spec = parse_optional_value_reducer(spec.comparison_value_reducer)
     actor_state = ActorStepper(actor, prompt_ids, use_cache=use_actor_cache)
     generated_token_ids: list[int] = []
     sum_actor_logprob = 0.0
@@ -483,7 +859,17 @@ def sample_actor_only_response(
         "num_chunk_candidates": None,
         "beta": None,
         "value_reducer": None,
+        "value_reducer_kind": None,
+        "value_reducer_tail_length": None,
+        "value_reducer_alpha": None,
+        "comparison_value_reducer": None if comparison_reducer_spec is None else comparison_reducer_spec.canonical_name,
+        "comparison_value_reducer_kind": None if comparison_reducer_spec is None else comparison_reducer_spec.kind,
+        "comparison_value_reducer_tail_length": (
+            None if comparison_reducer_spec is None else comparison_reducer_spec.tail_length
+        ),
+        "comparison_value_reducer_alpha": None if comparison_reducer_spec is None else comparison_reducer_spec.alpha,
         "example_id": int(example.example_id),
+        "prompt_id": int(example.example_id),
         "data_source": example.data_source,
         "ground_truth": None if example.ground_truth is None else str(example.ground_truth),
         "prompt_length": int(prompt_ids.shape[1]),
@@ -497,15 +883,28 @@ def sample_actor_only_response(
         "mean_realized_chunk_length": None,
         "mean_selected_chunk_logprob": None,
         "mean_selected_chunk_value": None,
+        "mean_selected_chunk_reducer_value": None,
         "mean_selected_chunk_end_value": None,
         "mean_selected_chunk_mean_value": None,
+        "mean_selected_chunk_uncertainty": None,
+        "mean_selected_chunk_entropy_horizon_mean": None,
+        "mean_selected_chunk_tail_mean_h2": None,
+        "mean_selected_chunk_tail_mean_h4": None,
+        "mean_selected_chunk_tail_mean_h8": None,
+        "mean_selected_chunk_tail_mean_h16": None,
         "fraction_chunk_decisions_different_from_actor_only_chunk_winner": None,
+        "fraction_chunk_decisions_different_from_endvalue_winner": None,
+        "fraction_chunk_decisions_different_from_uncertainty_winner": None,
+        "fraction_chunk_decisions_different_from_comparison_winner": None,
         "mean_selected_chunk_score_margin": None,
         "fraction_selected_chunks_with_eos": None,
         "total_decoding_steps": response_length,
         "latency_sec": latency_sec,
         "tokens_per_second": (response_length / latency_sec) if latency_sec > 0 else None,
     }
+    if comparison_reducer_spec is not None:
+        example_result["fraction_chunk_decisions_different_from_comparison_winner"] = None
+        example_result[comparison_reducer_spec.fraction_diff_from_winner_key] = None
     return ChunkDecodeArtifacts(example_result=example_result, chunk_decision_results=[])
 
 
@@ -518,7 +917,7 @@ def run_chunk_guided_response(
     prompt_ids: torch.Tensor,
     spec: ChunkRunSpec,
     actor_device: torch.device,
-    critic_device: torch.device,
+    critic_device: torch.device | None,
     max_new_tokens: int,
     eos_token_ids: tuple[int, ...],
     normalization_eps: float,
@@ -529,6 +928,17 @@ def run_chunk_guided_response(
     if not spec.is_chunk_method or spec.chunk_size is None or spec.num_chunk_candidates is None:
         raise ValueError(f"Chunk run spec {spec.config_id} is missing chunk settings.")
 
+    reducer_spec = parse_value_reducer(spec.value_reducer) if spec.value_reducer is not None else None
+    comparison_reducer_spec = parse_optional_value_reducer(spec.comparison_value_reducer)
+    critic_enabled = critic is not None
+    if not critic_enabled:
+        if spec.score_mode not in {"actor_logprob_only", "uncertainty_meanentropy"}:
+            raise ValueError(f"Spec {spec.config_id} requires critic scoring, but critic loading is disabled.")
+        if reducer_spec is not None or comparison_reducer_spec is not None:
+            raise ValueError(
+                f"Spec {spec.config_id} requests critic-based reducer diagnostics, but critic loading is disabled."
+            )
+
     generated_token_ids: list[int] = []
     current_sequence_ids = prompt_ids
     chunk_decision_results: list[dict[str, Any]] = []
@@ -537,10 +947,17 @@ def run_chunk_guided_response(
     selected_chunk_logprobs: list[float] = []
     selected_chunk_end_values: list[float] = []
     selected_chunk_mean_values: list[float] = []
+    selected_chunk_uncertainties: list[float] = []
     selected_chunk_values: list[float] = []
+    selected_chunk_tail_means: dict[int, list[float]] = {
+        tail_length: [] for tail_length in STANDARD_TAIL_SUMMARY_LENGTHS
+    }
     selected_chunk_score_margins: list[float] = []
     selected_chunks_with_eos: list[float] = []
     selected_diff_from_actor_only_flags: list[float] = []
+    selected_diff_from_endvalue_flags: list[float] = []
+    selected_diff_from_uncertainty_flags: list[float] = []
+    selected_diff_from_comparison_flags: list[float] = []
 
     start_time = time.perf_counter()
     chunk_decision_index = 0
@@ -550,6 +967,7 @@ def run_chunk_guided_response(
         remaining_tokens = max_new_tokens - len(generated_token_ids)
         max_chunk_len = min(spec.chunk_size, remaining_tokens)
         generated_length_before_chunk = len(generated_token_ids)
+        current_prefix_length = int(current_sequence_ids.shape[1])
 
         candidates: list[ChunkCandidate] = []
         for candidate_index in range(spec.num_chunk_candidates):
@@ -580,29 +998,94 @@ def run_chunk_guided_response(
             candidates.append(candidate)
 
         raw_logprobs = [candidate.chunk_logprob for candidate in candidates]
-        raw_end_values = [candidate.end_value for candidate in candidates]
-        raw_mean_values = [candidate.mean_value for candidate in candidates]
+        if critic_enabled:
+            if any(candidate.end_value is None or candidate.mean_value is None for candidate in candidates):
+                raise RuntimeError("Critic-enabled chunk candidate is missing end/mean value diagnostics.")
+            raw_end_values = [float(candidate.end_value) for candidate in candidates]
+            raw_mean_values = [float(candidate.mean_value) for candidate in candidates]
+        else:
+            raw_end_values = None
+            raw_mean_values = None
+        raw_uncertainties = [candidate.chunk_uncertainty for candidate in candidates]
         normalized_logprobs = _zscore(raw_logprobs, eps=normalization_eps)
-        normalized_end_values = _zscore(raw_end_values, eps=normalization_eps)
-        normalized_mean_values = _zscore(raw_mean_values, eps=normalization_eps)
+        normalized_end_values = _zscore(raw_end_values, eps=normalization_eps) if raw_end_values is not None else None
+        normalized_mean_values = _zscore(raw_mean_values, eps=normalization_eps) if raw_mean_values is not None else None
+        normalized_uncertainties = _zscore(raw_uncertainties, eps=normalization_eps)
+        if comparison_reducer_spec is not None and raw_end_values is not None and raw_mean_values is not None:
+            if comparison_reducer_spec.kind == "end":
+                raw_comparison_values = raw_end_values
+                normalized_comparison_values = normalized_end_values
+            elif comparison_reducer_spec.kind == "chunk_mean":
+                raw_comparison_values = raw_mean_values
+                normalized_comparison_values = normalized_mean_values
+            else:
+                raw_comparison_values = [
+                    reduce_chunk_values(candidate.chunk_values, comparison_reducer_spec)
+                    for candidate in candidates
+                ]
+                normalized_comparison_values = _zscore(raw_comparison_values, eps=normalization_eps)
+        else:
+            raw_comparison_values = None
+            normalized_comparison_values = None
+        if reducer_spec is None:
+            raw_reducer_values = None
+            normalized_reducer_values = None
+        elif raw_end_values is None or raw_mean_values is None:
+            raise ValueError(f"Spec {spec.config_id} requires critic values, but critic loading is disabled.")
+        elif reducer_spec.kind == "end":
+            raw_reducer_values = raw_end_values
+            normalized_reducer_values = normalized_end_values
+        elif reducer_spec.kind == "chunk_mean":
+            raw_reducer_values = raw_mean_values
+            normalized_reducer_values = normalized_mean_values
+        else:
+            raw_reducer_values = [reduce_chunk_values(candidate.chunk_values, reducer_spec) for candidate in candidates]
+            normalized_reducer_values = _zscore(raw_reducer_values, eps=normalization_eps)
 
-        actor_only_chunk_winner_index, actor_only_chunk_winner_ties, actor_only_chunk_winner_score = _select_argmax(raw_logprobs)
+        (
+            actor_only_chunk_winner_index,
+            actor_only_chunk_winner_ties,
+            actor_only_chunk_winner_score,
+        ) = _select_argmax(raw_logprobs)
+        if raw_end_values is not None:
+            endvalue_chunk_winner_index, endvalue_chunk_winner_ties, endvalue_chunk_winner_score = _select_argmax(
+                raw_end_values
+            )
+        else:
+            endvalue_chunk_winner_index = None
+            endvalue_chunk_winner_ties = None
+            endvalue_chunk_winner_score = None
+        uncertainty_chunk_winner_index, uncertainty_chunk_winner_ties, _uncertainty_chunk_winner_score = (
+            _select_argmax([-float(value) for value in raw_uncertainties])
+        )
+        uncertainty_chunk_winner_value = float(raw_uncertainties[uncertainty_chunk_winner_index])
+        if comparison_reducer_spec is not None and raw_comparison_values is not None:
+            comparison_chunk_winner_index, comparison_chunk_winner_ties, comparison_chunk_winner_score = _select_argmax(
+                raw_comparison_values
+            )
+        else:
+            comparison_chunk_winner_index = None
+            comparison_chunk_winner_ties = None
+            comparison_chunk_winner_score = None
 
         if spec.score_mode == "actor_logprob_only":
             selection_scores = normalized_logprobs
             normalized_value_for_scoring = None
+        elif spec.score_mode == "uncertainty_meanentropy":
+            selection_scores = [float(-value) for value in normalized_uncertainties]
+            normalized_value_for_scoring = None
         elif spec.score_mode == "actor_plus_critic":
-            if spec.beta is None or spec.value_reducer is None:
+            if spec.beta is None or reducer_spec is None or normalized_reducer_values is None:
                 raise ValueError(f"Spec {spec.config_id} requires beta and value_reducer.")
-            normalized_value_for_scoring = normalized_end_values if spec.value_reducer == "end" else normalized_mean_values
+            normalized_value_for_scoring = normalized_reducer_values
             selection_scores = [
                 float(normalized_logprobs[index] + float(spec.beta) * normalized_value_for_scoring[index])
                 for index in range(len(candidates))
             ]
         elif spec.score_mode == "critic_only":
-            if spec.value_reducer is None:
+            if reducer_spec is None or normalized_reducer_values is None:
                 raise ValueError(f"Spec {spec.config_id} requires value_reducer.")
-            normalized_value_for_scoring = normalized_end_values if spec.value_reducer == "end" else normalized_mean_values
+            normalized_value_for_scoring = normalized_reducer_values
             selection_scores = [float(value) for value in normalized_value_for_scoring]
         else:
             raise ValueError(f"Unsupported score_mode: {spec.score_mode}")
@@ -613,21 +1096,44 @@ def run_chunk_guided_response(
             float(sorted_selection_scores[0] - sorted_selection_scores[1]) if len(sorted_selection_scores) > 1 else None
         )
         selected_candidate = candidates[selected_candidate_index]
+        selected_reducer_value = (
+            float(raw_reducer_values[selected_candidate_index]) if raw_reducer_values is not None else None
+        )
+        selected_tail_mean_summary = (
+            _standard_tail_mean_summary(selected_candidate.chunk_values)
+            if selected_candidate.chunk_values
+            else _empty_tail_mean_summary()
+        )
 
         selected_chunk_lengths.append(selected_candidate.chunk_length)
         selected_chunk_logprobs.append(selected_candidate.chunk_logprob)
-        selected_chunk_end_values.append(selected_candidate.end_value)
-        selected_chunk_mean_values.append(selected_candidate.mean_value)
-        if spec.score_mode in {"actor_plus_critic", "critic_only"} and spec.value_reducer is not None:
-            selected_chunk_values.append(
-                selected_candidate.end_value if spec.value_reducer == "end" else selected_candidate.mean_value
-            )
+        if selected_candidate.end_value is not None:
+            selected_chunk_end_values.append(selected_candidate.end_value)
+        if selected_candidate.mean_value is not None:
+            selected_chunk_mean_values.append(selected_candidate.mean_value)
+        selected_chunk_uncertainties.append(selected_candidate.chunk_uncertainty)
+        if selected_reducer_value is not None:
+            selected_chunk_values.append(selected_reducer_value)
+        for tail_length, tail_mean_value in selected_tail_mean_summary.items():
+            if tail_mean_value is not None:
+                selected_chunk_tail_means[tail_length].append(tail_mean_value)
         if selected_score_margin is not None:
             selected_chunk_score_margins.append(selected_score_margin)
         selected_chunks_with_eos.append(1.0 if selected_candidate.contains_eos else 0.0)
         selected_diff_from_actor_only_flags.append(
             1.0 if selected_candidate_index != actor_only_chunk_winner_index else 0.0
         )
+        if endvalue_chunk_winner_index is not None:
+            selected_diff_from_endvalue_flags.append(
+                1.0 if selected_candidate_index != endvalue_chunk_winner_index else 0.0
+            )
+        selected_diff_from_uncertainty_flags.append(
+            1.0 if selected_candidate_index != uncertainty_chunk_winner_index else 0.0
+        )
+        if comparison_chunk_winner_index is not None:
+            selected_diff_from_comparison_flags.append(
+                1.0 if selected_candidate_index != comparison_chunk_winner_index else 0.0
+            )
 
         chunk_tensor = torch.tensor(
             [list(selected_candidate.chunk_token_ids)],
@@ -645,19 +1151,45 @@ def run_chunk_guided_response(
             "num_chunk_candidates": spec.num_chunk_candidates,
             "beta": spec.beta,
             "value_reducer": spec.value_reducer,
+            "value_reducer_kind": None if reducer_spec is None else reducer_spec.kind,
+            "value_reducer_tail_length": None if reducer_spec is None else reducer_spec.tail_length,
+            "value_reducer_alpha": None if reducer_spec is None else reducer_spec.alpha,
+            "comparison_value_reducer": (
+                None if comparison_reducer_spec is None else comparison_reducer_spec.canonical_name
+            ),
+            "comparison_value_reducer_kind": None if comparison_reducer_spec is None else comparison_reducer_spec.kind,
+            "comparison_value_reducer_tail_length": (
+                None if comparison_reducer_spec is None else comparison_reducer_spec.tail_length
+            ),
+            "comparison_value_reducer_alpha": (
+                None if comparison_reducer_spec is None else comparison_reducer_spec.alpha
+            ),
             "example_id": int(example.example_id),
+            "prompt_id": int(example.example_id),
             "chunk_decision_index": chunk_decision_index,
+            "current_prefix_length": current_prefix_length,
             "generated_length_before_chunk": generated_length_before_chunk,
+            "candidate_chunk_ids": [candidate.candidate_index for candidate in candidates],
             "candidate_chunk_token_ids": [list(candidate.chunk_token_ids) for candidate in candidates],
             "candidate_chunk_texts": [candidate.chunk_text for candidate in candidates],
             "candidate_chunk_lengths": [candidate.chunk_length for candidate in candidates],
             "candidate_chunk_logprobs": raw_logprobs,
             "candidate_chunk_end_values": raw_end_values,
             "candidate_chunk_mean_values": raw_mean_values,
+            "candidate_chunk_uncertainties": raw_uncertainties,
             "candidate_chunk_contains_eos": [candidate.contains_eos for candidate in candidates],
+            "actor_only_selected_chunk_index": actor_only_chunk_winner_index,
             "actor_only_chunk_winner_index": actor_only_chunk_winner_index,
             "actor_only_chunk_winner_tied_indices": actor_only_chunk_winner_ties,
             "actor_only_chunk_winner_logprob": actor_only_chunk_winner_score,
+            "endvalue_selected_chunk_index": endvalue_chunk_winner_index,
+            "endvalue_chunk_winner_index": endvalue_chunk_winner_index,
+            "endvalue_chunk_winner_tied_indices": endvalue_chunk_winner_ties,
+            "endvalue_chunk_winner_value": endvalue_chunk_winner_score,
+            "uncertainty_selected_chunk_index": uncertainty_chunk_winner_index,
+            "uncertainty_chunk_winner_index": uncertainty_chunk_winner_index,
+            "uncertainty_chunk_winner_tied_indices": uncertainty_chunk_winner_ties,
+            "uncertainty_chunk_winner_value": uncertainty_chunk_winner_value,
             "selected_chunk_index": selected_candidate_index,
             "selected_chunk_tied_indices": selected_tied_indices,
             "selected_chunk_token_ids": list(selected_candidate.chunk_token_ids),
@@ -666,25 +1198,67 @@ def run_chunk_guided_response(
             "selected_chunk_logprob": selected_candidate.chunk_logprob,
             "selected_chunk_end_value": selected_candidate.end_value,
             "selected_chunk_mean_value": selected_candidate.mean_value,
-            "selected_chunk_value": (
-                selected_candidate.end_value if spec.value_reducer == "end" else (
-                    selected_candidate.mean_value if spec.value_reducer == "mean" else None
-                )
-            ),
+            "selected_chunk_uncertainty": selected_candidate.chunk_uncertainty,
+            "selected_chunk_entropy_horizon_mean": selected_candidate.chunk_uncertainty,
+            "selected_chunk_tail_mean_h2": selected_tail_mean_summary[2],
+            "selected_chunk_tail_mean_h4": selected_tail_mean_summary[4],
+            "selected_chunk_tail_mean_h8": selected_tail_mean_summary[8],
+            "selected_chunk_tail_mean_h16": selected_tail_mean_summary[16],
+            "selected_chunk_value": selected_reducer_value,
+            "selected_chunk_reducer_value": selected_reducer_value,
             "selected_chunk_contains_eos": selected_candidate.contains_eos,
             "selected_chunk_selection_score": selected_score,
             "selected_chunk_score_margin": selected_score_margin,
             "selected_differs_from_actor_only_chunk_winner": selected_candidate_index != actor_only_chunk_winner_index,
+            "selected_differs_from_endvalue_winner": (
+                None
+                if endvalue_chunk_winner_index is None
+                else selected_candidate_index != endvalue_chunk_winner_index
+            ),
+            "selected_differs_from_uncertainty_winner": selected_candidate_index != uncertainty_chunk_winner_index,
         }
+        if reducer_spec is not None:
+            chunk_decision_result[reducer_spec.selected_metric_key] = selected_reducer_value
+            chunk_decision_result["candidate_chunk_reducer_values"] = raw_reducer_values
+        if comparison_reducer_spec is not None and raw_comparison_values is not None:
+            chunk_decision_result["comparison_chunk_winner_index"] = comparison_chunk_winner_index
+            chunk_decision_result["comparison_chunk_winner_tied_indices"] = comparison_chunk_winner_ties
+            chunk_decision_result["comparison_chunk_winner_value"] = comparison_chunk_winner_score
+            chunk_decision_result["selected_differs_from_comparison_winner"] = (
+                selected_candidate_index != comparison_chunk_winner_index
+            )
+            chunk_decision_result[comparison_reducer_spec.winner_candidate_values_key] = raw_comparison_values
+            chunk_decision_result[comparison_reducer_spec.winner_index_key] = comparison_chunk_winner_index
+            chunk_decision_result[comparison_reducer_spec.winner_tied_indices_key] = comparison_chunk_winner_ties
+            chunk_decision_result[comparison_reducer_spec.winner_value_key] = comparison_chunk_winner_score
+            chunk_decision_result[comparison_reducer_spec.selected_differs_from_winner_key] = (
+                selected_candidate_index != comparison_chunk_winner_index
+            )
         if debug_full_chunk_candidates:
             chunk_decision_result.update(
                 {
                     "candidate_normalized_chunk_logprobs": normalized_logprobs,
                     "candidate_normalized_chunk_end_values": normalized_end_values,
                     "candidate_normalized_chunk_mean_values": normalized_mean_values,
+                    "candidate_normalized_chunk_uncertainties": normalized_uncertainties,
                     "candidate_selection_scores": selection_scores,
+                    "candidate_chunk_token_logprobs": [list(candidate.token_logprobs) for candidate in candidates],
+                    "candidate_chunk_token_entropies": [list(candidate.token_entropies) for candidate in candidates],
+                    "candidate_chunk_token_values": [list(candidate.chunk_values) for candidate in candidates],
+                    "selected_chunk_token_logprobs": list(selected_candidate.token_logprobs),
+                    "selected_chunk_token_entropies": list(selected_candidate.token_entropies),
+                    "selected_chunk_token_values": list(selected_candidate.chunk_values),
                 }
             )
+            if normalized_reducer_values is not None:
+                chunk_decision_result["candidate_normalized_chunk_reducer_values"] = normalized_reducer_values
+            if comparison_reducer_spec is not None and normalized_comparison_values is not None:
+                comparison_normalized_key = comparison_reducer_spec.winner_candidate_values_key.replace(
+                    "candidate_chunk_",
+                    "candidate_normalized_chunk_",
+                    1,
+                )
+                chunk_decision_result[comparison_normalized_key] = normalized_comparison_values
 
         chunk_decision_results.append(chunk_decision_result)
         chunk_decision_index += 1
@@ -707,7 +1281,17 @@ def run_chunk_guided_response(
         "num_chunk_candidates": spec.num_chunk_candidates,
         "beta": spec.beta,
         "value_reducer": spec.value_reducer,
+        "value_reducer_kind": None if reducer_spec is None else reducer_spec.kind,
+        "value_reducer_tail_length": None if reducer_spec is None else reducer_spec.tail_length,
+        "value_reducer_alpha": None if reducer_spec is None else reducer_spec.alpha,
+        "comparison_value_reducer": None if comparison_reducer_spec is None else comparison_reducer_spec.canonical_name,
+        "comparison_value_reducer_kind": None if comparison_reducer_spec is None else comparison_reducer_spec.kind,
+        "comparison_value_reducer_tail_length": (
+            None if comparison_reducer_spec is None else comparison_reducer_spec.tail_length
+        ),
+        "comparison_value_reducer_alpha": None if comparison_reducer_spec is None else comparison_reducer_spec.alpha,
         "example_id": int(example.example_id),
+        "prompt_id": int(example.example_id),
         "data_source": example.data_source,
         "ground_truth": None if example.ground_truth is None else str(example.ground_truth),
         "prompt_length": int(prompt_ids.shape[1]),
@@ -721,15 +1305,32 @@ def run_chunk_guided_response(
         "mean_realized_chunk_length": _mean(selected_chunk_lengths),
         "mean_selected_chunk_logprob": _mean(selected_chunk_logprobs),
         "mean_selected_chunk_value": _mean(selected_chunk_values),
+        "mean_selected_chunk_reducer_value": _mean(selected_chunk_values),
         "mean_selected_chunk_end_value": _mean(selected_chunk_end_values),
         "mean_selected_chunk_mean_value": _mean(selected_chunk_mean_values),
+        "mean_selected_chunk_uncertainty": _mean(selected_chunk_uncertainties),
+        "mean_selected_chunk_entropy_horizon_mean": _mean(selected_chunk_uncertainties),
+        "mean_selected_chunk_tail_mean_h2": _mean(selected_chunk_tail_means[2]),
+        "mean_selected_chunk_tail_mean_h4": _mean(selected_chunk_tail_means[4]),
+        "mean_selected_chunk_tail_mean_h8": _mean(selected_chunk_tail_means[8]),
+        "mean_selected_chunk_tail_mean_h16": _mean(selected_chunk_tail_means[16]),
         "fraction_chunk_decisions_different_from_actor_only_chunk_winner": _mean(selected_diff_from_actor_only_flags),
+        "fraction_chunk_decisions_different_from_endvalue_winner": _mean(selected_diff_from_endvalue_flags),
+        "fraction_chunk_decisions_different_from_uncertainty_winner": _mean(selected_diff_from_uncertainty_flags),
+        "fraction_chunk_decisions_different_from_comparison_winner": _mean(selected_diff_from_comparison_flags),
         "mean_selected_chunk_score_margin": _mean(selected_chunk_score_margins),
         "fraction_selected_chunks_with_eos": _mean(selected_chunks_with_eos),
         "total_decoding_steps": response_length,
         "latency_sec": latency_sec,
         "tokens_per_second": (response_length / latency_sec) if latency_sec > 0 else None,
     }
+    if reducer_spec is not None:
+        example_result[reducer_spec.aggregate_metric_key] = example_result["mean_selected_chunk_reducer_value"]
+    if comparison_reducer_spec is not None:
+        example_result["fraction_chunk_decisions_different_from_comparison_winner"] = _mean(
+            selected_diff_from_comparison_flags
+        )
+        example_result[comparison_reducer_spec.fraction_diff_from_winner_key] = _mean(selected_diff_from_comparison_flags)
     return ChunkDecodeArtifacts(example_result=example_result, chunk_decision_results=chunk_decision_results)
 
 
@@ -741,7 +1342,7 @@ def process_example_for_spec(
     example: ExampleRecord,
     spec: ChunkRunSpec,
     actor_device: torch.device,
-    critic_device: torch.device,
+    critic_device: torch.device | None,
     max_prompt_length: int,
     max_new_tokens: int,
     eos_token_ids: tuple[int, ...],
@@ -804,7 +1405,7 @@ def _worker_entry(
     *,
     assignment: WorkerAssignment,
     actor_hf_dir: str,
-    critic_hf_dir: str,
+    critic_hf_dir: str | None,
     examples: list[ExampleRecord],
     run_specs: list[ChunkRunSpec],
     dtype_name: str,
@@ -827,7 +1428,11 @@ def _worker_entry(
     try:
         start_time = time.perf_counter()
         actor_device = resolve_device(assignment.actor_device)
-        critic_device = resolve_device(assignment.critic_device) if assignment.critic_device else actor_device
+        critic_device = (
+            resolve_device(assignment.critic_device)
+            if critic_hf_dir is not None and assignment.critic_device
+            else None
+        )
         dtype = resolve_dtype(dtype_name)
 
         tokenizer = load_tokenizer(Path(actor_hf_dir), trust_remote_code=trust_remote_code)
@@ -837,11 +1442,15 @@ def _worker_entry(
             device=actor_device,
             trust_remote_code=trust_remote_code,
         )
-        critic = load_critic_model(
-            Path(critic_hf_dir),
-            dtype=dtype,
-            device=critic_device,
-            trust_remote_code=trust_remote_code,
+        critic = (
+            load_critic_model(
+                Path(critic_hf_dir),
+                dtype=dtype,
+                device=critic_device,
+                trust_remote_code=trust_remote_code,
+            )
+            if critic_hf_dir is not None and critic_device is not None
+            else None
         )
 
         local_examples = examples[assignment.example_start : assignment.example_end]
@@ -912,7 +1521,7 @@ def _worker_entry(
         summary_payload = {
             "worker_id": assignment.worker_id,
             "actor_device": str(actor_device),
-            "critic_device": str(critic_device),
+            "critic_device": None if critic_device is None else str(critic_device),
             "example_start": assignment.example_start,
             "example_end": assignment.example_end,
             "num_examples": assignment.num_examples,
@@ -951,7 +1560,7 @@ def run_multi_worker(
     *,
     output_dir: Path,
     actor_hf_dir: Path,
-    critic_hf_dir: Path,
+    critic_hf_dir: Path | None,
     examples: list[ExampleRecord],
     run_specs: list[ChunkRunSpec],
     worker_pairs: list[tuple[str | None, str | None]],
@@ -982,7 +1591,7 @@ def run_multi_worker(
             kwargs={
                 "assignment": assignment,
                 "actor_hf_dir": str(actor_hf_dir),
-                "critic_hf_dir": str(critic_hf_dir),
+                "critic_hf_dir": None if critic_hf_dir is None else str(critic_hf_dir),
                 "examples": examples,
                 "run_specs": run_specs,
                 "dtype_name": dtype_name,
@@ -1105,6 +1714,8 @@ def aggregate_results(
     *,
     wall_time_sec: float | None = None,
 ) -> dict[str, Any]:
+    reducer_spec = parse_value_reducer(spec.value_reducer) if spec.value_reducer is not None else None
+    comparison_reducer_spec = parse_optional_value_reducer(spec.comparison_value_reducer)
     task_scores = [float(result["task_score"]) for result in example_results]
     response_lengths = [int(result["response_length"]) for result in example_results]
     eos_rate = _mean([1.0 if bool(result["eos_emitted"]) else 0.0 for result in example_results])
@@ -1144,11 +1755,54 @@ def aggregate_results(
             for result in example_results
             if result["mean_selected_chunk_mean_value"] is not None
         ]
+        selected_chunk_uncertainties = [
+            float(result["mean_selected_chunk_uncertainty"])
+            for result in example_results
+            if result.get("mean_selected_chunk_uncertainty") is not None
+        ]
+        selected_chunk_tail_mean_h2 = [
+            float(result["mean_selected_chunk_tail_mean_h2"])
+            for result in example_results
+            if result.get("mean_selected_chunk_tail_mean_h2") is not None
+        ]
+        selected_chunk_tail_mean_h4 = [
+            float(result["mean_selected_chunk_tail_mean_h4"])
+            for result in example_results
+            if result.get("mean_selected_chunk_tail_mean_h4") is not None
+        ]
+        selected_chunk_tail_mean_h8 = [
+            float(result["mean_selected_chunk_tail_mean_h8"])
+            for result in example_results
+            if result.get("mean_selected_chunk_tail_mean_h8") is not None
+        ]
+        selected_chunk_tail_mean_h16 = [
+            float(result["mean_selected_chunk_tail_mean_h16"])
+            for result in example_results
+            if result.get("mean_selected_chunk_tail_mean_h16") is not None
+        ]
         diff_from_actor_only = [
             float(result["fraction_chunk_decisions_different_from_actor_only_chunk_winner"])
             for result in example_results
             if result["fraction_chunk_decisions_different_from_actor_only_chunk_winner"] is not None
         ]
+        diff_from_endvalue = [
+            float(result["fraction_chunk_decisions_different_from_endvalue_winner"])
+            for result in example_results
+            if result.get("fraction_chunk_decisions_different_from_endvalue_winner") is not None
+        ]
+        diff_from_uncertainty = [
+            float(result["fraction_chunk_decisions_different_from_uncertainty_winner"])
+            for result in example_results
+            if result.get("fraction_chunk_decisions_different_from_uncertainty_winner") is not None
+        ]
+        if comparison_reducer_spec is not None:
+            diff_from_comparison = [
+                float(result["fraction_chunk_decisions_different_from_comparison_winner"])
+                for result in example_results
+                if result.get("fraction_chunk_decisions_different_from_comparison_winner") is not None
+            ]
+        else:
+            diff_from_comparison = []
         selected_chunk_score_margins = [
             float(result["mean_selected_chunk_score_margin"])
             for result in example_results
@@ -1166,14 +1820,22 @@ def aggregate_results(
         selected_chunk_values = []
         selected_chunk_end_values = []
         selected_chunk_mean_values = []
+        selected_chunk_uncertainties = []
+        selected_chunk_tail_mean_h2 = []
+        selected_chunk_tail_mean_h4 = []
+        selected_chunk_tail_mean_h8 = []
+        selected_chunk_tail_mean_h16 = []
         diff_from_actor_only = []
+        diff_from_endvalue = []
+        diff_from_uncertainty = []
+        diff_from_comparison = []
         selected_chunk_score_margins = []
         fraction_selected_chunks_with_eos = []
         mean_num_chunk_decisions = None
 
     binary_scores = set(task_scores).issubset({0.0, 1.0})
     total_latency = sum(latencies)
-    return {
+    row = {
         "config_id": spec.config_id,
         "method_name": spec.method_name,
         "score_mode": spec.score_mode,
@@ -1181,6 +1843,17 @@ def aggregate_results(
         "num_chunk_candidates": spec.num_chunk_candidates,
         "beta": spec.beta,
         "value_reducer": spec.value_reducer,
+        "value_reducer_kind": None if reducer_spec is None else reducer_spec.kind,
+        "value_reducer_tail_length": None if reducer_spec is None else reducer_spec.tail_length,
+        "value_reducer_alpha": None if reducer_spec is None else reducer_spec.alpha,
+        "comparison_value_reducer": None if comparison_reducer_spec is None else comparison_reducer_spec.canonical_name,
+        "comparison_value_reducer_kind": (
+            None if comparison_reducer_spec is None else comparison_reducer_spec.kind
+        ),
+        "comparison_value_reducer_tail_length": (
+            None if comparison_reducer_spec is None else comparison_reducer_spec.tail_length
+        ),
+        "comparison_value_reducer_alpha": None if comparison_reducer_spec is None else comparison_reducer_spec.alpha,
         "actor_sampling_mode": spec.actor_sampling_mode,
         "actor_temperature": spec.actor_temperature,
         "actor_top_p": spec.actor_top_p,
@@ -1195,10 +1868,28 @@ def aggregate_results(
         "mean_realized_chunk_length": _mean(realized_chunk_lengths) if spec.is_chunk_method else None,
         "mean_selected_chunk_logprob": _mean(selected_chunk_logprobs) if spec.is_chunk_method else None,
         "mean_selected_chunk_value": _mean(selected_chunk_values) if spec.is_chunk_method else None,
+        "mean_selected_chunk_reducer_value": _mean(selected_chunk_values) if spec.is_chunk_method else None,
         "mean_selected_chunk_end_value": _mean(selected_chunk_end_values) if spec.is_chunk_method else None,
         "mean_selected_chunk_mean_value": _mean(selected_chunk_mean_values) if spec.is_chunk_method else None,
+        "mean_selected_chunk_uncertainty": _mean(selected_chunk_uncertainties) if spec.is_chunk_method else None,
+        "mean_selected_chunk_entropy_horizon_mean": (
+            _mean(selected_chunk_uncertainties) if spec.is_chunk_method else None
+        ),
+        "mean_selected_chunk_tail_mean_h2": _mean(selected_chunk_tail_mean_h2) if spec.is_chunk_method else None,
+        "mean_selected_chunk_tail_mean_h4": _mean(selected_chunk_tail_mean_h4) if spec.is_chunk_method else None,
+        "mean_selected_chunk_tail_mean_h8": _mean(selected_chunk_tail_mean_h8) if spec.is_chunk_method else None,
+        "mean_selected_chunk_tail_mean_h16": _mean(selected_chunk_tail_mean_h16) if spec.is_chunk_method else None,
         "mean_fraction_chunk_decisions_different_from_actor_only_chunk_winner": (
             _mean(diff_from_actor_only) if spec.is_chunk_method else None
+        ),
+        "mean_fraction_chunk_decisions_different_from_endvalue_winner": (
+            _mean(diff_from_endvalue) if spec.is_chunk_method else None
+        ),
+        "mean_fraction_chunk_decisions_different_from_uncertainty_winner": (
+            _mean(diff_from_uncertainty) if spec.is_chunk_method else None
+        ),
+        "mean_fraction_chunk_decisions_different_from_comparison_winner": (
+            _mean(diff_from_comparison) if spec.is_chunk_method else None
         ),
         "mean_selected_chunk_score_margin": _mean(selected_chunk_score_margins) if spec.is_chunk_method else None,
         "fraction_selected_chunks_with_eos": _mean(fraction_selected_chunks_with_eos) if spec.is_chunk_method else None,
@@ -1212,6 +1903,272 @@ def aggregate_results(
         ),
         "mean_tokens_per_second": _mean(tokens_per_second),
     }
+    if reducer_spec is not None:
+        row[reducer_spec.aggregate_metric_key] = row["mean_selected_chunk_reducer_value"]
+    if comparison_reducer_spec is not None:
+        row[comparison_reducer_spec.mean_fraction_diff_from_winner_key] = row[
+            "mean_fraction_chunk_decisions_different_from_comparison_winner"
+        ]
+    return row
+
+
+def _aligned_metric_arrays(
+    target_results: Sequence[dict[str, Any]],
+    baseline_results: Sequence[dict[str, Any]],
+    *,
+    key: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    target_by_example_id = {int(result["example_id"]): result for result in target_results}
+    baseline_by_example_id = {int(result["example_id"]): result for result in baseline_results}
+    common_example_ids = sorted(set(target_by_example_id).intersection(baseline_by_example_id))
+
+    target_values: list[float] = []
+    baseline_values: list[float] = []
+    for example_id in common_example_ids:
+        target_value = target_by_example_id[example_id].get(key)
+        baseline_value = baseline_by_example_id[example_id].get(key)
+        if target_value is None or baseline_value is None:
+            continue
+        target_values.append(float(target_value))
+        baseline_values.append(float(baseline_value))
+    return (
+        np.asarray(target_values, dtype=np.float64),
+        np.asarray(baseline_values, dtype=np.float64),
+    )
+
+
+def _paired_metric_delta(
+    target_results: Sequence[dict[str, Any]],
+    baseline_results: Sequence[dict[str, Any]],
+    *,
+    key: str,
+) -> float | None:
+    target_values, baseline_values = _aligned_metric_arrays(target_results, baseline_results, key=key)
+    if target_values.size == 0:
+        return None
+    return float(np.mean(target_values - baseline_values))
+
+
+def _paired_bootstrap_mean_delta(
+    target_values: np.ndarray,
+    baseline_values: np.ndarray,
+    *,
+    bootstrap_samples: int,
+    seed: int,
+) -> dict[str, Any] | None:
+    if target_values.size == 0 or baseline_values.size == 0 or bootstrap_samples <= 0:
+        return None
+
+    paired_deltas = target_values - baseline_values
+    rng = np.random.default_rng(seed)
+    sample_indices = rng.integers(0, paired_deltas.size, size=(bootstrap_samples, paired_deltas.size))
+    bootstrap_means = paired_deltas[sample_indices].mean(axis=1)
+    return {
+        "mean_delta": float(paired_deltas.mean()),
+        "ci_lower": float(np.percentile(bootstrap_means, 2.5)),
+        "ci_upper": float(np.percentile(bootstrap_means, 97.5)),
+        "bootstrap_samples": int(bootstrap_samples),
+    }
+
+
+def _build_single_reducer_comparison(
+    *,
+    target_spec: ChunkRunSpec,
+    baseline_spec: ChunkRunSpec,
+    relation: str,
+    example_results_by_config: dict[str, list[dict[str, Any]]],
+    bootstrap_seed: int,
+    bootstrap_samples: int,
+) -> dict[str, Any]:
+    target_reducer = parse_value_reducer(target_spec.value_reducer) if target_spec.value_reducer is not None else None
+    baseline_reducer = (
+        parse_value_reducer(baseline_spec.value_reducer) if baseline_spec.value_reducer is not None else None
+    )
+    target_comparison_reducer = (
+        parse_optional_value_reducer(target_spec.comparison_value_reducer)
+        if target_spec.comparison_value_reducer is not None
+        else None
+    )
+    baseline_comparison_reducer = (
+        parse_optional_value_reducer(baseline_spec.comparison_value_reducer)
+        if baseline_spec.comparison_value_reducer is not None
+        else None
+    )
+    shared_comparison_reducer = None
+    if (
+        target_comparison_reducer is not None
+        and baseline_comparison_reducer is not None
+        and target_comparison_reducer.canonical_name == baseline_comparison_reducer.canonical_name
+    ):
+        shared_comparison_reducer = target_comparison_reducer
+    target_results = example_results_by_config[target_spec.config_id]
+    baseline_results = example_results_by_config[baseline_spec.config_id]
+
+    task_target, task_baseline = _aligned_metric_arrays(target_results, baseline_results, key="task_score")
+    binary_scores = (
+        task_target.size > 0
+        and set(task_target.tolist()).issubset({0.0, 1.0})
+        and set(task_baseline.tolist()).issubset({0.0, 1.0})
+    )
+    bootstrap_summary = (
+        _paired_bootstrap_mean_delta(
+            task_target,
+            task_baseline,
+            bootstrap_samples=bootstrap_samples,
+            seed=bootstrap_seed,
+        )
+        if binary_scores
+        else None
+    )
+
+    comparison_row: dict[str, Any] = {
+        "comparison_id": f"{target_spec.config_id}__minus__{baseline_spec.config_id}",
+        "comparison_type": relation,
+        "chunk_size": target_spec.chunk_size,
+        "num_chunk_candidates": target_spec.num_chunk_candidates,
+        "score_mode": target_spec.score_mode,
+        "beta": target_spec.beta,
+        "target_config_id": target_spec.config_id,
+        "target_method_name": target_spec.method_name,
+        "target_value_reducer": target_spec.value_reducer,
+        "target_value_reducer_kind": None if target_reducer is None else target_reducer.kind,
+        "target_value_reducer_tail_length": None if target_reducer is None else target_reducer.tail_length,
+        "target_value_reducer_alpha": None if target_reducer is None else target_reducer.alpha,
+        "baseline_config_id": baseline_spec.config_id,
+        "baseline_method_name": baseline_spec.method_name,
+        "baseline_value_reducer": baseline_spec.value_reducer,
+        "baseline_value_reducer_kind": None if baseline_reducer is None else baseline_reducer.kind,
+        "baseline_value_reducer_tail_length": None if baseline_reducer is None else baseline_reducer.tail_length,
+        "baseline_value_reducer_alpha": None if baseline_reducer is None else baseline_reducer.alpha,
+        "target_comparison_value_reducer": (
+            None if target_comparison_reducer is None else target_comparison_reducer.canonical_name
+        ),
+        "baseline_comparison_value_reducer": (
+            None if baseline_comparison_reducer is None else baseline_comparison_reducer.canonical_name
+        ),
+        "shared_comparison_value_reducer": (
+            None if shared_comparison_reducer is None else shared_comparison_reducer.canonical_name
+        ),
+        "num_aligned_examples": int(task_target.size),
+        "delta_mean_task_score": _paired_metric_delta(target_results, baseline_results, key="task_score"),
+        "delta_mean_accuracy": _paired_metric_delta(target_results, baseline_results, key="task_score")
+        if binary_scores
+        else None,
+        "delta_mean_response_length": _paired_metric_delta(target_results, baseline_results, key="response_length"),
+        "delta_mean_selected_chunk_end_value": _paired_metric_delta(
+            target_results,
+            baseline_results,
+            key="mean_selected_chunk_end_value",
+        ),
+        "delta_mean_selected_chunk_reducer_value": _paired_metric_delta(
+            target_results,
+            baseline_results,
+            key="mean_selected_chunk_reducer_value",
+        ),
+        "delta_mean_fraction_chunk_decisions_different_from_endvalue_winner": _paired_metric_delta(
+            target_results,
+            baseline_results,
+            key="fraction_chunk_decisions_different_from_endvalue_winner",
+        ),
+        "delta_mean_fraction_chunk_decisions_different_from_comparison_winner": (
+            _paired_metric_delta(
+                target_results,
+                baseline_results,
+                key="fraction_chunk_decisions_different_from_comparison_winner",
+            )
+            if shared_comparison_reducer is not None
+            else None
+        ),
+    }
+    if target_reducer is not None and target_reducer.tail_length is not None:
+        tail_metric_key = f"mean_selected_chunk_tail_mean_h{target_reducer.tail_length}"
+        comparison_row[f"delta_{tail_metric_key}"] = _paired_metric_delta(
+            target_results,
+            baseline_results,
+            key=tail_metric_key,
+        )
+    if bootstrap_summary is not None:
+        comparison_row["paired_bootstrap_accuracy_delta_mean"] = bootstrap_summary["mean_delta"]
+        comparison_row["paired_bootstrap_accuracy_delta_ci_lower"] = bootstrap_summary["ci_lower"]
+        comparison_row["paired_bootstrap_accuracy_delta_ci_upper"] = bootstrap_summary["ci_upper"]
+        comparison_row["paired_bootstrap_accuracy_delta_samples"] = bootstrap_summary["bootstrap_samples"]
+    else:
+        comparison_row["paired_bootstrap_accuracy_delta_mean"] = None
+        comparison_row["paired_bootstrap_accuracy_delta_ci_lower"] = None
+        comparison_row["paired_bootstrap_accuracy_delta_ci_upper"] = None
+        comparison_row["paired_bootstrap_accuracy_delta_samples"] = None
+    return comparison_row
+
+
+def build_reducer_comparisons(
+    *,
+    run_specs: Sequence[ChunkRunSpec],
+    example_results_by_config: dict[str, list[dict[str, Any]]],
+    bootstrap_seed: int,
+    bootstrap_samples: int = DEFAULT_COMPARISON_BOOTSTRAP_SAMPLES,
+) -> list[dict[str, Any]]:
+    grouped_specs: dict[tuple[Any, ...], list[ChunkRunSpec]] = {}
+    for spec in run_specs:
+        if not spec.is_chunk_method or spec.value_reducer is None:
+            continue
+        group_key = (
+            spec.score_mode,
+            spec.chunk_size,
+            spec.num_chunk_candidates,
+            spec.beta,
+            spec.actor_sampling_mode,
+            spec.actor_temperature,
+            spec.actor_top_p,
+            spec.actor_top_k,
+        )
+        grouped_specs.setdefault(group_key, []).append(spec)
+
+    comparisons: list[dict[str, Any]] = []
+    for group_index, group_specs in enumerate(sorted(grouped_specs.values(), key=lambda specs: specs[0].config_id)):
+        end_baseline = None
+        tail_mean_by_length: dict[int, ChunkRunSpec] = {}
+        for spec in group_specs:
+            reducer_spec = parse_value_reducer(spec.value_reducer) if spec.value_reducer is not None else None
+            if reducer_spec is None:
+                continue
+            if reducer_spec.kind == "end":
+                end_baseline = spec
+            elif reducer_spec.kind == "tail_mean" and reducer_spec.tail_length is not None:
+                tail_mean_by_length[reducer_spec.tail_length] = spec
+
+        for spec in sorted(group_specs, key=lambda item: item.config_id):
+            reducer_spec = parse_value_reducer(spec.value_reducer) if spec.value_reducer is not None else None
+            if reducer_spec is None or reducer_spec.kind not in {"tail_mean", "tail_exp"}:
+                continue
+
+            if end_baseline is not None:
+                comparisons.append(
+                    _build_single_reducer_comparison(
+                        target_spec=spec,
+                        baseline_spec=end_baseline,
+                        relation="vs_endvalue_baseline",
+                        example_results_by_config=example_results_by_config,
+                        bootstrap_seed=bootstrap_seed + group_index * 1_000 + len(comparisons) * 31 + 7,
+                        bootstrap_samples=bootstrap_samples,
+                    )
+                )
+
+            if (
+                reducer_spec.kind == "tail_exp"
+                and reducer_spec.tail_length is not None
+                and reducer_spec.tail_length in tail_mean_by_length
+            ):
+                comparisons.append(
+                    _build_single_reducer_comparison(
+                        target_spec=spec,
+                        baseline_spec=tail_mean_by_length[reducer_spec.tail_length],
+                        relation="vs_tailmean_same_h_baseline",
+                        example_results_by_config=example_results_by_config,
+                        bootstrap_seed=bootstrap_seed + group_index * 1_000 + len(comparisons) * 31 + 17,
+                        bootstrap_samples=bootstrap_samples,
+                    )
+                )
+    return comparisons
 
 
 def _write_output_readme(
@@ -1223,6 +2180,12 @@ def _write_output_readme(
 ) -> None:
     actor_only_row = next((row for row in aggregate_rows if row["method_name"] == "actor_only_sample"), None)
     chunk_actor_only_rows = [row for row in aggregate_rows if row["method_name"] == "chunk_rerank_actor_only"]
+    uncertainty_rows = [row for row in aggregate_rows if row["method_name"] == "chunk_rerank_uncertainty_meanentropy"]
+    critic_only_end_rows = [
+        row
+        for row in aggregate_rows
+        if row["score_mode"] == "critic_only" and row.get("value_reducer") == "end"
+    ]
     actor_plus_critic_rows = [row for row in aggregate_rows if row["score_mode"] == "actor_plus_critic"]
 
     best_actor_plus_critic = None
@@ -1240,10 +2203,15 @@ def _write_output_readme(
         "At each chunk decision:",
         f"- sample K candidate chunks from the frozen actor, with K in `{sorted(set(spec.num_chunk_candidates for spec in run_specs if spec.num_chunk_candidates is not None))}`",
         f"- each chunk rolls out up to m tokens, with m in `{sorted(set(spec.chunk_size for spec in run_specs if spec.chunk_size is not None))}`",
-        "- score the candidates by actor log-prob only, actor+critic, or critic only depending on the config",
+        "- reuse the same candidate bank for every selector at that decoding state",
+        "- score the candidates by actor log-prob only, mean actor entropy, actor+critic, or critic only depending on the config",
         "- if actor+critic is used, the score is zscore(chunk_logprob) + beta * zscore(chunk_value) within the candidate set",
+        "- chunk uncertainty is the mean token entropy over the realized chunk, computed from the raw actor logits before sampling",
         "",
-        "The primary chunk value reducer is end-of-chunk value. Mean-of-chunk value is available as an ablation.",
+        (
+            "Chunk value reducers support the end-of-chunk value, the legacy whole-chunk mean, "
+            "tail means (`tail_mean_h*`), and exponentially weighted tail reducers (`tail_exp_h*_a*`)."
+        ),
         "",
         "No training is performed in this experiment.",
         "",
@@ -1253,7 +2221,12 @@ def _write_output_readme(
         f"- Candidate counts: `{args.num_chunk_candidates_values}`",
         f"- Betas: `{args.betas}`",
         f"- Value reducers: `{args.value_reducers}`",
+        f"- Explicit comparison reducer override: `{args.comparison_value_reducer}`",
+        f"- Auto comparison tail h override: `{args.comparison_tail_h}`",
+        f"- Auto comparison tail-exp alpha: `{args.comparison_tail_exp_alpha}`",
         f"- Include critic-only: `{args.include_critic_only}`",
+        f"- Include uncertainty-only: `{args.include_uncertainty_only}`",
+        f"- Critic model disabled: `{args.disable_critic_model}`",
         f"- Seed: `{args.seed}`",
         "",
         "## Quick Read",
@@ -1263,6 +2236,16 @@ def _write_output_readme(
     for row in chunk_actor_only_rows:
         lines.append(
             f"- Chunk actor-only m={row['chunk_size']} K={row['num_chunk_candidates']}: "
+            f"`{row['mean_task_score']:.6f}`"
+        )
+    for row in uncertainty_rows:
+        lines.append(
+            f"- Chunk uncertainty m={row['chunk_size']} K={row['num_chunk_candidates']}: "
+            f"`{row['mean_task_score']:.6f}`"
+        )
+    for row in critic_only_end_rows:
+        lines.append(
+            f"- Chunk critic end-value m={row['chunk_size']} K={row['num_chunk_candidates']}: "
             f"`{row['mean_task_score']:.6f}`"
         )
     if best_actor_plus_critic is not None:
@@ -1279,6 +2262,7 @@ def _write_output_readme(
             "- `main_results.csv`",
             "- `per_example_results.jsonl`",
             "- `chunk_decision_results.jsonl`",
+            "- `reducer_comparisons.json` (when comparison rows are available)",
         ]
     )
     (output_dir / "README.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1290,6 +2274,13 @@ def main() -> int:
         raise ValueError(f"All chunk sizes must be > 0, got {args.chunk_sizes}")
     if args.num_chunk_candidates_values and any(value <= 0 for value in args.num_chunk_candidates_values):
         raise ValueError(f"All num_chunk_candidates values must be > 0, got {args.num_chunk_candidates_values}")
+    if args.comparison_tail_h is not None and args.comparison_tail_h <= 0:
+        raise ValueError(f"comparison_tail_h must be > 0, got {args.comparison_tail_h}")
+    if args.comparison_tail_exp_alpha is not None and not (0.0 < args.comparison_tail_exp_alpha < 1.0):
+        raise ValueError(
+            "comparison_tail_exp_alpha must be strictly between 0 and 1, "
+            f"got {args.comparison_tail_exp_alpha}"
+        )
 
     repo_root = Path(__file__).resolve().parent.parent
     output_dir = Path(args.output_dir).resolve()
@@ -1301,12 +2292,6 @@ def main() -> int:
         actor_checkpoint_dir,
         component="actor",
         merged_root=Path(args.actor_merged_root).resolve() if args.actor_merged_root else None,
-        skip_merge=args.skip_merge,
-    )
-    critic_hf_dir = ensure_merged_component_checkpoint(
-        critic_checkpoint_dir,
-        component="critic",
-        merged_root=Path(args.critic_merged_root).resolve() if args.critic_merged_root else None,
         skip_merge=args.skip_merge,
     )
 
@@ -1330,6 +2315,24 @@ def main() -> int:
     run_specs = build_run_specs(args)
     if not run_specs:
         raise ValueError("No run specifications were built from the provided arguments.")
+    if args.disable_critic_model:
+        invalid_specs = [spec.config_id for spec in run_specs if _spec_requires_critic(spec)]
+        if invalid_specs:
+            raise ValueError(
+                "Critic loading is disabled, but the following configs still require critic values or diagnostics: "
+                + ", ".join(invalid_specs)
+            )
+
+    critic_hf_dir = (
+        None
+        if args.disable_critic_model
+        else ensure_merged_component_checkpoint(
+            critic_checkpoint_dir,
+            component="critic",
+            merged_root=Path(args.critic_merged_root).resolve() if args.critic_merged_root else None,
+            skip_merge=args.skip_merge,
+        )
+    )
 
     worker_pairs = parse_worker_pairs(
         args.worker_pairs,
@@ -1375,18 +2378,26 @@ def main() -> int:
             )
     else:
         actor_device = resolve_device(worker_pairs[0][0])
-        critic_device = resolve_device(worker_pairs[0][1]) if worker_pairs[0][1] else actor_device
+        critic_device = (
+            resolve_device(worker_pairs[0][1])
+            if worker_pairs[0][1] and not args.disable_critic_model
+            else None
+        )
         actor = load_actor_model(
             actor_hf_dir,
             dtype=dtype,
             device=actor_device,
             trust_remote_code=args.trust_remote_code,
         )
-        critic = load_critic_model(
-            critic_hf_dir,
-            dtype=dtype,
-            device=critic_device,
-            trust_remote_code=args.trust_remote_code,
+        critic = (
+            load_critic_model(
+                critic_hf_dir,
+                dtype=dtype,
+                device=critic_device,
+                trust_remote_code=args.trust_remote_code,
+            )
+            if critic_hf_dir is not None and critic_device is not None
+            else None
         )
 
         per_example_path = output_dir / "per_example_results.jsonl"
@@ -1432,7 +2443,7 @@ def main() -> int:
             {
                 "worker_id": 0,
                 "actor_device": str(actor_device),
-                "critic_device": str(critic_device),
+                "critic_device": None if critic_device is None else str(critic_device),
                 "example_start": 0,
                 "example_end": len(examples),
                 "num_examples": len(examples),
@@ -1454,9 +2465,14 @@ def main() -> int:
         )
         for spec in run_specs
     ]
+    reducer_comparisons = build_reducer_comparisons(
+        run_specs=run_specs,
+        example_results_by_config=example_results_by_config,
+        bootstrap_seed=args.seed,
+    )
 
     csv_path = output_dir / "main_results.csv"
-    fieldnames = [
+    base_fieldnames = [
         "config_id",
         "method_name",
         "score_mode",
@@ -1464,6 +2480,13 @@ def main() -> int:
         "num_chunk_candidates",
         "beta",
         "value_reducer",
+        "value_reducer_kind",
+        "value_reducer_tail_length",
+        "value_reducer_alpha",
+        "comparison_value_reducer",
+        "comparison_value_reducer_kind",
+        "comparison_value_reducer_tail_length",
+        "comparison_value_reducer_alpha",
         "actor_sampling_mode",
         "actor_temperature",
         "actor_top_p",
@@ -1478,9 +2501,19 @@ def main() -> int:
         "mean_realized_chunk_length",
         "mean_selected_chunk_logprob",
         "mean_selected_chunk_value",
+        "mean_selected_chunk_reducer_value",
         "mean_selected_chunk_end_value",
         "mean_selected_chunk_mean_value",
+        "mean_selected_chunk_uncertainty",
+        "mean_selected_chunk_entropy_horizon_mean",
+        "mean_selected_chunk_tail_mean_h2",
+        "mean_selected_chunk_tail_mean_h4",
+        "mean_selected_chunk_tail_mean_h8",
+        "mean_selected_chunk_tail_mean_h16",
         "mean_fraction_chunk_decisions_different_from_actor_only_chunk_winner",
+        "mean_fraction_chunk_decisions_different_from_endvalue_winner",
+        "mean_fraction_chunk_decisions_different_from_uncertainty_winner",
+        "mean_fraction_chunk_decisions_different_from_comparison_winner",
         "mean_selected_chunk_score_margin",
         "fraction_selected_chunks_with_eos",
         "total_generated_tokens",
@@ -1489,11 +2522,17 @@ def main() -> int:
         "overall_tokens_per_second",
         "mean_tokens_per_second",
     ]
+    dynamic_fieldnames = sorted({key for row in aggregate_rows for key in row.keys()} - set(base_fieldnames))
+    fieldnames = base_fieldnames + dynamic_fieldnames
     with csv_path.open("w", encoding="utf-8", newline="") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writeheader()
         for row in aggregate_rows:
             writer.writerow(row)
+
+    reducer_comparisons_path = output_dir / "reducer_comparisons.json"
+    with reducer_comparisons_path.open("w", encoding="utf-8") as comparison_file:
+        json.dump(reducer_comparisons, comparison_file, ensure_ascii=True, indent=2)
 
     summary_payload = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -1502,9 +2541,10 @@ def main() -> int:
         "actor_checkpoint_dir": str(actor_checkpoint_dir),
         "critic_checkpoint_dir": str(critic_checkpoint_dir),
         "merged_actor_dir": str(actor_hf_dir),
-        "merged_critic_dir": str(critic_hf_dir),
+        "merged_critic_dir": None if critic_hf_dir is None else str(critic_hf_dir),
         "dataset_path": str(Path(args.dataset_path).resolve()),
         "output_dir": str(output_dir),
+        "critic_model_disabled": bool(args.disable_critic_model),
         "multi_worker_enabled": multi_worker_enabled,
         "actor_device": None if actor_device is None else str(actor_device),
         "critic_device": None if critic_device is None else str(critic_device),
@@ -1516,6 +2556,7 @@ def main() -> int:
         "run_args": vars(args),
         "run_specs": [asdict(spec) for spec in run_specs],
         "aggregate_metrics": aggregate_rows,
+        "reducer_comparisons": reducer_comparisons,
     }
     summary_path = output_dir / "summary_metrics.json"
     with summary_path.open("w", encoding="utf-8") as summary_file:

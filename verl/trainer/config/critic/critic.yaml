@@ -124,7 +124,7 @@ value_target_scale_max: 1.0
 value_target_out_of_range: error
 
 # Critic objective variant: "ppo_regression", "prompt_baseline_regression",
-# "prompt_baseline_bce", or "prompt_residual_regression"
+# "prompt_baseline_bce", "prompt_residual_regression", "chunk_boundary_bce", or "chunk_boundary_mse"
 value_loss_mode: ppo_regression
 
 # Weight on the prompt-prior regression term when value_loss_mode=prompt_residual_regression

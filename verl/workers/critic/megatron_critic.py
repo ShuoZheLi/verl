@@ -31,6 +31,7 @@ from torch import nn
 
 from verl import DataProto
 from verl.trainer.ppo import core_algos
+from verl.trainer.ppo.chunk_boundary_value import build_response_state_mask
 from verl.trainer.ppo.value_categorical import extract_value_head_spec, value_logits_to_scalar_expectation
 from verl.utils.device import get_device_id, get_torch_device
 from verl.utils.megatron.pipeline_parallel import make_batch_generator
@@ -87,6 +88,21 @@ class MegatronPPOCritic(BasePPOCritic):
             assert config.data_loader_seed is not None, "If shuffle dataloader, seed must be manually set"
         self.config = config
 
+    def _use_chunk_boundary_value_loss(self) -> bool:
+        return self.config.value_loss_mode in {"chunk_boundary_bce", "chunk_boundary_mse"}
+
+    def _chunk_boundary_loss_type(self) -> str:
+        if self.config.value_loss_mode == "chunk_boundary_bce":
+            return "bce"
+        if self.config.value_loss_mode == "chunk_boundary_mse":
+            return "mse"
+        raise ValueError(f"Unsupported chunk-boundary value_loss_mode: {self.config.value_loss_mode}.")
+
+    def _value_output_slice(self, response_length: int) -> slice:
+        if self._use_chunk_boundary_value_loss():
+            return slice(-response_length - 1, None)
+        return slice(-response_length - 1, -1)
+
     @GPUMemoryLogger("megatron critic", logger=logger)
     def compute_values(self, data: DataProto) -> DataProto:
         prev_modes = [m.training for m in self.critic_module]
@@ -132,23 +148,38 @@ class MegatronPPOCritic(BasePPOCritic):
                     values = torch.empty_like(attention_mask, dtype=torch.float32)
 
             # each tp ranks should contain the same value
-            values = values[
-                :, -response_length - 1 : -1
-            ]  # Values are predicted at the ends of prefixes, e.g., the last prompt token
+            values = values[:, self._value_output_slice(response_length)]
             if self.value_spec.is_categorical():
                 values, _, _ = value_logits_to_scalar_expectation(values, self.value_spec)
             response_mask = data.batch["response_mask"] if "response_mask" in data.batch else attention_mask[:, -response_length:]
-            values = values * response_mask  # Only action tokens have values
-            values = values.contiguous()
+            if self._use_chunk_boundary_value_loss():
+                state_mask = build_response_state_mask(response_mask)
+                chunk_boundary_values = values * state_mask.to(dtype=values.dtype)
+                values = values[:, :-1] * response_mask.to(dtype=values.dtype)
+                values = {"values": values.contiguous(), "chunk_boundary_values": chunk_boundary_values.contiguous()}
+            else:
+                values = (values * response_mask).contiguous()  # Only action tokens have values
 
             # sync among pp ranks
-            values = values.to(get_device_id())
-            torch.distributed.broadcast(
-                tensor=values,
-                src=mpu.get_pipeline_model_parallel_last_rank(),
-                group=mpu.get_pipeline_model_parallel_group(),
-            )
-            values = values.to("cpu")
+            if isinstance(values, dict):
+                synced_values = {}
+                for key, tensor in values.items():
+                    tensor = tensor.to(get_device_id())
+                    torch.distributed.broadcast(
+                        tensor=tensor,
+                        src=mpu.get_pipeline_model_parallel_last_rank(),
+                        group=mpu.get_pipeline_model_parallel_group(),
+                    )
+                    synced_values[key] = tensor.to("cpu")
+                values = synced_values
+            else:
+                values = values.to(get_device_id())
+                torch.distributed.broadcast(
+                    tensor=values,
+                    src=mpu.get_pipeline_model_parallel_last_rank(),
+                    group=mpu.get_pipeline_model_parallel_group(),
+                )
+                values = values.to("cpu")
 
         # add empty cache after each compute
         get_torch_device().empty_cache()
@@ -158,7 +189,11 @@ class MegatronPPOCritic(BasePPOCritic):
         return values
 
     def make_minibatch_iterator(self, data: DataProto) -> Iterable[DataProto]:
-        select_keys = ["input_ids", "responses", "response_mask", "attention_mask", "position_ids", "values", "returns"]
+        select_keys = ["input_ids", "responses", "response_mask", "attention_mask", "position_ids"]
+        if self._use_chunk_boundary_value_loss():
+            select_keys.extend(["chunk_boundary_mask", "chunk_boundary_targets", "chunk_boundary_weights"])
+        else:
+            select_keys.extend(["values", "returns"])
         data = data.select(batch_keys=select_keys)
         return data.make_iterator(
             mini_batch_size=self.config.ppo_mini_batch_size,
@@ -226,20 +261,38 @@ class MegatronPPOCritic(BasePPOCritic):
 
             responses = data["responses"]
             attention_mask = data["attention_mask"]
-            values = data["values"]
-            returns = data["returns"]
             response_length = responses.size(1)
 
             response_mask = data["response_mask"] if "response_mask" in data.keys() else attention_mask[:, -response_length:]
 
             cliprange_value = self.config.cliprange_value
 
-            vpreds_or_logits = output[:, -response_length - 1 : -1]
-            if self.config.value_loss_mode == "prompt_baseline_regression":
+            vpreds_or_logits = output[:, self._value_output_slice(response_length)]
+            if self.config.value_loss_mode == "chunk_boundary_bce":
+                if self.value_spec.is_categorical():
+                    raise ValueError("critic.value_loss_mode=chunk_boundary_bce requires critic.value_head_type=scalar.")
+                vf_loss, vf_clipfrac, vpreds, categorical_metrics = core_algos.compute_chunk_boundary_bce_value_loss(
+                    vpred_logits=vpreds_or_logits,
+                    boundary_targets=data["chunk_boundary_targets"],
+                    boundary_mask=data["chunk_boundary_mask"],
+                    boundary_weights=data["chunk_boundary_weights"],
+                )
+            elif self.config.value_loss_mode == "chunk_boundary_mse":
+                if self.value_spec.is_categorical():
+                    raise ValueError("critic.value_loss_mode=chunk_boundary_mse requires critic.value_head_type=scalar.")
+                vf_loss, vf_clipfrac, vpreds, categorical_metrics = core_algos.compute_chunk_boundary_mse_value_loss(
+                    vpreds=vpreds_or_logits,
+                    boundary_targets=data["chunk_boundary_targets"],
+                    boundary_mask=data["chunk_boundary_mask"],
+                    boundary_weights=data["chunk_boundary_weights"],
+                )
+            elif self.config.value_loss_mode == "prompt_baseline_regression":
                 if self.value_spec.is_categorical():
                     raise ValueError(
                         "critic.value_loss_mode=prompt_baseline_regression requires critic.value_head_type=scalar."
                     )
+                values = data["values"]
+                returns = data["returns"]
                 vpreds = vpreds_or_logits
                 vf_loss, vf_clipfrac, vpreds, categorical_metrics = core_algos.compute_prompt_baseline_regression_value_loss(
                     vpreds=vpreds,
@@ -252,6 +305,8 @@ class MegatronPPOCritic(BasePPOCritic):
             elif self.config.value_loss_mode == "prompt_baseline_bce":
                 if self.value_spec.is_categorical():
                     raise ValueError("critic.value_loss_mode=prompt_baseline_bce requires critic.value_head_type=scalar.")
+                values = data["values"]
+                returns = data["returns"]
                 vpreds = None
                 vf_loss, vf_clipfrac, vpreds, categorical_metrics = core_algos.compute_prompt_baseline_bce_value_loss(
                     vpred_logits=vpreds_or_logits,
@@ -262,6 +317,8 @@ class MegatronPPOCritic(BasePPOCritic):
                     loss_agg_mode=self.config.loss_agg_mode,
                 )
             elif self.value_spec.is_categorical():
+                values = data["values"]
+                returns = data["returns"]
                 vf_loss, vf_clipfrac, vpreds, categorical_metrics = core_algos.compute_categorical_value_loss(
                     value_logits=vpreds_or_logits,
                     values=values,
@@ -272,6 +329,8 @@ class MegatronPPOCritic(BasePPOCritic):
                     loss_agg_mode=self.config.loss_agg_mode,
                 )
             else:
+                values = data["values"]
+                returns = data["returns"]
                 vpreds = vpreds_or_logits
                 vf_loss, vf_clipfrac = core_algos.compute_value_loss(
                     vpreds=vpreds,
@@ -286,7 +345,10 @@ class MegatronPPOCritic(BasePPOCritic):
             stats = {
                 "critic/vf_loss": vf_loss.detach().item(),
                 "critic/vf_clipfrac": vf_clipfrac.detach().item(),
-                "critic/vpred_mean": masked_mean(vpreds, response_mask).detach().item(),
+                "critic/vpred_mean": masked_mean(
+                    vpreds,
+                    data["chunk_boundary_mask"] if self._use_chunk_boundary_value_loss() else response_mask,
+                ).detach().item(),
             }
             for metric_name, metric_value in categorical_metrics.items():
                 if isinstance(metric_value, torch.Tensor):

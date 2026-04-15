@@ -134,6 +134,21 @@ algorithm:
     # Power used for weight scaling in "pow" method
     weight_pow: 2.0
 
+  # Critic-only chunk-boundary value training mode
+  chunk_boundary_critic:
+
+    # Enable chunk-boundary critic supervision and freeze actor updates
+    enable: False
+
+    # Number of generated tokens between successive chunk-boundary states
+    chunk_size: 32
+
+    # Critic loss on chunk-boundary states: "bce" or "mse"
+    loss_type: bce
+
+    # If True, each boundary state gets equal weight. If False, each rollout contributes equal total weight.
+    uniform_per_state_weight: False
+
 # config for the trainer
 trainer:
 
