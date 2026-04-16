@@ -25,14 +25,16 @@ MAX_PROMPT_LENGTH=2048
 MAX_NEW_TOKENS=2048
 DTYPE="bf16"
 
-# --- 4-GPU Prompt Sharding ----------------------------------------------------
-# Recommended default on a 4-GPU machine:
+# --- 8-GPU Prompt Sharding ----------------------------------------------------
+# Recommended default on an 8-GPU machine:
 #   worker 0: actor=cuda:0, critic=cuda:1
 #   worker 1: actor=cuda:2, critic=cuda:3
+#   worker 2: actor=cuda:4, critic=cuda:5
+#   worker 3: actor=cuda:6, critic=cuda:7
 DEVICE=""
 ACTOR_DEVICE=""
 CRITIC_DEVICE=""
-WORKER_PAIRS="cuda:0,cuda:1 cuda:2,cuda:3"
+WORKER_PAIRS="cuda:0,cuda:1 cuda:2,cuda:3 cuda:4,cuda:5 cuda:6,cuda:7"
 
 # --- Actor Sampling -----------------------------------------------------------
 ACTOR_SAMPLING_MODE="sample"
@@ -41,7 +43,7 @@ ACTOR_TOP_P=1.0
 ACTOR_TOP_K=0
 
 # --- Chunk Grid ---------------------------------------------------------------
-CHUNK_SIZES="256"
+CHUNK_SIZES="32 64 128 256"
 NUM_CHUNK_CANDIDATES_VALUES="2 4 8"
 BETAS="0"
 VALUE_REDUCERS="end"       # Add "mean" for the ablation.
@@ -51,7 +53,7 @@ ONLY_CRITIC_ONLY=1         # 1 = run only critic-only chunk rerank configs
 
 # --- Misc ---------------------------------------------------------------------
 NORMALIZATION_EPS=1e-6
-SEED="42"
+SEED="42 111 222"
 SKIP_MERGE=0
 DISABLE_ACTOR_CACHE=0
 DEBUG_FULL_CHUNK_CANDIDATES=0
