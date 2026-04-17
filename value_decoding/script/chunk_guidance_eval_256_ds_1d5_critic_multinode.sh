@@ -61,6 +61,10 @@ LOG_DIR="${RUN_DIR}/logs"
 OUTPUT_DIR="${RUN_DIR}/chunk_guidance_eval_7b_seed_42"
 ACTOR_MERGED_ROOT="${RUN_DIR}/merged_actor_hf"
 CRITIC_MERGED_ROOT="${RUN_DIR}/merged_critic_hf"
+# Optional override directories for HF config/tokenizer metadata used during FSDP merge.
+# Set these if the raw checkpoint was copied without actor/critic/huggingface.
+ACTOR_HF_SOURCE_DIR=""
+CRITIC_HF_SOURCE_DIR=""
 
 mkdir -p "$LOG_DIR" "$ARCHIVE_ROOT" "$OUTPUT_DIR"
 
@@ -342,6 +346,8 @@ run_one_seed() {
 
   [[ -n "$RESPONSE_KEY" ]] && CMD+=(--response_key "$RESPONSE_KEY")
   [[ -n "$MAX_EXAMPLES" ]] && CMD+=(--max_examples "$MAX_EXAMPLES")
+  [[ -n "$ACTOR_HF_SOURCE_DIR" ]] && CMD+=(--actor_hf_source_dir "$ACTOR_HF_SOURCE_DIR")
+  [[ -n "$CRITIC_HF_SOURCE_DIR" ]] && CMD+=(--critic_hf_source_dir "$CRITIC_HF_SOURCE_DIR")
   [[ ${#WORKER_PAIRS_ARR[@]} -gt 0 ]] && CMD+=(--worker_pairs "${WORKER_PAIRS_ARR[@]}")
   [[ "$SHUFFLE_EXAMPLES" != "0" ]] && CMD+=(--shuffle_examples)
   [[ "$SKIP_MERGE" != "0" ]] && CMD+=(--skip_merge)

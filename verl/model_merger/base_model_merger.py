@@ -16,6 +16,7 @@ import argparse
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 import torch
@@ -39,6 +40,15 @@ def parse_args():
         "--backend", type=str, required=True, choices=["fsdp", "megatron"], help="The backend of the model"
     )
     base_op_parser.add_argument("--local_dir", type=str, default=None, help="Path to the saved model checkpoints.")
+    base_op_parser.add_argument(
+        "--hf_model_config_path",
+        type=str,
+        default=None,
+        help=(
+            "Optional directory containing the Hugging Face config/tokenizer metadata used to reconstruct the "
+            "merged model. Defaults to <local_dir>/huggingface."
+        ),
+    )
     base_op_parser.add_argument(
         "--tie-word-embedding",
         action="store_true",
@@ -131,7 +141,7 @@ def generate_config_from_args(args: argparse.Namespace) -> ModelMergerConfig:
         "trust_remote_code": args.trust_remote_code,
         "is_value_model": args.is_value_model,
         "local_dir": args.local_dir,
-        "hf_model_config_path": os.path.join(args.local_dir, "huggingface"),
+        "hf_model_config_path": args.hf_model_config_path or os.path.join(args.local_dir, "huggingface"),
         "use_cpu_initialization": args.use_cpu_initialization,
     }
 
@@ -183,6 +193,14 @@ class BaseModelMerger(ABC):
     def __init__(self, config: ModelMergerConfig):
         self.config = config
         self.hf_model_config_path = config.hf_model_config_path
+        if not self.hf_model_config_path:
+            raise ValueError("hf_model_config_path must be provided for model merging.")
+        hf_config_dir = Path(self.hf_model_config_path)
+        if not hf_config_dir.is_dir() or not (hf_config_dir / "config.json").is_file():
+            raise FileNotFoundError(
+                f"Hugging Face config metadata directory is invalid: {hf_config_dir}. "
+                "Expected a directory containing config.json and tokenizer files."
+            )
         self.model_config = AutoConfig.from_pretrained(
             self.hf_model_config_path, trust_remote_code=self.config.trust_remote_code
         )

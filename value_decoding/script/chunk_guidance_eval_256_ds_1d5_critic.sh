@@ -10,6 +10,8 @@ set -eo pipefail
 # --- Checkpoints --------------------------------------------------------------
 ACTOR_CHECKPOINT_DIR="/data/shuozhe/verl/train_log/job_05b_vh_init_e5_metamath/global_step_800"
 CRITIC_CHECKPOINT_DIR="/data/shuozhe/verl/train_log/job_policy_gs800_dsk_1d5b_critic/global_step_750"
+ACTOR_HF_SOURCE_DIR=""
+CRITIC_HF_SOURCE_DIR=""
 
 # --- Data ---------------------------------------------------------------------
 DATASET_PATH="/data/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet"
@@ -124,6 +126,8 @@ run_one_seed() {
   [[ -n "${DEVICE}" ]] && CMD+=(--device "${DEVICE}")
   [[ -n "${ACTOR_DEVICE}" ]] && CMD+=(--actor_device "${ACTOR_DEVICE}")
   [[ -n "${CRITIC_DEVICE}" ]] && CMD+=(--critic_device "${CRITIC_DEVICE}")
+  [[ -n "${ACTOR_HF_SOURCE_DIR}" ]] && CMD+=(--actor_hf_source_dir "${ACTOR_HF_SOURCE_DIR}")
+  [[ -n "${CRITIC_HF_SOURCE_DIR}" ]] && CMD+=(--critic_hf_source_dir "${CRITIC_HF_SOURCE_DIR}")
   [[ ${#WORKER_PAIRS_ARR[@]} -gt 0 ]] && CMD+=(--worker_pairs "${WORKER_PAIRS_ARR[@]}")
   [[ -n "${RAY_ADDRESS}" ]] && CMD+=(--ray_address "${RAY_ADDRESS}" --ray_num_cpus_per_worker "${RAY_NUM_CPUS_PER_WORKER}")
   [[ "${SHUFFLE_EXAMPLES}" != "0" ]] && CMD+=(--shuffle_examples)

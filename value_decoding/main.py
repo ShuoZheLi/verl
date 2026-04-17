@@ -45,6 +45,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset_path", type=str, required=True, help="Evaluation parquet dataset.")
     parser.add_argument("--output_dir", type=str, required=True, help="Directory for experiment outputs.")
     parser.add_argument("--merged_root", type=str, default=None, help="Optional directory for merged HF weights.")
+    parser.add_argument(
+        "--actor_hf_source_dir",
+        type=str,
+        default=None,
+        help=(
+            "Optional Hugging Face config/tokenizer directory for the actor merge. "
+            "Use this when the raw actor checkpoint was copied without actor/huggingface."
+        ),
+    )
+    parser.add_argument(
+        "--critic_hf_source_dir",
+        type=str,
+        default=None,
+        help=(
+            "Optional Hugging Face config/tokenizer directory for the critic merge. "
+            "Use this when the raw critic checkpoint was copied without critic/huggingface."
+        ),
+    )
     parser.add_argument("--prompt_key", type=str, default="prompt")
     parser.add_argument("--response_key", type=str, default=None, help="Optional response/ground-truth column key.")
     parser.add_argument("--start_index", type=int, default=0)
@@ -403,6 +421,8 @@ def main() -> int:
     actor_hf_dir, critic_hf_dir = ensure_merged_checkpoints(
         checkpoint_dir,
         merged_root=merged_root,
+        actor_hf_source_dir=Path(args.actor_hf_source_dir).resolve() if args.actor_hf_source_dir else None,
+        critic_hf_source_dir=Path(args.critic_hf_source_dir).resolve() if args.critic_hf_source_dir else None,
         skip_merge=args.skip_merge,
     )
 

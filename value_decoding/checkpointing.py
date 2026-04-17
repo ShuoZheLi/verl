@@ -25,7 +25,65 @@ def has_hf_weights(model_dir: Path) -> bool:
     return False
 
 
-def merge_fsdp_checkpoint(local_dir: Path, target_dir: Path) -> None:
+def has_hf_config(model_dir: Path) -> bool:
+    return model_dir.exists() and (model_dir / "config.json").is_file()
+
+
+def has_complete_hf_checkpoint(model_dir: Path) -> bool:
+    return has_hf_weights(model_dir) and has_hf_config(model_dir)
+
+
+def _candidate_hf_source_dirs(
+    checkpoint_dir: Path,
+    *,
+    component: str,
+    hf_source_dir: Path | None,
+) -> list[Path]:
+    local_dir = checkpoint_dir / component
+    candidates: list[Path] = []
+
+    def add(candidate: Path | None) -> None:
+        if candidate is None:
+            return
+        candidate = Path(candidate)
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    add(hf_source_dir)
+    add(checkpoint_dir / "merged_hf" / component)
+    add(local_dir / "huggingface")
+    add(local_dir)
+    add(checkpoint_dir / "huggingface" / component)
+    add(checkpoint_dir / "huggingface")
+    return candidates
+
+
+def resolve_hf_source_dir(
+    checkpoint_dir: Path,
+    *,
+    component: str,
+    hf_source_dir: Path | None = None,
+) -> Path:
+    candidates = _candidate_hf_source_dirs(
+        checkpoint_dir,
+        component=component,
+        hf_source_dir=hf_source_dir,
+    )
+    for candidate in candidates:
+        if has_hf_config(candidate):
+            return candidate
+
+    tried = "\n".join(f"- {candidate}" for candidate in candidates)
+    component_flag = f"--{component}_hf_source_dir"
+    raise FileNotFoundError(
+        f"Unable to locate Hugging Face config metadata for {component!r} under checkpoint {checkpoint_dir}.\n"
+        f"Tried:\n{tried}\n"
+        f"If this checkpoint was copied without its per-component 'huggingface/' folder, pass {component_flag} "
+        "to a directory containing the original config/tokenizer files."
+    )
+
+
+def merge_fsdp_checkpoint(local_dir: Path, target_dir: Path, *, hf_model_config_path: Path | None = None) -> None:
     target_dir.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         sys.executable,
@@ -39,6 +97,8 @@ def merge_fsdp_checkpoint(local_dir: Path, target_dir: Path) -> None:
         "--target_dir",
         str(target_dir),
     ]
+    if hf_model_config_path is not None:
+        cmd.extend(["--hf_model_config_path", str(hf_model_config_path)])
     subprocess.run(cmd, check=True)
 
 
@@ -47,6 +107,7 @@ def ensure_merged_component_checkpoint(
     *,
     component: str,
     merged_root: Path | None = None,
+    hf_source_dir: Path | None = None,
     skip_merge: bool = False,
 ) -> Path:
     if component not in {"actor", "critic"}:
@@ -54,14 +115,32 @@ def ensure_merged_component_checkpoint(
 
     merged_root = merged_root or (checkpoint_dir / "merged_hf")
     target_dir = merged_root / component
+    local_dir = checkpoint_dir / component
 
-    if not skip_merge:
-        local_dir = checkpoint_dir / component
-        if not has_hf_weights(target_dir):
-            merge_fsdp_checkpoint(local_dir, target_dir)
+    # Prefer any complete HF checkpoint that already exists so we do not
+    # re-merge shards unnecessarily on every evaluation run.
+    for existing_dir in (target_dir, checkpoint_dir / "merged_hf" / component, local_dir):
+        if has_complete_hf_checkpoint(existing_dir):
+            return existing_dir
 
-    if not has_hf_weights(target_dir):
-        raise FileNotFoundError(f"{component.capitalize()} HF weights not found in {target_dir}")
+    if not skip_merge and not has_complete_hf_checkpoint(target_dir):
+        resolved_hf_source_dir = resolve_hf_source_dir(
+            checkpoint_dir,
+            component=component,
+            hf_source_dir=hf_source_dir,
+        )
+        merge_fsdp_checkpoint(local_dir, target_dir, hf_model_config_path=resolved_hf_source_dir)
+
+    if not has_complete_hf_checkpoint(target_dir):
+        if skip_merge:
+            raise FileNotFoundError(
+                f"{component.capitalize()} HF checkpoint not found in {target_dir}. "
+                "Disable --skip_merge or provide a checkpoint that already contains merged HF weights."
+            )
+        raise FileNotFoundError(
+            f"{component.capitalize()} HF checkpoint is incomplete in {target_dir}. "
+            "Expected merged weights plus config.json after the merge step."
+        )
     return target_dir
 
 
@@ -69,18 +148,22 @@ def ensure_merged_checkpoints(
     checkpoint_dir: Path,
     *,
     merged_root: Path | None = None,
+    actor_hf_source_dir: Path | None = None,
+    critic_hf_source_dir: Path | None = None,
     skip_merge: bool = False,
 ) -> tuple[Path, Path]:
     actor_hf = ensure_merged_component_checkpoint(
         checkpoint_dir,
         component="actor",
         merged_root=merged_root,
+        hf_source_dir=actor_hf_source_dir,
         skip_merge=skip_merge,
     )
     critic_hf = ensure_merged_component_checkpoint(
         checkpoint_dir,
         component="critic",
         merged_root=merged_root,
+        hf_source_dir=critic_hf_source_dir,
         skip_merge=skip_merge,
     )
     return actor_hf, critic_hf
