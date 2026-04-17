@@ -132,6 +132,26 @@ stop_ray_all_nodes() {
   done
 }
 
+count_alive_ray_nodes() {
+  local ray_address="$1"
+  python3 - "$ray_address" <<'PY'
+import logging
+import sys
+
+address = sys.argv[1]
+
+import ray
+
+try:
+    ray.init(address=address, logging_level=logging.ERROR)
+    alive_nodes = sum(1 for node in ray.nodes() if node.get("Alive"))
+    print(alive_nodes)
+finally:
+    if ray.is_initialized():
+        ray.shutdown()
+PY
+}
+
 cleanup() {
   echo "Stopping Ray on all nodes..."
   stop_ray_all_nodes || true
@@ -239,8 +259,14 @@ wait
 echo "Waiting for all Ray nodes to register..."
 alive_nodes=0
 all_nodes_ready=0
+RAY_NODE_PROBE_LOG="$LOG_DIR/ray_node_probe.log"
+: > "$RAY_NODE_PROBE_LOG"
 for i in {1..30}; do
-  alive_nodes=$(ray nodes --address="$ip_head" 2>/dev/null | grep -c 'ALIVE' || true)
+  if alive_nodes="$(count_alive_ray_nodes "$ip_head" 2>>"$RAY_NODE_PROBE_LOG")"; then
+    :
+  else
+    alive_nodes=0
+  fi
   if [[ "$alive_nodes" -ge "$SLURM_JOB_NUM_NODES" ]]; then
     echo "All $alive_nodes Ray nodes are registered."
     all_nodes_ready=1
@@ -251,6 +277,10 @@ for i in {1..30}; do
 done
 if [[ "$all_nodes_ready" != "1" ]]; then
   echo "Expected $SLURM_JOB_NUM_NODES Ray nodes, but only $alive_nodes registered." >&2
+  if [[ -s "$RAY_NODE_PROBE_LOG" ]]; then
+    echo "Recent Ray probe errors:" >&2
+    tail -n 20 "$RAY_NODE_PROBE_LOG" >&2 || true
+  fi
   ray status --address="$ip_head" || true
   exit 1
 fi
