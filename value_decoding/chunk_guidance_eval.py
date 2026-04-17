@@ -9,6 +9,7 @@ from queue import Empty
 import re
 import shutil
 import subprocess
+import sys
 import time
 import traceback
 from dataclasses import asdict, dataclass
@@ -60,6 +61,30 @@ STANDARD_TAIL_SUMMARY_LENGTHS = (2, 4, 8, 16)
 DEFAULT_COMPARISON_BOOTSTRAP_SAMPLES = 1_000
 RAY_NODE_RESOURCE_FRACTION = 1e-3
 RAY_PROGRESS_POLL_INTERVAL_SEC = 0.2
+
+
+def _make_main_module_importable() -> None:
+    """Allow Ray/multiprocessing to re-import this module when launched via `python -m`."""
+    if __name__ != "__main__":
+        return
+
+    module_spec = globals().get("__spec__")
+    canonical_name = getattr(module_spec, "name", None)
+    if not canonical_name:
+        return
+
+    module = sys.modules.get(__name__)
+    if module is None:
+        return
+
+    sys.modules[canonical_name] = module
+    for obj in vars(module).values():
+        if getattr(obj, "__module__", None) != __name__:
+            continue
+        try:
+            obj.__module__ = canonical_name
+        except Exception:
+            pass
 
 
 @dataclass(frozen=True)
@@ -3210,6 +3235,8 @@ def main() -> int:
     )
     return 0
 
+
+_make_main_module_importable()
 
 if __name__ == "__main__":
     raise SystemExit(main())

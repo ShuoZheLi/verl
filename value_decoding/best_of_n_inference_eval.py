@@ -11,6 +11,7 @@ import random
 from queue import Empty
 import shutil
 import subprocess
+import sys
 import time
 import traceback
 from collections import OrderedDict
@@ -139,6 +140,30 @@ PRIMARY_PLOT_METHODS = (
 REFERENCE_CRITIC_VALUE_ABS_TOL = 1e-2
 RAY_NODE_RESOURCE_FRACTION = 1e-3
 RAY_PROGRESS_POLL_INTERVAL_SEC = 0.2
+
+
+def _make_main_module_importable() -> None:
+    """Allow Ray/multiprocessing to re-import this module when launched via `python -m`."""
+    if __name__ != "__main__":
+        return
+
+    module_spec = globals().get("__spec__")
+    canonical_name = getattr(module_spec, "name", None)
+    if not canonical_name:
+        return
+
+    module = sys.modules.get(__name__)
+    if module is None:
+        return
+
+    sys.modules[canonical_name] = module
+    for obj in vars(module).values():
+        if getattr(obj, "__module__", None) != __name__:
+            continue
+        try:
+            obj.__module__ = canonical_name
+        except Exception:
+            pass
 
 
 @dataclass(frozen=True)
@@ -2727,6 +2752,8 @@ def main() -> int:
     )
     return 0
 
+
+_make_main_module_importable()
 
 if __name__ == "__main__":
     raise SystemExit(main())
