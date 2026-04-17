@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=chunk_guidance_7b_seed_42
+#SBATCH --job-name=chunk_guidance_7b_seed_111
 #SBATCH --account=ECS26006
 #SBATCH --partition=gh
 #SBATCH --nodes=8
@@ -40,7 +40,7 @@ python3 -V
 # -----------------------------
 # Run identity
 # -----------------------------
-RUN_NAME="chunk_guidance_eval_7b_seed_42"
+RUN_NAME="chunk_guidance_eval_7b_seed_111"
 RUN_ID="${RUN_NAME}_${SLURM_JOB_ID}"
 
 # -----------------------------
@@ -58,7 +58,7 @@ ARCHIVE_DIR="${ARCHIVE_ROOT}/${RUN_ID}"
 SCRATCH_ROOT="${SCRATCH}/value_decoding_runs"
 RUN_DIR="${SCRATCH_ROOT}/${RUN_ID}"
 LOG_DIR="${RUN_DIR}/logs"
-OUTPUT_DIR="${RUN_DIR}/chunk_guidance_eval_7b_seed_42"
+OUTPUT_DIR="${RUN_DIR}/chunk_guidance_eval_7b_seed_111"
 ACTOR_MERGED_ROOT="${RUN_DIR}/merged_actor_hf"
 CRITIC_MERGED_ROOT="${RUN_DIR}/merged_critic_hf"
 # Optional override directories for HF config/tokenizer metadata used during FSDP merge.
@@ -100,7 +100,7 @@ INCLUDE_UNCERTAINTY_ONLY=0
 ONLY_CRITIC_ONLY=1
 
 NORMALIZATION_EPS="1e-6"
-SEED="42"
+SEED="111"
 SKIP_MERGE=0
 DISABLE_ACTOR_CACHE=0
 DEBUG_FULL_CHUNK_CANDIDATES=0
