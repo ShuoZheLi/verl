@@ -48,9 +48,9 @@ python3 -V
 # -----------------------------
 # Run identity
 # -----------------------------
-RUN_NAME="policy_gs800_dsk_1d5b_critic"
-RUN_ID="${RUN_NAME}_${SLURM_JOB_ID}"
-export SLURM_JOB_ID="${RUN_ID}"
+RUN_NAME="7b_dsk_critic"
+REAL_SLURM_JOB_ID="${SLURM_JOB_ID}"
+RUN_ID="${RUN_NAME}_${REAL_SLURM_JOB_ID}"
 
 # -----------------------------
 # Training config
@@ -321,6 +321,6 @@ python3 -m verl.trainer.main_ppo \
   trainer.total_epochs=5 \
   trainer.logger='["console","wandb"]' \
   trainer.project_name="PPO_metamath" \
-  trainer.experiment_name="qwen2.5_0.5B_critic_only_from_policy_${SLURM_JOB_ID}" \
+  trainer.experiment_name="${RUN_ID}" \
   trainer.default_local_dir="${TRAIN_LOG_DIR}" \
   2>&1 | tee "$TRAIN_STDOUT_LOG"
