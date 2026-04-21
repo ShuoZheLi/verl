@@ -56,7 +56,7 @@ RUN_ID="${RUN_NAME}_${REAL_SLURM_JOB_ID}"
 # Training config
 # -----------------------------
 MATH_DAPO_BINARY_REWARD=true
-POLICY_INIT_CKPT="/work2/09576/shuozhe/saved_model/Qwen2.5_7B_PPO_global_step_1000"
+POLICY_INIT_CKPT="/work2/09576/shuozhe/saved_model/Qwen2.5_7B_PPO_global_step_1000/actor"
 CRITIC_INIT_CKPT="/work2/09576/shuozhe/saved_model/DeepSeek-R1-Distill-Qwen-7B"
 CRITIC_ONLY_STEPS=1000000000
 
