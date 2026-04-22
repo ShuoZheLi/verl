@@ -15,7 +15,7 @@ CRITIC_HF_SOURCE_DIR=""
 
 # --- Data ---------------------------------------------------------------------
 DATASET_PATH="/data/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet"
-OUTPUT_DIR="/data/shuozhe/verl/value_decoding/output/chunk_guidance_eval_256_ds_1d5_critic"
+OUTPUT_DIR="/data/shuozhe/verl/value_decoding/output/chunk_guidance_eval_512_1024_ds_1d5_critic"
 PROMPT_KEY="prompt"
 RESPONSE_KEY=""            # Leave empty if unused
 START_INDEX=0
@@ -36,7 +36,8 @@ DTYPE="bf16"
 DEVICE=""
 ACTOR_DEVICE=""
 CRITIC_DEVICE=""
-WORKER_PAIRS="cuda:0,cuda:1 cuda:2,cuda:3 cuda:4,cuda:5 cuda:6,cuda:7"
+# WORKER_PAIRS="cuda:0,cuda:1 cuda:2,cuda:3 cuda:4,cuda:5 cuda:6,cuda:7"
+WORKER_PAIRS="cuda:0,cuda:1 cuda:2,cuda:3"
 
 # --- Actor Sampling -----------------------------------------------------------
 ACTOR_SAMPLING_MODE="sample"
@@ -45,7 +46,7 @@ ACTOR_TOP_P=1.0
 ACTOR_TOP_K=0
 
 # --- Chunk Grid ---------------------------------------------------------------
-CHUNK_SIZES="32 64 128 256"
+CHUNK_SIZES="512 1024"
 NUM_CHUNK_CANDIDATES_VALUES="2 4 8"
 BETAS="0"
 VALUE_REDUCERS="end"       # Add "mean" for the ablation.
@@ -55,7 +56,7 @@ ONLY_CRITIC_ONLY=1         # 1 = run only critic-only chunk rerank configs
 
 # --- Misc ---------------------------------------------------------------------
 NORMALIZATION_EPS=1e-6
-SEED="42 111 222"
+SEED="42"
 SKIP_MERGE=0
 DISABLE_ACTOR_CACHE=0
 DEBUG_FULL_CHUNK_CANDIDATES=0

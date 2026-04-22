@@ -229,6 +229,16 @@ def critic_child_values(critic, prefix_ids: torch.Tensor, candidate_ids: torch.T
     return critic_last_token_values(critic, child_ids)
 
 
+@dataclass(frozen=True)
+class ActorStepperSnapshot:
+    sequence_ids: torch.Tensor
+    attention_mask: torch.Tensor
+    request_cache: bool
+    use_cache: bool
+    past_key_values: Any
+    current_logits: torch.Tensor
+
+
 class ActorStepper:
     def __init__(self, model, prompt_ids: torch.Tensor, *, use_cache: bool = True):
         self.model = model
@@ -250,6 +260,30 @@ class ActorStepper:
         self.use_cache = bool(self.request_cache and past_key_values is not None)
         self.past_key_values = past_key_values if self.use_cache else None
         return outputs.logits[:, -1, :]
+
+    def snapshot(self) -> ActorStepperSnapshot:
+        # We intentionally keep a reference to past_key_values instead of deep-cloning
+        # the KV cache so we can cheaply branch from the same prefix state.
+        return ActorStepperSnapshot(
+            sequence_ids=self.sequence_ids.clone(),
+            attention_mask=self.attention_mask.clone(),
+            request_cache=bool(self.request_cache),
+            use_cache=bool(self.use_cache),
+            past_key_values=self.past_key_values,
+            current_logits=self.current_logits.clone(),
+        )
+
+    @classmethod
+    def from_snapshot(cls, model, snapshot: ActorStepperSnapshot) -> "ActorStepper":
+        self = cls.__new__(cls)
+        self.model = model
+        self.sequence_ids = snapshot.sequence_ids.clone()
+        self.attention_mask = snapshot.attention_mask.clone()
+        self.request_cache = bool(snapshot.request_cache)
+        self.use_cache = bool(snapshot.use_cache)
+        self.past_key_values = snapshot.past_key_values
+        self.current_logits = snapshot.current_logits.clone()
+        return self
 
     @torch.inference_mode()
     def append(self, token_id: int) -> None:

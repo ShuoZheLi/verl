@@ -68,6 +68,16 @@ Additional chunk-guidance outputs:
 - `chunk_decision_results.jsonl`
 - `README.md`
 
+Additional delayed-value-guidance outputs:
+
+- `delayed_value_guidance_summary_metrics.json`
+- `delayed_value_guidance_main_results.csv`
+- `delayed_value_guidance_per_example.jsonl`
+- `accuracy_vs_start_fraction.png`
+- `gain_over_actor_only_vs_start_fraction.png`
+- `overwrite_rate_vs_start_fraction.png`
+- `README.md`
+
 Additional chunk-ranking benchmark outputs:
 
 - `chunk_benchmark_candidates.jsonl`
@@ -216,6 +226,24 @@ The Stage 2 wrapper also supports prompt-sharded multi-worker inference via:
 
 ```bash
 WORKER_LAYOUTS="cuda:0,cuda:1,cuda:2 cuda:3,cuda:1,cuda:2"
+```
+
+Run the delayed-onset token-level value-guidance diagnostic:
+
+```bash
+python -m value_decoding.delayed_value_guidance_eval \
+  --actor_checkpoint_dir /data/shuozhe/verl/train_log/job_05b_vh_init_e5_metamath/global_step_800 \
+  --critic_checkpoint_dir /data/shuozhe/verl/train_log/job_policy_gs800_dsk_1d5b_critic/global_step_750 \
+  --dataset_path /data/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet \
+  --output_dir /data/shuozhe/verl/value_decoding/out_delayed_value_guidance \
+  --max_examples 500 \
+  --seeds 42 111 222 \
+  --start_fractions 0 25 50 75 \
+  --candidate_size 8 \
+  --actor_sampling_mode sample \
+  --actor_temperature 1.0 \
+  --actor_top_p 1.0 \
+  --actor_top_k 0
 ```
 
 This duplicates the actor across two prompt shards and reuses the old/new critic GPUs, which can help when actor sampling is the main bottleneck.
