@@ -56,8 +56,8 @@ RUN_ID="${RUN_NAME}_${REAL_SLURM_JOB_ID}"
 # Training config
 # -----------------------------
 MATH_DAPO_BINARY_REWARD=true
-POLICY_INIT_CKPT="/scratch/09576/shuozhe/verl_runs/7b_dsk_critic_673614/train_log/global_step_950/actor/huggingface"
-CRITIC_INIT_CKPT="/scratch/09576/shuozhe/verl_runs/7b_dsk_critic_673614/train_log/global_step_950/critic/huggingface"
+POLICY_INIT_CKPT="/scratch/09576/shuozhe/verl_runs/7b_dsk_critic_673614/train_log/global_step_950/"
+CRITIC_INIT_CKPT="/scratch/09576/shuozhe/verl_runs/7b_dsk_critic_673614/train_log/global_step_950/"
 CRITIC_ONLY_STEPS=1000000000
 
 # TRAIN_FILE="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/train.parquet"
