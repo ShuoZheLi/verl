@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=ppo_metamath_multinode
-#SBATCH --account=DBS24009
+#SBATCH --account=ECS26006
 #SBATCH --partition=gh
 #SBATCH --nodes=8
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=23:00:00
+#SBATCH --time=10:00:00
 #SBATCH --output=slurm-%j.out
 #SBATCH --error=slurm-%j.err
 
@@ -48,7 +48,7 @@ python3 -V
 # -----------------------------
 # Run identity
 # -----------------------------
-RUN_NAME="7b_dsk_critic"
+RUN_NAME="7b_testset"
 REAL_SLURM_JOB_ID="${SLURM_JOB_ID}"
 RUN_ID="${RUN_NAME}_${REAL_SLURM_JOB_ID}"
 
@@ -56,11 +56,12 @@ RUN_ID="${RUN_NAME}_${REAL_SLURM_JOB_ID}"
 # Training config
 # -----------------------------
 MATH_DAPO_BINARY_REWARD=true
-POLICY_INIT_CKPT="/work2/09576/shuozhe/saved_model/Qwen2.5_7B_PPO_global_step_1000/actor"
-CRITIC_INIT_CKPT="/work2/09576/shuozhe/saved_model/DeepSeek-R1-Distill-Qwen-7B"
+POLICY_INIT_CKPT="/scratch/09576/shuozhe/verl_runs/7b_dsk_critic_673614/train_log/global_step_950/actor"
+CRITIC_INIT_CKPT="/scratch/09576/shuozhe/verl_runs/7b_dsk_critic_673614/train_log/global_step_950/critic"
 CRITIC_ONLY_STEPS=1000000000
 
-TRAIN_FILE="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/train.parquet"
+# TRAIN_FILE="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/train.parquet"
+TRAIN_FILE="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet"
 VAL_FILE="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet"
 
 WORK_DIR="/work2/09576/shuozhe/verl"
