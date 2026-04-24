@@ -85,6 +85,38 @@ TRAIN_STDOUT_LOG="${TRAIN_LOG_DIR}/job_${RUN_ID}.txt"
 # Helpers
 # -----------------------------
 nodes_array=()
+MODEL_PATH_RESOLVER="${WORK_DIR}/tools/resolve_model_init_path.py"
+
+resolve_model_init_path() {
+  local raw_path="$1"
+  local role="$2"
+
+  if [[ ! -f "$MODEL_PATH_RESOLVER" ]]; then
+    echo "Missing model path resolver: $MODEL_PATH_RESOLVER" >&2
+    return 1
+  fi
+
+  python3 "$MODEL_PATH_RESOLVER" \
+    --path "$raw_path" \
+    --role "$role" \
+    --log-dir "$LOG_DIR"
+}
+
+describe_path() {
+  local label="$1"
+  local path="$2"
+
+  echo "$label: $path"
+  if [[ "$path" == *"://"* ]]; then
+    echo "  non-local URI path"
+  elif [[ -d "$path" || -f "$path" ]]; then
+    ls -ld "$path"
+  elif [[ "$path" = /* || "$path" == ./* || "$path" == ../* || "$path" == ~* ]]; then
+    echo "  local path not found"
+  else
+    echo "  passthrough model identifier"
+  fi
+}
 
 sync_to_work() {
   echo "Syncing run directory back to WORK..."
@@ -131,6 +163,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
+POLICY_MODEL_PATH="$(resolve_model_init_path "$POLICY_INIT_CKPT" actor)"
+CRITIC_MODEL_PATH="$(resolve_model_init_path "$CRITIC_INIT_CKPT" critic)"
+
 # -----------------------------
 # Debug info
 # -----------------------------
@@ -140,11 +175,13 @@ echo "SLURM nodes: $SLURM_JOB_NODELIST"
 echo "SCRATCH: $SCRATCH"
 echo "RUN_DIR: $RUN_DIR"
 echo "LOG_DIR: $LOG_DIR"
+describe_path "POLICY_INIT_CKPT" "$POLICY_INIT_CKPT"
+describe_path "POLICY_MODEL_PATH" "$POLICY_MODEL_PATH"
+describe_path "CRITIC_INIT_CKPT" "$CRITIC_INIT_CKPT"
+describe_path "CRITIC_MODEL_PATH" "$CRITIC_MODEL_PATH"
 
 echo "Checking inputs..."
 ls -ld "$WORK_DIR"
-ls -ld "$POLICY_INIT_CKPT"
-ls -ld "$CRITIC_INIT_CKPT"
 ls -lh "$TRAIN_FILE"
 ls -lh "$VAL_FILE"
 
@@ -285,7 +322,7 @@ python3 -m verl.trainer.main_ppo \
   data.train_batch_size=32 \
   data.max_prompt_length=2048 \
   data.max_response_length=2048 \
-  actor_rollout_ref.model.path="${POLICY_INIT_CKPT}" \
+  actor_rollout_ref.model.path="${POLICY_MODEL_PATH}" \
   actor_rollout_ref.actor.optim.lr=0.0 \
   actor_rollout_ref.actor.ppo_mini_batch_size=32 \
   actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
@@ -305,7 +342,7 @@ python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.hybrid_engine=True \
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
   critic.optim.lr=1e-5 \
-  critic.model.path="${CRITIC_INIT_CKPT}" \
+  critic.model.path="${CRITIC_MODEL_PATH}" \
   critic.model.external_lib=trl \
   critic.model.value_head_init_mean=0.0 \
   critic.model.value_head_init_std=0.00001 \

@@ -18,6 +18,12 @@ from pathlib import Path
 import verl.utils.fs as fs
 
 
+def test_normalize_src_path():
+    assert fs.normalize_src_path("/tmp/foo/") == "/tmp/foo"
+    assert fs.normalize_src_path("/") == "/"
+    assert fs.normalize_src_path("hdfs://bucket/path//") == "hdfs://bucket/path"
+
+
 def test_record_and_check_directory_structure(tmp_path):
     # Create test directory structure
     test_dir = tmp_path / "test_dir"

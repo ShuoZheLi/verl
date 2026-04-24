@@ -58,6 +58,26 @@ def md5_encode(path: str) -> str:
     return hashlib.md5(path.encode()).hexdigest()
 
 
+def normalize_src_path(src: str) -> str:
+    """Normalize source paths before local/HDFS copy operations.
+
+    Historically we asserted that callers must not pass a trailing slash because
+    downstream path handling could become inconsistent. In practice that is too
+    brittle for both local checkpoint folders and HDFS-style paths, so we strip
+    trailing slashes here while preserving filesystem or URI roots.
+    """
+    if not src or src == "/":
+        return src
+
+    scheme, sep, rest = src.partition("://")
+    if sep:
+        normalized_rest = rest.rstrip("/")
+        return f"{scheme}://{normalized_rest}" if normalized_rest else src
+
+    normalized_src = src.rstrip("/")
+    return normalized_src or "/"
+
+
 def get_local_temp_path(hdfs_path: str, cache_dir: str) -> str:
     """Generate a unique local cache path for an HDFS resource.
     Creates a MD5-hashed subdirectory in cache_dir to avoid name conflicts,
@@ -235,7 +255,7 @@ def copy_local_path_from_hdfs(
     """Deprecated. Please use copy_to_local instead."""
     from filelock import FileLock
 
-    assert src[-1] != "/", f"Make sure the last char in src is not / because it will cause error. Got {src}"
+    src = normalize_src_path(src)
 
     if is_non_local(src):
         # download from hdfs to local
