@@ -197,6 +197,9 @@ def critic_sequence_values(
 ) -> torch.Tensor:
     if attention_mask is None:
         attention_mask = torch.ones_like(input_ids, device=input_ids.device)
+    custom_sequence_values = getattr(critic, "sequence_values", None)
+    if callable(custom_sequence_values):
+        return custom_sequence_values(input_ids=input_ids, attention_mask=attention_mask)
     outputs = critic(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
     return _extract_scalar_values_from_critic_outputs(critic, outputs)
 
@@ -210,6 +213,9 @@ def critic_sequence_last_values(
 ) -> torch.Tensor:
     if attention_mask is None:
         attention_mask = torch.ones_like(input_ids, device=input_ids.device)
+    custom_sequence_last_values = getattr(critic, "sequence_last_values", None)
+    if callable(custom_sequence_last_values):
+        return custom_sequence_last_values(input_ids=input_ids, attention_mask=attention_mask)
     values = critic_sequence_values(critic, input_ids, attention_mask=attention_mask)
     last_indices = attention_mask.long().sum(dim=-1) - 1
     if torch.any(last_indices < 0):

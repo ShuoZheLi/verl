@@ -86,11 +86,12 @@ from value_decoding.checkpointing import (
     has_complete_hf_checkpoint,
     has_fsdp_checkpoint_shards,
     has_hf_config,
+    resolve_component_checkpoint_dir,
 )
 
 checkpoint_dir = Path(sys.argv[1])
 component = sys.argv[2]
-component_dir = checkpoint_dir / component
+component_dir = resolve_component_checkpoint_dir(checkpoint_dir, component=component)
 
 if has_complete_hf_checkpoint(component_dir):
     print(f"{component}: detected complete Hugging Face checkpoint at {component_dir}")

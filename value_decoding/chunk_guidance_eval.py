@@ -847,9 +847,22 @@ def sample_actor_chunk(
     if critic is not None:
         if critic_device is None:
             raise ValueError("critic_device must be provided when critic scoring is enabled.")
-        full_sequence_ids = actor_state.sequence_ids.to(critic_device)
-        values = critic_sequence_values(critic, full_sequence_ids)[0]
-        chunk_values = values[prefix_length : prefix_length + len(chunk_token_ids)]
+        critic_prefix_ids = prefix_ids.to(critic_device)
+        continuation_values = getattr(critic, "continuation_values", None)
+        if callable(continuation_values):
+            chunk_token_tensor = torch.tensor(
+                chunk_token_ids,
+                device=critic_device,
+                dtype=critic_prefix_ids.dtype,
+            )
+            chunk_values = continuation_values(
+                prefix_ids=critic_prefix_ids,
+                continuation_ids=chunk_token_tensor,
+            )
+        else:
+            full_sequence_ids = actor_state.sequence_ids.to(critic_device)
+            values = critic_sequence_values(critic, full_sequence_ids)[0]
+            chunk_values = values[prefix_length : prefix_length + len(chunk_token_ids)]
         if chunk_values.numel() != len(chunk_token_ids):
             raise RuntimeError("Chunk value extraction length mismatch.")
         chunk_values_tuple = tuple(float(value) for value in chunk_values.tolist())
