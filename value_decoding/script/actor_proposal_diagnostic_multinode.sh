@@ -47,11 +47,11 @@ RUN_ID="${RUN_NAME}_${SLURM_JOB_ID}"
 # Paths
 # -----------------------------
 ACTOR_CHECKPOINT_DIRS=(
-  "/work2/09576/shuozhe/saved_model/Prathyusha101/Qwen2.5_7b_100_ckpt_global_step_100",
+  "/work2/09576/shuozhe/saved_model/Prathyusha101/Qwen2.5_7b_100_ckpt_global_step_100"
   "/work2/09576/shuozhe/saved_model/Prathyusha101/Qwen2.5_7b_100_ckpt_global_step_750"
 )
 ACTOR_NAMES=(
-  "Qwen2.5_7b_step_100",
+  "Qwen2.5_7b_step_100"
   "Qwen2.5_7b_step_750"
 )
 
