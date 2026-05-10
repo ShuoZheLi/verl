@@ -2,7 +2,7 @@
 #SBATCH --job-name=actor_proposal_diag
 #SBATCH --account=ECS26006
 #SBATCH --partition=gh
-#SBATCH --nodes=8
+#SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
 #SBATCH --time=10:00:00
