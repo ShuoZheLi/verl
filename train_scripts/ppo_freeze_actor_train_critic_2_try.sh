@@ -12,7 +12,7 @@ export TMP=${TMPDIR}
 export RAY_TMPDIR=${TMPDIR}/ray
 export RAY_OBJECT_SPILLING_DIR=${TMPDIR}/ray_spilled_objects
 mkdir -p "${TMPDIR}" "${RAY_TMPDIR}" "${RAY_OBJECT_SPILLING_DIR}"
-export SLURM_JOB_ID="qwen3-0.6B_critic_only_from_policy"
+export SLURM_JOB_ID="qwen3-0.6B_critic_only_2"
 
 # When true, math_dapo incorrect answers get reward 0.0 instead of -1.0.
 MATH_DAPO_BINARY_REWARD=true
@@ -30,11 +30,10 @@ python3 -m verl.trainer.main_ppo \
   data.val_files=/data/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet \
   data.prompt_key=prompt \
   +data.response_key=ground_truth \
-  data.train_batch_size=64 \
+  data.train_batch_size=32 \
   data.max_prompt_length=2048 \
   data.max_response_length=2048 \
   actor_rollout_ref.model.path=${POLICY_INIT_CKPT} \
-  actor_rollout_ref.rollout.max_model_len=4096 \
   actor_rollout_ref.actor.optim.lr=0.0 \
   actor_rollout_ref.actor.ppo_mini_batch_size=32 \
   actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
