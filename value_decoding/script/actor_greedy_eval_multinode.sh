@@ -31,6 +31,7 @@ export HF_HOME
 export TIKTOKEN_ENCODINGS_BASE
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=true
+export RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
 
 echo "Activated environment"
 echo "Python: $(which python3)"

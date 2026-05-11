@@ -214,6 +214,21 @@ def _ray_alive_nodes(ray_module) -> list[dict[str, Any]]:
     return nodes
 
 
+def _is_cuda_device_name(device_name: str | None) -> bool:
+    if device_name is None:
+        return False
+    return str(device_name).strip().lower().startswith("cuda")
+
+
+def _ray_task_device_name(device_name: str | None) -> str | None:
+    # Ray remaps each task's allocated GPU(s) into a task-local CUDA namespace.
+    # A task that requests one GPU should therefore use cuda:0 even if the
+    # node-local worker layout was written as cuda:1, cuda:2, etc.
+    if _is_cuda_device_name(device_name):
+        return "cuda:0"
+    return device_name
+
+
 def _build_ray_assignments(
     *,
     ray_module,
@@ -236,7 +251,7 @@ def _build_ray_assignments(
                 worker_id=worker_id,
                 prompt_start=start,
                 prompt_end=end,
-                device_name=device_name,
+                device_name=_ray_task_device_name(device_name),
                 node_index=int(node["node_index"]),
                 node_ip=node["node_ip"],
                 node_resource_key=node["node_resource_key"],
@@ -463,6 +478,8 @@ def _run_ray(
     refs = []
     for assignment in assignments:
         remote_options: dict[str, Any] = {"num_cpus": args.ray_num_cpus_per_worker}
+        if _is_cuda_device_name(assignment.device_name):
+            remote_options["num_gpus"] = 1
         if assignment.node_resource_key:
             remote_options["resources"] = {assignment.node_resource_key: RAY_NODE_RESOURCE_FRACTION}
         refs.append(
