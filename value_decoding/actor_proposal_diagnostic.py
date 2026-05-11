@@ -49,6 +49,14 @@ try:
 except ImportError:
     ray = None
 
+try:
+    from vllm import LLM, SamplingParams
+    from vllm.inputs.data import TokensPrompt
+except ImportError:
+    LLM = None
+    SamplingParams = None
+    TokensPrompt = None
+
 
 TOKENIZER_FINGERPRINT_FILES = (
     "tokenizer.json",
@@ -157,7 +165,7 @@ class SampledResponse:
     prompt_length: int
     response_text: str
     response_token_ids: tuple[int, ...]
-    token_entropies: tuple[float, ...]
+    token_entropies: tuple[float, ...] | None
     response_length: int
     ended_with_eos: bool
     hit_max_length: bool
@@ -186,6 +194,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--top_p", type=float, default=1.0)
     parser.add_argument("--top_k", type=int, default=0)
+    parser.add_argument(
+        "--generation_backend",
+        type=str,
+        default="torch",
+        choices=["torch", "vllm"],
+        help="Generation backend. The default torch path preserves exact token entropy diagnostics.",
+    )
+    parser.add_argument(
+        "--vllm_logprobs_for_entropy",
+        action="store_true",
+        help=(
+            "Attempt to compute entropy diagnostics from vLLM full-vocabulary logprobs. "
+            "This is expensive and requires vLLM to return enough logprobs; otherwise entropy fields are null."
+        ),
+    )
+    parser.add_argument(
+        "--vllm_gpu_memory_utilization",
+        type=float,
+        default=0.9,
+        help="GPU memory utilization passed to vLLM when --generation_backend=vllm.",
+    )
+    parser.add_argument(
+        "--vllm_enforce_eager",
+        action="store_true",
+        help="Pass enforce_eager=True to vLLM. This can improve debuggability/reproducibility at a speed cost.",
+    )
     parser.add_argument("--dtype", type=str, default="bf16", choices=["bf16", "fp16", "fp32"])
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--trust_remote_code", action="store_true")
@@ -307,6 +341,20 @@ def _build_worker_assignments(
         )
     return assignments
 
+
+
+
+def _validate_vllm_worker_layout(*, worker_devices: Sequence[str | None], ray_address: str | None) -> None:
+    if ray_address is None and len(worker_devices) > 1:
+        raise ValueError(
+            "--generation_backend=vllm does not support multiple local worker devices in one process. "
+            "Use Ray/multinode execution or run one vLLM worker per script invocation."
+        )
+    for device_name in worker_devices:
+        if device_name is None:
+            raise ValueError("--generation_backend=vllm requires explicit CUDA worker devices, e.g. --worker_devices cuda:0")
+        if torch.device(device_name).type != "cuda":
+            raise ValueError(f"--generation_backend=vllm requires CUDA worker devices, got {device_name!r}.")
 
 def _build_distributed_worker_assignments(
     *,
@@ -580,7 +628,20 @@ def _entropy_quarter_means(token_entropies: Sequence[float]) -> tuple[float | No
     return means[0], means[1], means[2], means[3]
 
 
-def _entropy_summary(token_entropies: Sequence[float]) -> dict[str, Any]:
+def _entropy_summary(token_entropies: Sequence[float] | None) -> dict[str, Any]:
+    if token_entropies is None:
+        return {
+            "mean_response_entropy": None,
+            "sum_response_entropy": None,
+            "std_response_entropy": None,
+            "max_response_entropy": None,
+            "min_response_entropy": None,
+            "first_quarter_mean_entropy": None,
+            "second_quarter_mean_entropy": None,
+            "third_quarter_mean_entropy": None,
+            "fourth_quarter_mean_entropy": None,
+        }
+
     if not token_entropies:
         return {
             "mean_response_entropy": 0.0,
@@ -688,6 +749,176 @@ def sample_actor_response_with_entropy(
     )
 
 
+def _full_vocab_entropy_from_logprobs(logprob_payload: Any) -> float | None:
+    if not isinstance(logprob_payload, dict):
+        return None
+
+    logprob_values: list[float] = []
+    for value in logprob_payload.values():
+        if isinstance(value, (int, float)):
+            logprob_values.append(float(value))
+            continue
+        candidate = getattr(value, "logprob", None)
+        if candidate is not None:
+            logprob_values.append(float(candidate))
+            continue
+        if isinstance(value, dict) and "logprob" in value:
+            logprob_values.append(float(value["logprob"]))
+
+    if not logprob_values:
+        return None
+    log_probs = np.asarray(logprob_values, dtype=np.float64)
+    probs = np.exp(log_probs)
+    mass = float(probs.sum())
+    if not np.isfinite(mass) or mass <= 0.0:
+        return None
+    if abs(mass - 1.0) > 1e-3:
+        return None
+    return float(-(probs * log_probs).sum())
+
+
+def _vllm_output_token_ids(output: Any) -> tuple[int, ...]:
+    token_ids = getattr(output, "token_ids", None)
+    if token_ids is None:
+        token_ids = getattr(output, "output_token_ids", None)
+    if token_ids is None:
+        return ()
+    return tuple(int(token_id) for token_id in token_ids)
+
+
+def _vllm_output_text(output: Any, tokenizer) -> str:
+    text = getattr(output, "text", None)
+    if text is not None:
+        return str(text)
+    return tokenizer.decode(_vllm_output_token_ids(output), skip_special_tokens=True)
+
+
+def _resolve_vllm_dtype_name(dtype_name: str) -> str:
+    normalized = dtype_name.lower()
+    if normalized == "bf16":
+        return "bfloat16"
+    if normalized == "fp16":
+        return "float16"
+    if normalized == "fp32":
+        return "float32"
+    return dtype_name
+
+
+def _vllm_finish_reason(output: Any) -> str | None:
+    finish_reason = getattr(output, "finish_reason", None)
+    return None if finish_reason is None else str(finish_reason)
+
+
+def _vllm_output_entropies(output: Any, *, enabled: bool) -> tuple[float, ...] | None:
+    if not enabled:
+        return None
+    logprobs = getattr(output, "logprobs", None)
+    if not logprobs:
+        return None
+
+    entropies: list[float] = []
+    for step_logprobs in logprobs:
+        entropy = _full_vocab_entropy_from_logprobs(step_logprobs)
+        if entropy is None:
+            return None
+        entropies.append(entropy)
+    return tuple(entropies)
+
+
+def sample_actor_responses_with_vllm(
+    *,
+    llm,
+    tokenizer,
+    example: ExampleRecord,
+    prompt_ids: torch.Tensor,
+    actor_spec: ActorSpec,
+    prompt_index: int,
+    base_seed: int,
+    num_samples_per_prompt: int,
+    temperature: float,
+    top_p: float,
+    top_k: int,
+    max_new_tokens: int,
+    eos_token_ids: tuple[int, ...],
+    logprobs_for_entropy: bool,
+) -> list[SampledResponse]:
+    if SamplingParams is None:
+        raise ImportError("vLLM is required when --generation_backend=vllm, but it is not installed.")
+
+    outputs_by_sample: list[Any] = []
+    prompt_token_ids = [int(token_id) for token_id in prompt_ids[0].tolist()]
+    vllm_top_k = 0 if int(top_k) <= 0 else int(top_k)
+    logprobs = None
+    if logprobs_for_entropy:
+        vocab_size = getattr(getattr(llm, "llm_engine", None), "vocab_size", None)
+        if vocab_size is None:
+            vocab_size = getattr(tokenizer, "vocab_size", None)
+        if vocab_size is None:
+            vocab_size = len(tokenizer)
+        logprobs = int(vocab_size)
+
+    for sample_index in range(num_samples_per_prompt):
+        seed = _sample_seed(
+            base_seed,
+            actor_index=actor_spec.actor_index,
+            prompt_index=prompt_index,
+            sample_index=sample_index,
+        )
+        sampling_params = SamplingParams(
+            n=1,
+            temperature=float(temperature),
+            top_p=float(top_p),
+            top_k=vllm_top_k,
+            max_tokens=int(max_new_tokens),
+            seed=int(seed),
+            stop_token_ids=list(eos_token_ids),
+            logprobs=logprobs,
+            skip_special_tokens=True,
+        )
+        prompt_payload = (
+            TokensPrompt(prompt_token_ids=prompt_token_ids)
+            if TokensPrompt is not None
+            else {"prompt_token_ids": prompt_token_ids}
+        )
+        request_outputs = llm.generate(
+            prompts=[prompt_payload],
+            sampling_params=sampling_params,
+            use_tqdm=False,
+        )
+        outputs_by_sample.append(request_outputs[0].outputs[0])
+
+    sampled_responses: list[SampledResponse] = []
+    for sample_index, output in enumerate(outputs_by_sample):
+        seed = _sample_seed(
+            base_seed,
+            actor_index=actor_spec.actor_index,
+            prompt_index=prompt_index,
+            sample_index=sample_index,
+        )
+        response_token_ids = _vllm_output_token_ids(output)
+        response_text = _vllm_output_text(output, tokenizer)
+        finish_reason = _vllm_finish_reason(output)
+        ended_with_eos = bool(response_token_ids and response_token_ids[-1] in eos_token_ids) or finish_reason == "stop"
+        hit_max_length = finish_reason == "length" or (
+            max_new_tokens > 0 and not ended_with_eos and len(response_token_ids) >= max_new_tokens
+        )
+        sampled_responses.append(
+            SampledResponse(
+                sample_index=sample_index,
+                seed=seed,
+                prompt_length=int(prompt_ids.shape[1]),
+                response_text=response_text,
+                response_token_ids=response_token_ids,
+                token_entropies=_vllm_output_entropies(output, enabled=logprobs_for_entropy),
+                response_length=len(response_token_ids),
+                ended_with_eos=ended_with_eos,
+                hit_max_length=bool(hit_max_length),
+                task_score=float(score_response(example, response_text)),
+            )
+        )
+    return sampled_responses
+
+
 def _build_response_row(
     *,
     actor_name: str,
@@ -720,7 +951,11 @@ def _build_response_row(
     if not omit_response_token_ids:
         row["response_token_ids"] = [int(token_id) for token_id in sampled_response.response_token_ids]
     if store_token_entropies:
-        row["token_entropies"] = [float(value) for value in sampled_response.token_entropies]
+        row["token_entropies"] = (
+            None
+            if sampled_response.token_entropies is None
+            else [float(value) for value in sampled_response.token_entropies]
+        )
     return row
 
 
@@ -751,7 +986,8 @@ def build_prompt_summary(
     sorted_rows = sorted(response_rows, key=lambda row: int(row["sample_index"]))
     scores = np.asarray([float(row["task_score"]) for row in sorted_rows], dtype=np.float64)
     lengths = np.asarray([float(row["response_length"]) for row in sorted_rows], dtype=np.float64)
-    entropies = np.asarray([float(row["mean_response_entropy"]) for row in sorted_rows], dtype=np.float64)
+    entropy_values = [row["mean_response_entropy"] for row in sorted_rows if row["mean_response_entropy"] is not None]
+    entropies = np.asarray([float(value) for value in entropy_values], dtype=np.float64)
     normalized_responses = [str(row["response"]).strip() for row in sorted_rows]
     num_distinct_responses = len(set(normalized_responses))
     distinct_response_fraction = num_distinct_responses / max(num_samples_per_prompt, 1)
@@ -773,8 +1009,8 @@ def build_prompt_summary(
         "num_distinct_responses": int(num_distinct_responses),
         "distinct_response_fraction": float(distinct_response_fraction),
         "duplicate_response_fraction": float(1.0 - distinct_response_fraction),
-        "mean_bank_response_entropy": float(entropies.mean()),
-        "std_bank_response_entropy": float(entropies.std()),
+        "mean_bank_response_entropy": None if entropies.size == 0 else float(entropies.mean()),
+        "std_bank_response_entropy": None if entropies.size == 0 else float(entropies.std()),
         "mean_bank_response_length": float(lengths.mean()),
         "std_bank_response_length": float(lengths.std()),
     }
@@ -841,6 +1077,10 @@ def _worker_entry(
     omit_response_token_ids: bool,
     store_token_entropies: bool,
     use_actor_cache: bool,
+    generation_backend: str,
+    vllm_logprobs_for_entropy: bool,
+    vllm_gpu_memory_utilization: float,
+    vllm_enforce_eager: bool,
     worker_root: str,
     progress_queue=None,
 ) -> None:
@@ -859,12 +1099,31 @@ def _worker_entry(
 
         actor_hf_path = Path(actor_hf_dir)
         tokenizer = load_tokenizer(actor_hf_path, trust_remote_code=trust_remote_code)
-        actor = load_actor_model(
-            actor_hf_path,
-            dtype=dtype,
-            device=device,
-            trust_remote_code=trust_remote_code,
-        )
+        actor = None
+        vllm_llm = None
+        if generation_backend == "torch":
+            actor = load_actor_model(
+                actor_hf_path,
+                dtype=dtype,
+                device=device,
+                trust_remote_code=trust_remote_code,
+            )
+        elif generation_backend == "vllm":
+            if LLM is None:
+                raise ImportError("vLLM is required when --generation_backend=vllm, but it is not installed.")
+            if device.type != "cuda":
+                raise ValueError("--generation_backend=vllm requires CUDA worker devices.")
+            vllm_llm = LLM(
+                model=str(actor_hf_path),
+                tokenizer=str(actor_hf_path),
+                dtype=_resolve_vllm_dtype_name(dtype_name),
+                trust_remote_code=trust_remote_code,
+                tensor_parallel_size=1,
+                gpu_memory_utilization=float(vllm_gpu_memory_utilization),
+                enforce_eager=bool(vllm_enforce_eager),
+            )
+        else:
+            raise ValueError(f"Unsupported generation backend: {generation_backend}")
 
         entropy_moments = RunningMoments()
         length_moments = RunningMoments()
@@ -893,27 +1152,50 @@ def _worker_entry(
                     device=device,
                 )
                 response_rows: list[dict[str, Any]] = []
-                for sample_index in range(num_samples_per_prompt):
-                    seed = _sample_seed(
-                        base_seed,
-                        actor_index=actor_spec.actor_index,
-                        prompt_index=prompt_index,
-                        sample_index=sample_index,
-                    )
-                    sampled_response = sample_actor_response_with_entropy(
-                        actor=actor,
+                if generation_backend == "vllm":
+                    sampled_responses = sample_actor_responses_with_vllm(
+                        llm=vllm_llm,
                         tokenizer=tokenizer,
                         example=example,
                         prompt_ids=prompt_ids,
-                        sample_index=sample_index,
-                        seed=seed,
+                        actor_spec=actor_spec,
+                        prompt_index=prompt_index,
+                        base_seed=base_seed,
+                        num_samples_per_prompt=num_samples_per_prompt,
                         temperature=temperature,
                         top_p=top_p,
                         top_k=top_k,
                         max_new_tokens=max_new_tokens,
                         eos_token_ids=eos_token_ids,
-                        use_actor_cache=use_actor_cache,
+                        logprobs_for_entropy=vllm_logprobs_for_entropy,
                     )
+                else:
+                    sampled_responses = []
+                    for sample_index in range(num_samples_per_prompt):
+                        seed = _sample_seed(
+                            base_seed,
+                            actor_index=actor_spec.actor_index,
+                            prompt_index=prompt_index,
+                            sample_index=sample_index,
+                        )
+                        sampled_responses.append(
+                            sample_actor_response_with_entropy(
+                                actor=actor,
+                                tokenizer=tokenizer,
+                                example=example,
+                                prompt_ids=prompt_ids,
+                                sample_index=sample_index,
+                                seed=seed,
+                                temperature=temperature,
+                                top_p=top_p,
+                                top_k=top_k,
+                                max_new_tokens=max_new_tokens,
+                                eos_token_ids=eos_token_ids,
+                                use_actor_cache=use_actor_cache,
+                            )
+                        )
+
+                for sampled_response in sampled_responses:
                     response_row = _build_response_row(
                         actor_name=actor_spec.actor_name,
                         actor_checkpoint_dir=actor_spec.checkpoint_dir,
@@ -926,7 +1208,8 @@ def _worker_entry(
                     )
                     response_file.write(_json_line(response_row))
                     response_rows.append(response_row)
-                    entropy_moments.add(float(response_row["mean_response_entropy"]))
+                    if response_row["mean_response_entropy"] is not None:
+                        entropy_moments.add(float(response_row["mean_response_entropy"]))
                     length_moments.add(float(response_row["response_length"]))
                     num_response_rows += 1
 
@@ -1024,6 +1307,10 @@ def _start_worker_processes(
                 "omit_response_token_ids": args.omit_response_token_ids,
                 "store_token_entropies": args.store_token_entropies,
                 "use_actor_cache": not args.disable_actor_cache,
+                "generation_backend": args.generation_backend,
+                "vllm_logprobs_for_entropy": args.vllm_logprobs_for_entropy,
+                "vllm_gpu_memory_utilization": args.vllm_gpu_memory_utilization,
+                "vllm_enforce_eager": args.vllm_enforce_eager,
                 "worker_root": str(worker_root),
                 "progress_queue": progress_queue,
             },
@@ -1386,9 +1673,10 @@ def _pairwise_prompt_metric_differences(
         differences["mean_outcome_variance_within_prompt"].append(
             float(prompt_a["outcome_variance"]) - float(prompt_b["outcome_variance"])
         )
-        differences["mean_response_entropy"].append(
-            float(prompt_a["mean_bank_response_entropy"]) - float(prompt_b["mean_bank_response_entropy"])
-        )
+        entropy_a = prompt_a["mean_bank_response_entropy"]
+        entropy_b = prompt_b["mean_bank_response_entropy"]
+        if entropy_a is not None and entropy_b is not None:
+            differences["mean_response_entropy"].append(float(entropy_a) - float(entropy_b))
         differences["mean_distinct_response_fraction"].append(
             float(prompt_a["distinct_response_fraction"]) - float(prompt_b["distinct_response_fraction"])
         )
@@ -1428,7 +1716,11 @@ def build_pairwise_comparisons(
             "mean_outcome_variance_within_prompt_diff": float(
                 np.mean(differences["mean_outcome_variance_within_prompt"])
             ),
-            "mean_response_entropy_diff": float(np.mean(differences["mean_response_entropy"])),
+            "mean_response_entropy_diff": (
+                None
+                if not differences["mean_response_entropy"]
+                else float(np.mean(differences["mean_response_entropy"]))
+            ),
             "mean_distinct_response_fraction_diff": float(
                 np.mean(differences["mean_distinct_response_fraction"])
             ),
@@ -1462,10 +1754,14 @@ def build_pairwise_comparisons(
                 bootstrap_samples=bootstrap_samples,
                 seed=base_seed + pair_index * 10_000 + 5,
             ),
-            "mean_response_entropy": _paired_bootstrap_from_differences(
-                differences["mean_response_entropy"],
-                bootstrap_samples=bootstrap_samples,
-                seed=base_seed + pair_index * 10_000 + 6,
+            "mean_response_entropy": (
+                None
+                if not differences["mean_response_entropy"]
+                else _paired_bootstrap_from_differences(
+                    differences["mean_response_entropy"],
+                    bootstrap_samples=bootstrap_samples,
+                    seed=base_seed + pair_index * 10_000 + 6,
+                )
             ),
             "distinct_response_fraction": _paired_bootstrap_from_differences(
                 differences["mean_distinct_response_fraction"],
@@ -1549,11 +1845,25 @@ def _plot_prompt_scatter(
         ) from MATPLOTLIB_IMPORT_ERROR
 
     figure, axis = plt.subplots(figsize=(7.2, 4.8))
+    plotted_any = False
     for actor_name in actor_names:
         rows = _sorted_prompt_summaries(actor_prompt_summaries[actor_name])
-        xs = [float(row[x_field]) for row in rows]
-        ys = [float(row[y_field]) for row in rows]
-        axis.scatter(xs, ys, alpha=0.7, s=28, label=actor_name)
+        xs: list[float] = []
+        ys: list[float] = []
+        for row in rows:
+            x_value = row.get(x_field)
+            y_value = row.get(y_field)
+            if x_value is None or y_value is None:
+                continue
+            xs.append(float(x_value))
+            ys.append(float(y_value))
+        if xs:
+            axis.scatter(xs, ys, alpha=0.7, s=28, label=actor_name)
+            plotted_any = True
+
+    if not plotted_any:
+        plt.close(figure)
+        return
 
     axis.set_xlabel(xlabel)
     axis.set_ylabel(ylabel)
@@ -1620,7 +1930,8 @@ def _write_output_readme(
         "- High entropy/diversity may create more search headroom, but may also make critic ranking harder in later experiments.",
         "",
         "Implementation notes:",
-        "- Token entropy is computed from the raw actor next-token distribution before temperature/top-p/top-k sampling is applied, matching the requested experiment definition.",
+        "- Torch backend token entropy is computed from the raw actor next-token distribution before temperature/top-p/top-k sampling is applied, matching the requested experiment definition.",
+        "- vLLM backend marks entropy fields as null unless `--vllm_logprobs_for_entropy` is enabled and full-vocabulary logprobs are available.",
         "- Distinct responses are computed after `response.strip()` normalization.",
         "",
         "Run config:",
@@ -1631,13 +1942,15 @@ def _write_output_readme(
         f"- Temperature / top-p / top-k: `{args.temperature}` / `{args.top_p}` / `{args.top_k}`",
         f"- Seed: `{args.seed}`",
         f"- Worker devices: `{args.worker_devices}`",
+        f"- Generation backend: `{args.generation_backend}`",
+        f"- vLLM logprobs for entropy: `{args.vllm_logprobs_for_entropy}`",
         "",
         "Files:",
         "- `response_bank.jsonl`: one row per sampled response with task score, entropy diagnostics, and optional token ids / entropy traces.",
         "- `prompt_summary.jsonl`: one row per actor/prompt with headroom, diversity, entropy, and length aggregates.",
         "- `summary_metrics.json`: actor-level aggregates, pairwise comparisons, and paired bootstrap confidence intervals.",
         "- `actor_headroom_accuracy.png`: grouped bar chart for sampled single, mean sample, and oracle best-of-N accuracy.",
-        "- `entropy_vs_oracle_success.png`: prompt-level entropy vs oracle best-of-N success scatter plot.",
+        "- `entropy_vs_oracle_success.png`: prompt-level entropy vs oracle best-of-N success scatter plot; omitted when entropy is unavailable.",
         "- `diversity_vs_oracle_success.png`: prompt-level diversity vs oracle best-of-N success scatter plot.",
         "- `outcome_variance_by_actor.png`: actor-level within-prompt outcome variance bar chart.",
         "",
@@ -1645,12 +1958,14 @@ def _write_output_readme(
     ]
     for actor_name in actor_names:
         metrics = actor_metrics[actor_name]
+        mean_entropy = metrics["mean_response_entropy"]
+        mean_entropy_text = "null" if mean_entropy is None else f"{mean_entropy:.6f}"
         lines.append(
             f"- {actor_name}: sampled_single={metrics['sampled_single_accuracy']:.6f}, "
             f"mean_sample={metrics['mean_sample_accuracy']:.6f}, "
             f"oracle_best_of_n={metrics['oracle_best_of_n_accuracy']:.6f}, "
             f"has_success={metrics['fraction_prompts_with_at_least_one_success']:.6f}, "
-            f"mean_entropy={metrics['mean_response_entropy']:.6f}, "
+            f"mean_entropy={mean_entropy_text}, "
             f"distinct_fraction={metrics['mean_distinct_response_fraction']:.6f}"
         )
 
@@ -1680,6 +1995,15 @@ def main() -> int:
         raise ValueError(f"--ray_num_cpus_per_worker must be > 0, got {args.ray_num_cpus_per_worker}")
     if args.top_k < 0:
         raise ValueError(f"--top_k must be >= 0, got {args.top_k}")
+    if args.generation_backend == "vllm" and LLM is None:
+        raise ImportError("vLLM is required when --generation_backend=vllm, but it is not installed.")
+    if args.generation_backend != "vllm" and args.vllm_logprobs_for_entropy:
+        raise ValueError("--vllm_logprobs_for_entropy is only valid with --generation_backend=vllm.")
+    if not (0.0 < args.vllm_gpu_memory_utilization <= 1.0):
+        raise ValueError(
+            "--vllm_gpu_memory_utilization must be in (0, 1], "
+            f"got {args.vllm_gpu_memory_utilization}"
+        )
     if not args.skip_plots and plt is None:
         raise RuntimeError(
             "matplotlib is required for plot generation but could not be imported."
@@ -1757,6 +2081,8 @@ def main() -> int:
 
     worker_devices = [device if device else None for device in (args.worker_devices or [None])]
     ray_address = _resolve_ray_address(args.ray_address)
+    if args.generation_backend == "vllm":
+        _validate_vllm_worker_layout(worker_devices=worker_devices, ray_address=ray_address)
     execution_backend = "ray" if ray_address is not None else "local"
     ray_nodes: list[RayNodeInfo] = []
     if ray_address is not None:
@@ -1842,6 +2168,10 @@ def main() -> int:
                         omit_response_token_ids=args.omit_response_token_ids,
                         store_token_entropies=args.store_token_entropies,
                         use_actor_cache=not args.disable_actor_cache,
+                        generation_backend=args.generation_backend,
+                        vllm_logprobs_for_entropy=args.vllm_logprobs_for_entropy,
+                        vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
+                        vllm_enforce_eager=args.vllm_enforce_eager,
                         worker_root=str(actor_worker_dir),
                         progress_queue=None,
                     )
@@ -1952,17 +2282,23 @@ def main() -> int:
             output_path=actor_headroom_path,
             dpi=args.plot_dpi,
         )
-        _plot_prompt_scatter(
-            actor_prompt_summaries=actor_prompt_summaries,
-            actor_names=[actor_spec.actor_name for actor_spec in actor_specs],
-            x_field="mean_bank_response_entropy",
-            y_field="oracle_best_of_n_accuracy",
-            xlabel="Mean Bank Response Entropy",
-            ylabel=f"Oracle Best-of-{args.num_samples_per_prompt} Task Score",
-            title="Entropy vs Oracle Success",
-            output_path=entropy_scatter_path,
-            dpi=args.plot_dpi,
+        entropy_available = any(
+            prompt_summary.get("mean_bank_response_entropy") is not None
+            for prompt_summaries in actor_prompt_summaries.values()
+            for prompt_summary in prompt_summaries
         )
+        if entropy_available:
+            _plot_prompt_scatter(
+                actor_prompt_summaries=actor_prompt_summaries,
+                actor_names=[actor_spec.actor_name for actor_spec in actor_specs],
+                x_field="mean_bank_response_entropy",
+                y_field="oracle_best_of_n_accuracy",
+                xlabel="Mean Bank Response Entropy",
+                ylabel=f"Oracle Best-of-{args.num_samples_per_prompt} Task Score",
+                title="Entropy vs Oracle Success",
+                output_path=entropy_scatter_path,
+                dpi=args.plot_dpi,
+            )
         _plot_prompt_scatter(
             actor_prompt_summaries=actor_prompt_summaries,
             actor_names=[actor_spec.actor_name for actor_spec in actor_specs],
@@ -1999,7 +2335,16 @@ def main() -> int:
         "prompt_summary_path": str(prompt_summary_path),
         "summary_metrics_path": str(summary_metrics_path),
         "actor_headroom_accuracy_path": None if args.skip_plots else str(actor_headroom_path),
-        "entropy_vs_oracle_success_path": None if args.skip_plots else str(entropy_scatter_path),
+        "entropy_vs_oracle_success_path": (
+            None
+            if args.skip_plots
+            or not any(
+                prompt_summary.get("mean_bank_response_entropy") is not None
+                for prompt_summaries in actor_prompt_summaries.values()
+                for prompt_summary in prompt_summaries
+            )
+            else str(entropy_scatter_path)
+        ),
         "diversity_vs_oracle_success_path": None if args.skip_plots else str(diversity_scatter_path),
         "outcome_variance_by_actor_path": None if args.skip_plots else str(outcome_variance_path),
         "num_prompts": int(len(examples)),
@@ -2010,6 +2355,10 @@ def main() -> int:
             "top_k": int(args.top_k),
             "max_new_tokens": int(args.max_new_tokens),
             "max_prompt_length": int(args.max_prompt_length),
+            "generation_backend": args.generation_backend,
+            "vllm_logprobs_for_entropy": bool(args.vllm_logprobs_for_entropy),
+            "vllm_gpu_memory_utilization": float(args.vllm_gpu_memory_utilization),
+            "vllm_enforce_eager": bool(args.vllm_enforce_eager),
         },
         "actors": actor_metrics,
         "pairwise_comparisons": pairwise_comparisons,

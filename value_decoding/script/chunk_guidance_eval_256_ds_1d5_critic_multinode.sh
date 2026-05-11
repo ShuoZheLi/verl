@@ -91,11 +91,15 @@ ACTOR_SAMPLING_MODE="sample"
 ACTOR_TEMPERATURE=1.0
 ACTOR_TOP_P=1.0
 ACTOR_TOP_K=0
+GENERATION_BACKEND="vllm"
+# vLLM shares the worker GPU with the critic in this script, so keep this conservative.
+VLLM_GPU_MEMORY_UTILIZATION=0.6
+VLLM_ENFORCE_EAGER=0
 
 # CHUNK_SIZES="32 64 128 256"
 # NUM_CHUNK_CANDIDATES_VALUES="2 4 8"
 
-CHUNK_SIZES="256"
+CHUNK_SIZES="64 128 256"
 NUM_CHUNK_CANDIDATES_VALUES="8"
 BETAS="0"
 VALUE_REDUCERS="end"
@@ -383,6 +387,8 @@ run_one_seed() {
     --actor_temperature "$ACTOR_TEMPERATURE"
     --actor_top_p "$ACTOR_TOP_P"
     --actor_top_k "$ACTOR_TOP_K"
+    --generation_backend "$GENERATION_BACKEND"
+    --vllm_gpu_memory_utilization "$VLLM_GPU_MEMORY_UTILIZATION"
     --chunk_sizes "${CHUNK_SIZES_ARR[@]}"
     --num_chunk_candidates_values "${NUM_CHUNK_CANDIDATES_VALUES_ARR[@]}"
     --betas "${BETAS_ARR[@]}"
@@ -397,6 +403,7 @@ run_one_seed() {
   [[ -n "$CRITIC_HF_SOURCE_DIR" ]] && CMD+=(--critic_hf_source_dir "$CRITIC_HF_SOURCE_DIR")
   [[ ${#WORKER_PAIRS_ARR[@]} -gt 0 ]] && CMD+=(--worker_pairs "${WORKER_PAIRS_ARR[@]}")
   [[ "$SHUFFLE_EXAMPLES" != "0" ]] && CMD+=(--shuffle_examples)
+  [[ "$VLLM_ENFORCE_EAGER" != "0" ]] && CMD+=(--vllm_enforce_eager)
   [[ "$SKIP_MERGE" != "0" ]] && CMD+=(--skip_merge)
   [[ "$DISABLE_ACTOR_CACHE" != "0" ]] && CMD+=(--disable_actor_cache)
   [[ "$INCLUDE_CRITIC_ONLY" != "0" ]] && CMD+=(--include_critic_only)

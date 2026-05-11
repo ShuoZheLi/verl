@@ -87,6 +87,10 @@ MAX_NEW_TOKENS=2048
 TEMPERATURE=1.0
 TOP_P=1.0
 TOP_K=0
+GENERATION_BACKEND="vllm"
+VLLM_LOGPROBS_FOR_ENTROPY=0
+VLLM_GPU_MEMORY_UTILIZATION=0.90
+VLLM_ENFORCE_EAGER=0
 DTYPE="bf16"
 SEED=42
 BOOTSTRAP_SAMPLES=2000
@@ -378,6 +382,8 @@ CMD=(
   --temperature "$TEMPERATURE"
   --top_p "$TOP_P"
   --top_k "$TOP_K"
+  --generation_backend "$GENERATION_BACKEND"
+  --vllm_gpu_memory_utilization "$VLLM_GPU_MEMORY_UTILIZATION"
   --dtype "$DTYPE"
   --seed "$SEED"
   --bootstrap_samples "$BOOTSTRAP_SAMPLES"
@@ -391,6 +397,8 @@ CMD=(
 [[ ${#ACTOR_MERGED_ROOTS[@]} -gt 0 ]] && CMD+=(--actor_merged_roots "${ACTOR_MERGED_ROOTS[@]}")
 [[ ${#ACTOR_HF_SOURCE_DIRS[@]} -gt 0 ]] && CMD+=(--actor_hf_source_dirs "${ACTOR_HF_SOURCE_DIRS[@]}")
 [[ "$SHUFFLE_EXAMPLES" != "0" ]] && CMD+=(--shuffle_examples)
+[[ "$VLLM_LOGPROBS_FOR_ENTROPY" != "0" ]] && CMD+=(--vllm_logprobs_for_entropy)
+[[ "$VLLM_ENFORCE_EAGER" != "0" ]] && CMD+=(--vllm_enforce_eager)
 [[ "$TRUST_REMOTE_CODE" != "0" ]] && CMD+=(--trust_remote_code)
 [[ "$SKIP_MERGE" != "0" ]] && CMD+=(--skip_merge)
 [[ "$SKIP_PLOTS" != "0" ]] && CMD+=(--skip_plots)

@@ -27,6 +27,14 @@ try:
 except ImportError:
     ray = None
 
+try:
+    from vllm import LLM, SamplingParams
+    from vllm.inputs.data import TokensPrompt
+except ImportError:
+    LLM = None
+    SamplingParams = None
+    TokensPrompt = None
+
 from value_decoding.checkpointing import (
     ensure_merged_component_checkpoint,
     load_actor_model,
@@ -113,14 +121,14 @@ class ChunkCandidate:
     chunk_token_ids: tuple[int, ...]
     chunk_text: str
     chunk_length: int
-    chunk_logprob: float
+    chunk_logprob: float | None
     chunk_values: tuple[float, ...]
     end_value: float | None
     mean_value: float | None
     contains_eos: bool
     token_logprobs: tuple[float, ...] = ()
-    token_entropies: tuple[float, ...] = ()
-    chunk_uncertainty: float = 0.0
+    token_entropies: tuple[float, ...] | None = None
+    chunk_uncertainty: float | None = None
 
 
 @dataclass
@@ -289,6 +297,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--actor_temperature", type=float, default=1.0)
     parser.add_argument("--actor_top_p", type=float, default=1.0)
     parser.add_argument("--actor_top_k", type=int, default=0)
+    parser.add_argument(
+        "--generation_backend",
+        type=str,
+        default="torch",
+        choices=["torch", "vllm"],
+        help=(
+            "Actor chunk generation backend. vLLM is currently restricted to critic-only chunk guidance "
+            "and keeps critic value estimation in PyTorch."
+        ),
+    )
+    parser.add_argument(
+        "--vllm_gpu_memory_utilization",
+        type=float,
+        default=0.9,
+        help="GPU memory utilization passed to vLLM when --generation_backend=vllm.",
+    )
+    parser.add_argument(
+        "--vllm_enforce_eager",
+        action="store_true",
+        help="Pass enforce_eager=True to vLLM. This can improve debuggability/reproducibility at a speed cost.",
+    )
     parser.add_argument("--chunk_sizes", nargs="+", type=int, default=list(DEFAULT_CHUNK_SIZES))
     parser.add_argument(
         "--num_chunk_candidates_values",
@@ -889,6 +918,127 @@ def sample_actor_chunk(
     )
 
 
+def _vllm_output_token_ids(output: Any) -> tuple[int, ...]:
+    token_ids = getattr(output, "token_ids", None)
+    if token_ids is None:
+        token_ids = getattr(output, "output_token_ids", None)
+    if token_ids is None:
+        return ()
+    return tuple(int(token_id) for token_id in token_ids)
+
+
+def _vllm_output_text(output: Any, tokenizer) -> str:
+    text = getattr(output, "text", None)
+    if text is not None:
+        return str(text)
+    return tokenizer.decode(_vllm_output_token_ids(output), skip_special_tokens=True)
+
+
+def _resolve_vllm_dtype_name(dtype_name: str) -> str:
+    normalized = dtype_name.lower()
+    if normalized == "bf16":
+        return "bfloat16"
+    if normalized == "fp16":
+        return "float16"
+    if normalized == "fp32":
+        return "float32"
+    return dtype_name
+
+
+def sample_vllm_chunk(
+    *,
+    llm,
+    critic,
+    tokenizer,
+    prefix_ids: torch.Tensor,
+    critic_device: torch.device | None,
+    max_chunk_len: int,
+    sampling_mode: str,
+    temperature: float,
+    top_p: float,
+    top_k: int,
+    seed: int,
+    eos_token_ids: tuple[int, ...],
+    candidate_index: int,
+) -> ChunkCandidate:
+    if SamplingParams is None or TokensPrompt is None:
+        raise ImportError("vLLM is required when --generation_backend=vllm, but it is not installed.")
+    if max_chunk_len <= 0:
+        raise ValueError(f"max_chunk_len must be > 0, got {max_chunk_len}")
+    if sampling_mode not in {ActorSamplingMode.SAMPLE.value, ActorSamplingMode.GREEDY.value}:
+        raise ValueError(f"Unsupported actor_sampling_mode for vLLM backend: {sampling_mode}")
+
+    prompt_token_ids = [int(token_id) for token_id in prefix_ids[0].tolist()]
+    sampling_params = SamplingParams(
+        n=1,
+        temperature=0.0 if sampling_mode == ActorSamplingMode.GREEDY.value else float(temperature),
+        top_p=float(top_p),
+        top_k=0 if int(top_k) <= 0 else int(top_k),
+        max_tokens=int(max_chunk_len),
+        seed=int(seed),
+        stop_token_ids=list(eos_token_ids),
+        skip_special_tokens=True,
+    )
+    request_outputs = llm.generate(
+        prompts=[TokensPrompt(prompt_token_ids=prompt_token_ids)],
+        sampling_params=sampling_params,
+        use_tqdm=False,
+    )
+    output = request_outputs[0].outputs[0]
+    chunk_token_ids = _vllm_output_token_ids(output)
+    if not chunk_token_ids:
+        raise RuntimeError("vLLM chunk candidate generation produced zero tokens.")
+
+    finish_reason = getattr(output, "finish_reason", None)
+    contains_eos = bool(chunk_token_ids and chunk_token_ids[-1] in eos_token_ids) or str(finish_reason) == "stop"
+    prefix_length = int(prefix_ids.shape[1])
+
+    if critic is not None:
+        if critic_device is None:
+            raise ValueError("critic_device must be provided when critic scoring is enabled.")
+        critic_prefix_ids = prefix_ids.to(critic_device)
+        continuation_values = getattr(critic, "continuation_values", None)
+        if callable(continuation_values):
+            chunk_token_tensor = torch.tensor(
+                chunk_token_ids,
+                device=critic_device,
+                dtype=critic_prefix_ids.dtype,
+            )
+            chunk_values = continuation_values(
+                prefix_ids=critic_prefix_ids,
+                continuation_ids=chunk_token_tensor,
+            )
+        else:
+            chunk_tensor = torch.tensor([list(chunk_token_ids)], device=critic_device, dtype=critic_prefix_ids.dtype)
+            full_sequence_ids = torch.cat([critic_prefix_ids, chunk_tensor], dim=1)
+            values = critic_sequence_values(critic, full_sequence_ids)[0]
+            chunk_values = values[prefix_length : prefix_length + len(chunk_token_ids)]
+        if chunk_values.numel() != len(chunk_token_ids):
+            raise RuntimeError("Chunk value extraction length mismatch.")
+        chunk_values_tuple = tuple(float(value) for value in chunk_values.tolist())
+        end_value: float | None = float(chunk_values[-1].item())
+        mean_value: float | None = float(chunk_values.mean().item())
+    else:
+        chunk_values_tuple = ()
+        end_value = None
+        mean_value = None
+
+    return ChunkCandidate(
+        candidate_index=candidate_index,
+        chunk_token_ids=chunk_token_ids,
+        chunk_text=_vllm_output_text(output, tokenizer),
+        chunk_length=len(chunk_token_ids),
+        chunk_logprob=None,
+        chunk_values=chunk_values_tuple,
+        end_value=end_value,
+        mean_value=mean_value,
+        contains_eos=contains_eos,
+        token_logprobs=(),
+        token_entropies=None,
+        chunk_uncertainty=None,
+    )
+
+
 def sample_actor_only_response(
     *,
     actor,
@@ -992,6 +1142,7 @@ def sample_actor_only_response(
 def run_chunk_guided_response(
     *,
     actor,
+    vllm_llm,
     critic,
     tokenizer,
     example: ExampleRecord,
@@ -1005,6 +1156,7 @@ def run_chunk_guided_response(
     seed: int,
     use_actor_cache: bool,
     debug_full_chunk_candidates: bool,
+    generation_backend: str = "torch",
 ) -> ChunkDecodeArtifacts:
     if not spec.is_chunk_method or spec.chunk_size is None or spec.num_chunk_candidates is None:
         raise ValueError(f"Chunk run spec {spec.config_id} is missing chunk settings.")
@@ -1052,33 +1204,55 @@ def run_chunk_guided_response(
 
         candidates: list[ChunkCandidate] = []
         for candidate_index in range(spec.num_chunk_candidates):
-            candidate = sample_actor_chunk(
-                actor=actor,
-                critic=critic,
-                tokenizer=tokenizer,
-                prefix_ids=current_sequence_ids,
-                actor_device=actor_device,
-                critic_device=critic_device,
-                max_chunk_len=max_chunk_len,
-                sampling_mode=spec.actor_sampling_mode,
-                temperature=spec.actor_temperature,
-                top_p=spec.actor_top_p,
-                top_k=spec.actor_top_k,
-                seed=_chunk_candidate_seed(
-                    seed,
-                    example_id=example.example_id,
-                    chunk_size=spec.chunk_size,
-                    num_chunk_candidates=spec.num_chunk_candidates,
-                    chunk_decision_index=chunk_decision_index,
-                    candidate_index=candidate_index,
-                ),
-                eos_token_ids=eos_token_ids,
-                use_actor_cache=use_actor_cache,
+            candidate_seed = _chunk_candidate_seed(
+                seed,
+                example_id=example.example_id,
+                chunk_size=spec.chunk_size,
+                num_chunk_candidates=spec.num_chunk_candidates,
+                chunk_decision_index=chunk_decision_index,
                 candidate_index=candidate_index,
             )
+            if generation_backend == "vllm":
+                candidate = sample_vllm_chunk(
+                    llm=vllm_llm,
+                    critic=critic,
+                    tokenizer=tokenizer,
+                    prefix_ids=current_sequence_ids,
+                    critic_device=critic_device,
+                    max_chunk_len=max_chunk_len,
+                    sampling_mode=spec.actor_sampling_mode,
+                    temperature=spec.actor_temperature,
+                    top_p=spec.actor_top_p,
+                    top_k=spec.actor_top_k,
+                    seed=candidate_seed,
+                    eos_token_ids=eos_token_ids,
+                    candidate_index=candidate_index,
+                )
+            else:
+                candidate = sample_actor_chunk(
+                    actor=actor,
+                    critic=critic,
+                    tokenizer=tokenizer,
+                    prefix_ids=current_sequence_ids,
+                    actor_device=actor_device,
+                    critic_device=critic_device,
+                    max_chunk_len=max_chunk_len,
+                    sampling_mode=spec.actor_sampling_mode,
+                    temperature=spec.actor_temperature,
+                    top_p=spec.actor_top_p,
+                    top_k=spec.actor_top_k,
+                    seed=candidate_seed,
+                    eos_token_ids=eos_token_ids,
+                    use_actor_cache=use_actor_cache,
+                    candidate_index=candidate_index,
+                )
             candidates.append(candidate)
 
-        raw_logprobs = [candidate.chunk_logprob for candidate in candidates]
+        raw_logprobs = (
+            [float(candidate.chunk_logprob) for candidate in candidates]
+            if all(candidate.chunk_logprob is not None for candidate in candidates)
+            else None
+        )
         if critic_enabled:
             if any(candidate.end_value is None or candidate.mean_value is None for candidate in candidates):
                 raise RuntimeError("Critic-enabled chunk candidate is missing end/mean value diagnostics.")
@@ -1087,11 +1261,15 @@ def run_chunk_guided_response(
         else:
             raw_end_values = None
             raw_mean_values = None
-        raw_uncertainties = [candidate.chunk_uncertainty for candidate in candidates]
-        normalized_logprobs = _zscore(raw_logprobs, eps=normalization_eps)
+        raw_uncertainties = (
+            [float(candidate.chunk_uncertainty) for candidate in candidates]
+            if all(candidate.chunk_uncertainty is not None for candidate in candidates)
+            else None
+        )
+        normalized_logprobs = _zscore(raw_logprobs, eps=normalization_eps) if raw_logprobs is not None else None
         normalized_end_values = _zscore(raw_end_values, eps=normalization_eps) if raw_end_values is not None else None
         normalized_mean_values = _zscore(raw_mean_values, eps=normalization_eps) if raw_mean_values is not None else None
-        normalized_uncertainties = _zscore(raw_uncertainties, eps=normalization_eps)
+        normalized_uncertainties = _zscore(raw_uncertainties, eps=normalization_eps) if raw_uncertainties is not None else None
         if comparison_reducer_spec is not None and raw_end_values is not None and raw_mean_values is not None:
             if comparison_reducer_spec.kind == "end":
                 raw_comparison_values = raw_end_values
@@ -1123,11 +1301,16 @@ def run_chunk_guided_response(
             raw_reducer_values = [reduce_chunk_values(candidate.chunk_values, reducer_spec) for candidate in candidates]
             normalized_reducer_values = _zscore(raw_reducer_values, eps=normalization_eps)
 
-        (
-            actor_only_chunk_winner_index,
-            actor_only_chunk_winner_ties,
-            actor_only_chunk_winner_score,
-        ) = _select_argmax(raw_logprobs)
+        if raw_logprobs is not None:
+            (
+                actor_only_chunk_winner_index,
+                actor_only_chunk_winner_ties,
+                actor_only_chunk_winner_score,
+            ) = _select_argmax(raw_logprobs)
+        else:
+            actor_only_chunk_winner_index = None
+            actor_only_chunk_winner_ties = None
+            actor_only_chunk_winner_score = None
         if raw_end_values is not None:
             endvalue_chunk_winner_index, endvalue_chunk_winner_ties, endvalue_chunk_winner_score = _select_argmax(
                 raw_end_values
@@ -1136,10 +1319,15 @@ def run_chunk_guided_response(
             endvalue_chunk_winner_index = None
             endvalue_chunk_winner_ties = None
             endvalue_chunk_winner_score = None
-        uncertainty_chunk_winner_index, uncertainty_chunk_winner_ties, _uncertainty_chunk_winner_score = (
-            _select_argmax([-float(value) for value in raw_uncertainties])
-        )
-        uncertainty_chunk_winner_value = float(raw_uncertainties[uncertainty_chunk_winner_index])
+        if raw_uncertainties is not None:
+            uncertainty_chunk_winner_index, uncertainty_chunk_winner_ties, _uncertainty_chunk_winner_score = (
+                _select_argmax([-float(value) for value in raw_uncertainties])
+            )
+            uncertainty_chunk_winner_value = float(raw_uncertainties[uncertainty_chunk_winner_index])
+        else:
+            uncertainty_chunk_winner_index = None
+            uncertainty_chunk_winner_ties = None
+            uncertainty_chunk_winner_value = None
         if comparison_reducer_spec is not None and raw_comparison_values is not None:
             comparison_chunk_winner_index, comparison_chunk_winner_ties, comparison_chunk_winner_score = _select_argmax(
                 raw_comparison_values
@@ -1150,12 +1338,18 @@ def run_chunk_guided_response(
             comparison_chunk_winner_score = None
 
         if spec.score_mode == "actor_logprob_only":
+            if normalized_logprobs is None:
+                raise ValueError("actor_logprob_only requires actor logprobs; use --generation_backend=torch.")
             selection_scores = normalized_logprobs
             normalized_value_for_scoring = None
         elif spec.score_mode == "uncertainty_meanentropy":
+            if normalized_uncertainties is None:
+                raise ValueError("uncertainty_meanentropy requires actor entropy; use --generation_backend=torch.")
             selection_scores = [float(-value) for value in normalized_uncertainties]
             normalized_value_for_scoring = None
         elif spec.score_mode == "actor_plus_critic":
+            if normalized_logprobs is None:
+                raise ValueError("actor_plus_critic requires actor logprobs; use --generation_backend=torch.")
             if spec.beta is None or reducer_spec is None or normalized_reducer_values is None:
                 raise ValueError(f"Spec {spec.config_id} requires beta and value_reducer.")
             normalized_value_for_scoring = normalized_reducer_values
@@ -1187,12 +1381,14 @@ def run_chunk_guided_response(
         )
 
         selected_chunk_lengths.append(selected_candidate.chunk_length)
-        selected_chunk_logprobs.append(selected_candidate.chunk_logprob)
+        if selected_candidate.chunk_logprob is not None:
+            selected_chunk_logprobs.append(float(selected_candidate.chunk_logprob))
         if selected_candidate.end_value is not None:
             selected_chunk_end_values.append(selected_candidate.end_value)
         if selected_candidate.mean_value is not None:
             selected_chunk_mean_values.append(selected_candidate.mean_value)
-        selected_chunk_uncertainties.append(selected_candidate.chunk_uncertainty)
+        if selected_candidate.chunk_uncertainty is not None:
+            selected_chunk_uncertainties.append(float(selected_candidate.chunk_uncertainty))
         if selected_reducer_value is not None:
             selected_chunk_values.append(selected_reducer_value)
         for tail_length, tail_mean_value in selected_tail_mean_summary.items():
@@ -1201,16 +1397,18 @@ def run_chunk_guided_response(
         if selected_score_margin is not None:
             selected_chunk_score_margins.append(selected_score_margin)
         selected_chunks_with_eos.append(1.0 if selected_candidate.contains_eos else 0.0)
-        selected_diff_from_actor_only_flags.append(
-            1.0 if selected_candidate_index != actor_only_chunk_winner_index else 0.0
-        )
+        if actor_only_chunk_winner_index is not None:
+            selected_diff_from_actor_only_flags.append(
+                1.0 if selected_candidate_index != actor_only_chunk_winner_index else 0.0
+            )
         if endvalue_chunk_winner_index is not None:
             selected_diff_from_endvalue_flags.append(
                 1.0 if selected_candidate_index != endvalue_chunk_winner_index else 0.0
             )
-        selected_diff_from_uncertainty_flags.append(
-            1.0 if selected_candidate_index != uncertainty_chunk_winner_index else 0.0
-        )
+        if uncertainty_chunk_winner_index is not None:
+            selected_diff_from_uncertainty_flags.append(
+                1.0 if selected_candidate_index != uncertainty_chunk_winner_index else 0.0
+            )
         if comparison_chunk_winner_index is not None:
             selected_diff_from_comparison_flags.append(
                 1.0 if selected_candidate_index != comparison_chunk_winner_index else 0.0
@@ -1290,13 +1488,17 @@ def run_chunk_guided_response(
             "selected_chunk_contains_eos": selected_candidate.contains_eos,
             "selected_chunk_selection_score": selected_score,
             "selected_chunk_score_margin": selected_score_margin,
-            "selected_differs_from_actor_only_chunk_winner": selected_candidate_index != actor_only_chunk_winner_index,
+            "selected_differs_from_actor_only_chunk_winner": (
+                None if actor_only_chunk_winner_index is None else selected_candidate_index != actor_only_chunk_winner_index
+            ),
             "selected_differs_from_endvalue_winner": (
                 None
                 if endvalue_chunk_winner_index is None
                 else selected_candidate_index != endvalue_chunk_winner_index
             ),
-            "selected_differs_from_uncertainty_winner": selected_candidate_index != uncertainty_chunk_winner_index,
+            "selected_differs_from_uncertainty_winner": (
+                None if uncertainty_chunk_winner_index is None else selected_candidate_index != uncertainty_chunk_winner_index
+            ),
         }
         if reducer_spec is not None:
             chunk_decision_result[reducer_spec.selected_metric_key] = selected_reducer_value
@@ -1324,10 +1526,15 @@ def run_chunk_guided_response(
                     "candidate_normalized_chunk_uncertainties": normalized_uncertainties,
                     "candidate_selection_scores": selection_scores,
                     "candidate_chunk_token_logprobs": [list(candidate.token_logprobs) for candidate in candidates],
-                    "candidate_chunk_token_entropies": [list(candidate.token_entropies) for candidate in candidates],
+                    "candidate_chunk_token_entropies": [
+                        None if candidate.token_entropies is None else list(candidate.token_entropies)
+                        for candidate in candidates
+                    ],
                     "candidate_chunk_token_values": [list(candidate.chunk_values) for candidate in candidates],
                     "selected_chunk_token_logprobs": list(selected_candidate.token_logprobs),
-                    "selected_chunk_token_entropies": list(selected_candidate.token_entropies),
+                    "selected_chunk_token_entropies": (
+                        None if selected_candidate.token_entropies is None else list(selected_candidate.token_entropies)
+                    ),
                     "selected_chunk_token_values": list(selected_candidate.chunk_values),
                 }
             )
@@ -1418,6 +1625,7 @@ def run_chunk_guided_response(
 def process_example_for_spec(
     *,
     actor,
+    vllm_llm,
     critic,
     tokenizer,
     example: ExampleRecord,
@@ -1431,6 +1639,7 @@ def process_example_for_spec(
     seed: int,
     use_actor_cache: bool,
     debug_full_chunk_candidates: bool,
+    generation_backend: str,
 ) -> ChunkDecodeArtifacts:
     prompt_ids = _prompt_ids_tensor(
         example=example,
@@ -1439,6 +1648,8 @@ def process_example_for_spec(
         device=actor_device,
     )
     if spec.score_mode == "actor_only_sample":
+        if generation_backend != "torch":
+            raise ValueError("actor_only_sample baseline requires --generation_backend=torch.")
         return sample_actor_only_response(
             actor=actor,
             tokenizer=tokenizer,
@@ -1452,6 +1663,7 @@ def process_example_for_spec(
         )
     return run_chunk_guided_response(
         actor=actor,
+        vllm_llm=vllm_llm,
         critic=critic,
         tokenizer=tokenizer,
         example=example,
@@ -1465,7 +1677,36 @@ def process_example_for_spec(
         seed=seed,
         use_actor_cache=use_actor_cache,
         debug_full_chunk_candidates=debug_full_chunk_candidates,
+        generation_backend=generation_backend,
     )
+
+
+def _validate_vllm_configuration(
+    *,
+    run_specs: Sequence[ChunkRunSpec],
+    worker_pairs: Sequence[tuple[str | None, str | None]],
+    ray_address: str | None,
+) -> None:
+    invalid_specs = [spec.config_id for spec in run_specs if spec.score_mode != "critic_only"]
+    if invalid_specs:
+        raise ValueError(
+            "--generation_backend=vllm is currently restricted to critic-only chunk guidance configs. "
+            "Disable actor-only/actor+critic/uncertainty configs or use --generation_backend=torch. Invalid configs: "
+            + ", ".join(invalid_specs)
+        )
+    if LLM is None or SamplingParams is None or TokensPrompt is None:
+        raise ImportError("vLLM is required when --generation_backend=vllm, but it is not installed.")
+    if ray_address is None and len(worker_pairs) > 1:
+        raise ValueError(
+            "--generation_backend=vllm does not support multiple local worker pairs in one process. "
+            "Use Ray/multinode execution or one worker pair."
+        )
+    for actor_device_name, _critic_device_name in worker_pairs:
+        if actor_device_name is None or torch.device(actor_device_name).type != "cuda":
+            raise ValueError(
+                "--generation_backend=vllm requires explicit CUDA actor devices in --worker_pairs, "
+                f"got {actor_device_name!r}."
+            )
 
 
 def _validate_visible_cuda_device(device: torch.device | None, *, label: str) -> None:
@@ -1634,6 +1875,9 @@ def _start_local_worker_processes(
     normalization_eps: float,
     use_actor_cache: bool,
     debug_full_chunk_candidates: bool,
+    generation_backend: str,
+    vllm_gpu_memory_utilization: float,
+    vllm_enforce_eager: bool,
     seed: int,
     worker_root: Path,
 ) -> tuple[Any, list[tuple[mp.Process, WorkerAssignment]]]:
@@ -1657,6 +1901,9 @@ def _start_local_worker_processes(
                 "normalization_eps": normalization_eps,
                 "use_actor_cache": use_actor_cache,
                 "debug_full_chunk_candidates": debug_full_chunk_candidates,
+                "generation_backend": generation_backend,
+                "vllm_gpu_memory_utilization": vllm_gpu_memory_utilization,
+                "vllm_enforce_eager": vllm_enforce_eager,
                 "seed": seed,
                 "worker_root": str(worker_root),
                 "progress_queue": progress_queue,
@@ -1814,6 +2061,9 @@ def _ray_node_entry_remote(**kwargs) -> dict[str, Any]:
         normalization_eps=kwargs["normalization_eps"],
         use_actor_cache=kwargs["use_actor_cache"],
         debug_full_chunk_candidates=kwargs["debug_full_chunk_candidates"],
+        generation_backend=kwargs["generation_backend"],
+        vllm_gpu_memory_utilization=kwargs["vllm_gpu_memory_utilization"],
+        vllm_enforce_eager=kwargs["vllm_enforce_eager"],
         seed=kwargs["seed"],
         worker_root=Path(kwargs["worker_root"]),
     )
@@ -1872,6 +2122,9 @@ def _worker_entry(
     normalization_eps: float,
     use_actor_cache: bool,
     debug_full_chunk_candidates: bool,
+    generation_backend: str,
+    vllm_gpu_memory_utilization: float,
+    vllm_enforce_eager: bool,
     seed: int,
     worker_root: str,
     progress_queue=None,
@@ -1895,22 +2148,52 @@ def _worker_entry(
         dtype = resolve_dtype(dtype_name)
 
         tokenizer = load_tokenizer(Path(actor_hf_dir), trust_remote_code=trust_remote_code)
-        actor = load_actor_model(
-            Path(actor_hf_dir),
-            dtype=dtype,
-            device=actor_device,
-            trust_remote_code=trust_remote_code,
-        )
-        critic = (
-            load_critic_model(
-                Path(critic_hf_dir),
+        actor = None
+        vllm_llm = None
+        if generation_backend == "torch":
+            actor = load_actor_model(
+                Path(actor_hf_dir),
                 dtype=dtype,
-                device=critic_device,
+                device=actor_device,
                 trust_remote_code=trust_remote_code,
             )
-            if critic_hf_dir is not None and critic_device is not None
-            else None
-        )
+            critic = (
+                load_critic_model(
+                    Path(critic_hf_dir),
+                    dtype=dtype,
+                    device=critic_device,
+                    trust_remote_code=trust_remote_code,
+                )
+                if critic_hf_dir is not None and critic_device is not None
+                else None
+            )
+        elif generation_backend == "vllm":
+            if LLM is None:
+                raise ImportError("vLLM is required when --generation_backend=vllm, but it is not installed.")
+            if actor_device.type != "cuda":
+                raise ValueError("--generation_backend=vllm requires CUDA actor devices.")
+            # Load the critic before vLLM so vLLM's memory budget leaves room for value estimation.
+            critic = (
+                load_critic_model(
+                    Path(critic_hf_dir),
+                    dtype=dtype,
+                    device=critic_device,
+                    trust_remote_code=trust_remote_code,
+                )
+                if critic_hf_dir is not None and critic_device is not None
+                else None
+            )
+            vllm_llm = LLM(
+                model=str(actor_hf_dir),
+                tokenizer=str(actor_hf_dir),
+                dtype=_resolve_vllm_dtype_name(dtype_name),
+                trust_remote_code=trust_remote_code,
+                tensor_parallel_size=1,
+                gpu_memory_utilization=float(vllm_gpu_memory_utilization),
+                enforce_eager=bool(vllm_enforce_eager),
+            )
+        else:
+            raise ValueError(f"Unsupported generation backend: {generation_backend}")
 
         local_examples = examples[assignment.example_start : assignment.example_end]
         worker_total_tasks = len(local_examples) * len(run_specs)
@@ -1943,6 +2226,7 @@ def _worker_entry(
                 for example in local_examples:
                     artifacts = process_example_for_spec(
                         actor=actor,
+                        vllm_llm=vllm_llm,
                         critic=critic,
                         tokenizer=tokenizer,
                         example=example,
@@ -1956,6 +2240,7 @@ def _worker_entry(
                         seed=seed,
                         use_actor_cache=use_actor_cache,
                         debug_full_chunk_candidates=debug_full_chunk_candidates,
+                        generation_backend=generation_backend,
                     )
                     per_example_file.write(_json_line(artifacts.example_result))
                     for chunk_decision_result in artifacts.chunk_decision_results:
@@ -2039,6 +2324,9 @@ def run_multi_worker(
     normalization_eps: float,
     use_actor_cache: bool,
     debug_full_chunk_candidates: bool,
+    generation_backend: str,
+    vllm_gpu_memory_utilization: float,
+    vllm_enforce_eager: bool,
     seed: int,
 ) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]]]:
     assignments = build_worker_assignments(num_examples=len(examples), worker_pairs=worker_pairs)
@@ -2063,6 +2351,9 @@ def run_multi_worker(
         normalization_eps=normalization_eps,
         use_actor_cache=use_actor_cache,
         debug_full_chunk_candidates=debug_full_chunk_candidates,
+        generation_backend=generation_backend,
+        vllm_gpu_memory_utilization=vllm_gpu_memory_utilization,
+        vllm_enforce_eager=vllm_enforce_eager,
         seed=seed,
         worker_root=worker_root,
     )
@@ -2178,6 +2469,9 @@ def run_ray_multi_worker(
     normalization_eps: float,
     use_actor_cache: bool,
     debug_full_chunk_candidates: bool,
+    generation_backend: str,
+    vllm_gpu_memory_utilization: float,
+    vllm_enforce_eager: bool,
     seed: int,
     ray_num_cpus_per_worker: float,
 ) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]]]:
@@ -2230,6 +2524,9 @@ def run_ray_multi_worker(
             normalization_eps=normalization_eps,
             use_actor_cache=use_actor_cache,
             debug_full_chunk_candidates=debug_full_chunk_candidates,
+            generation_backend=generation_backend,
+            vllm_gpu_memory_utilization=vllm_gpu_memory_utilization,
+            vllm_enforce_eager=vllm_enforce_eager,
             seed=seed,
             worker_root=str(worker_root),
             progress_actor=progress_actor,
@@ -2876,7 +3173,13 @@ def _write_output_readme(
     lines.extend(
         [
             "",
-            "## Files",
+            "## Generation Backend",
+        f"- Actor chunk generation backend: `{args.generation_backend}`",
+        f"- vLLM GPU memory utilization: `{args.vllm_gpu_memory_utilization}`",
+        f"- vLLM enforce eager: `{args.vllm_enforce_eager}`",
+        "- Critic value estimation remains in the PyTorch/HF critic model.",
+        "",
+        "## Files",
             "- `summary_metrics.json`",
             "- `main_results.csv`",
             "- `per_example_results.jsonl`",
@@ -2944,6 +3247,13 @@ def main() -> int:
                 "Critic loading is disabled, but the following configs still require critic values or diagnostics: "
                 + ", ".join(invalid_specs)
             )
+    if args.generation_backend == "vllm" and args.disable_critic_model:
+        raise ValueError("--generation_backend=vllm is only supported for critic-only guidance with critic loading enabled.")
+    if args.generation_backend == "vllm" and not (0.0 < args.vllm_gpu_memory_utilization <= 1.0):
+        raise ValueError(
+            "--vllm_gpu_memory_utilization must be in (0, 1], "
+            f"got {args.vllm_gpu_memory_utilization}"
+        )
 
     critic_hf_dir = (
         None
@@ -2965,6 +3275,8 @@ def main() -> int:
         critic_device=args.critic_device,
         default_device=args.device,
     )
+    if args.generation_backend == "vllm":
+        _validate_vllm_configuration(run_specs=run_specs, worker_pairs=worker_pairs, ray_address=ray_address)
     ray_nodes: list[RayNodeInfo] = []
     if ray_address is not None:
         ray_module = _require_ray()
@@ -3000,6 +3312,9 @@ def main() -> int:
             normalization_eps=args.normalization_eps,
             use_actor_cache=not args.disable_actor_cache,
             debug_full_chunk_candidates=args.debug_full_chunk_candidates,
+            generation_backend=args.generation_backend,
+            vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
+            vllm_enforce_eager=args.vllm_enforce_eager,
             seed=args.seed,
             ray_num_cpus_per_worker=args.ray_num_cpus_per_worker,
         )
@@ -3034,6 +3349,9 @@ def main() -> int:
             normalization_eps=args.normalization_eps,
             use_actor_cache=not args.disable_actor_cache,
             debug_full_chunk_candidates=args.debug_full_chunk_candidates,
+            generation_backend=args.generation_backend,
+            vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
+            vllm_enforce_eager=args.vllm_enforce_eager,
             seed=args.seed,
         )
         actor_device = None
@@ -3058,22 +3376,45 @@ def main() -> int:
             if worker_pairs[0][1] and not args.disable_critic_model
             else None
         )
-        actor = load_actor_model(
-            actor_hf_dir,
-            dtype=dtype,
-            device=actor_device,
-            trust_remote_code=args.trust_remote_code,
-        )
-        critic = (
-            load_critic_model(
-                critic_hf_dir,
+        actor = None
+        vllm_llm = None
+        if args.generation_backend == "torch":
+            actor = load_actor_model(
+                actor_hf_dir,
                 dtype=dtype,
-                device=critic_device,
+                device=actor_device,
                 trust_remote_code=args.trust_remote_code,
             )
-            if critic_hf_dir is not None and critic_device is not None
-            else None
-        )
+            critic = (
+                load_critic_model(
+                    critic_hf_dir,
+                    dtype=dtype,
+                    device=critic_device,
+                    trust_remote_code=args.trust_remote_code,
+                )
+                if critic_hf_dir is not None and critic_device is not None
+                else None
+            )
+        else:
+            critic = (
+                load_critic_model(
+                    critic_hf_dir,
+                    dtype=dtype,
+                    device=critic_device,
+                    trust_remote_code=args.trust_remote_code,
+                )
+                if critic_hf_dir is not None and critic_device is not None
+                else None
+            )
+            vllm_llm = LLM(
+                model=str(actor_hf_dir),
+                tokenizer=str(actor_hf_dir),
+                dtype=_resolve_vllm_dtype_name(args.dtype),
+                trust_remote_code=args.trust_remote_code,
+                tensor_parallel_size=1,
+                gpu_memory_utilization=float(args.vllm_gpu_memory_utilization),
+                enforce_eager=bool(args.vllm_enforce_eager),
+            )
 
         per_example_path = output_dir / "per_example_results.jsonl"
         chunk_decision_path = output_dir / "chunk_decision_results.jsonl"
@@ -3094,6 +3435,7 @@ def main() -> int:
                     progress_bar.set_postfix_str(f"config={spec.config_id} example_id={example.example_id}")
                     artifacts = process_example_for_spec(
                         actor=actor,
+                        vllm_llm=vllm_llm,
                         critic=critic,
                         tokenizer=tokenizer,
                         example=example,
@@ -3107,6 +3449,7 @@ def main() -> int:
                         seed=args.seed,
                         use_actor_cache=not args.disable_actor_cache,
                         debug_full_chunk_candidates=args.debug_full_chunk_candidates,
+                        generation_backend=args.generation_backend,
                     )
                     per_example_file.write(_json_line(artifacts.example_result))
                     for chunk_decision_result in artifacts.chunk_decision_results:
@@ -3221,6 +3564,9 @@ def main() -> int:
         "dataset_path": str(Path(args.dataset_path).resolve()),
         "output_dir": str(output_dir),
         "critic_model_disabled": bool(args.disable_critic_model),
+        "generation_backend": args.generation_backend,
+        "vllm_gpu_memory_utilization": float(args.vllm_gpu_memory_utilization),
+        "vllm_enforce_eager": bool(args.vllm_enforce_eager),
         "multi_worker_enabled": multi_worker_enabled,
         "actor_device": None if actor_device is None else str(actor_device),
         "critic_device": None if critic_device is None else str(critic_device),
