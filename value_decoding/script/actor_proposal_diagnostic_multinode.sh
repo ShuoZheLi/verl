@@ -55,7 +55,7 @@ ACTOR_NAMES=(
   "Qwen2.5_7b_step_750"
 )
 
-DATASET_PATH="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/gsm8k_test.parquet"
+DATASET_PATH="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet"
 WORK_DIR="/work2/09576/shuozhe/verl"
 export PYTHONPATH="${WORK_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 
@@ -65,7 +65,7 @@ ARCHIVE_DIR="${ARCHIVE_ROOT}/${RUN_ID}"
 SCRATCH_ROOT="${SCRATCH}/value_decoding_runs"
 RUN_DIR="${SCRATCH_ROOT}/${RUN_ID}"
 LOG_DIR="${RUN_DIR}/logs"
-OUTPUT_DIR="${RUN_DIR}/actor_proposal_diagnostic"
+OUTPUT_DIR="${RUN_DIR}/actor_proposal_diagnostic_math500"
 
 mkdir -p "$LOG_DIR" "$ARCHIVE_ROOT" "$OUTPUT_DIR"
 
