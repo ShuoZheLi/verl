@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=chunk_guidance_eval_7b_high_ent
+#SBATCH --job-name=chunk_guidance_eval_7b_low_ent
 #SBATCH --account=ECS26006
 #SBATCH --partition=gh
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
 #SBATCH --time=04:30:00
-#SBATCH --output=slurm-%j_chunk_guidance_eval_7b_high_ent.out
-#SBATCH --error=slurm-%j_chunk_guidance_eval_7b_high_ent.err
+#SBATCH --output=slurm-%j_chunk_guidance_eval_7b_low_ent.out
+#SBATCH --error=slurm-%j_chunk_guidance_eval_7b_low_ent.err
 
 set -euo pipefail
 
@@ -40,14 +40,14 @@ python3 -V
 # -----------------------------
 # Run identity
 # -----------------------------
-RUN_NAME="chunk_guidance_eval_7b_high_ent"
+RUN_NAME="chunk_guidance_eval_7b_low_ent"
 RUN_ID="${RUN_NAME}_${SLURM_JOB_ID}"
 
 # -----------------------------
 # Paths
 # -----------------------------
-ACTOR_CHECKPOINT_DIR="/work2/09576/shuozhe/saved_model/Prathyusha101/high_ent_critic_training_qwen7b_global_step_340"
-CRITIC_CHECKPOINT_DIR="/work2/09576/shuozhe/saved_model/Prathyusha101/high_ent_critic_training_qwen7b_global_step_340"
+ACTOR_CHECKPOINT_DIR="/work2/09576/shuozhe/saved_model/Prathyusha101/low_ent_critic_training_qwen7b_global_step_340"
+CRITIC_CHECKPOINT_DIR="/work2/09576/shuozhe/saved_model/Prathyusha101/low_ent_critic_training_qwen7b_global_step_340"
 DATASET_PATH="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet"
 WORK_DIR="/work2/09576/shuozhe/verl"
 export PYTHONPATH="${WORK_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
@@ -58,7 +58,7 @@ ARCHIVE_DIR="${ARCHIVE_ROOT}/${RUN_ID}"
 SCRATCH_ROOT="${SCRATCH}/value_decoding_runs"
 RUN_DIR="${SCRATCH_ROOT}/${RUN_ID}"
 LOG_DIR="${RUN_DIR}/logs"
-OUTPUT_DIR="${RUN_DIR}/chunk_guidance_eval_7b_high_ent"
+OUTPUT_DIR="${RUN_DIR}/chunk_guidance_eval_7b_low_ent"
 ACTOR_MERGED_ROOT="${RUN_DIR}/merged_actor_hf"
 CRITIC_MERGED_ROOT="${RUN_DIR}/merged_critic_hf"
 # Optional override directories for HF config/tokenizer metadata used during FSDP merge.
