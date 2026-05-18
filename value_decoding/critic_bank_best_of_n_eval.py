@@ -255,15 +255,15 @@ def _group_by_prompt(
     return grouped_items
 
 
-def _selected_payload(selected_row: dict[str, Any]) -> dict[str, Any]:
+def _selected_payload(selected_row: dict[str, Any], *, task_score_key: str) -> dict[str, Any]:
     payload = {
         "sample_index": int(selected_row["_sample_index_int"]),
         "critic_final_trajectory_value": float(selected_row["critic_final_trajectory_value"]),
         "response_length": selected_row.get("response_length"),
     }
-    if "task_score" in selected_row and selected_row["task_score"] is not None:
-        payload["task_score"] = float(selected_row["task_score"])
-        payload["is_correct"] = bool(float(selected_row["task_score"]) == 1.0)
+    if task_score_key in selected_row and selected_row[task_score_key] is not None:
+        payload["task_score"] = float(selected_row[task_score_key])
+        payload["is_correct"] = bool(float(selected_row[task_score_key]) == 1.0)
     return payload
 
 
@@ -318,7 +318,7 @@ def _build_prompt_summary(
 
         payload: dict[str, Any] = {
             "n": int(n_value),
-            "best_of_n_critic": _selected_payload(selected_row),
+            "best_of_n_critic": _selected_payload(selected_row, task_score_key=task_score_key),
             "critic_tied_sample_indices": [int(bank_rows[position]["_sample_index_int"]) for position in selected_positions],
         }
 
@@ -326,7 +326,7 @@ def _build_prompt_summary(
             current_task_scores = [float(row[task_score_key]) for row in bank_rows]
             oracle_positions = _best_positions(current_task_scores)
             oracle_row = bank_rows[oracle_positions[0]]
-            payload["oracle_best_in_bank"] = _selected_payload(oracle_row)
+            payload["oracle_best_in_bank"] = _selected_payload(oracle_row, task_score_key=task_score_key)
             payload["selected_is_oracle_best"] = int(selected_row["_sample_index_int"]) in {
                 int(bank_rows[position]["_sample_index_int"]) for position in oracle_positions
             }
