@@ -81,6 +81,7 @@ MAX_PROMPT_LENGTH=2048
 MAX_RESPONSE_TOKENS=2048
 DTYPE="bf16"
 DEVICE="cuda:0"
+DEVICES="cuda:0 cuda:1 cuda:2 cuda:3"
 SKIP_MERGE=0
 TRUST_REMOTE_CODE=0
 RETOKENIZE_RESPONSES=0
@@ -183,6 +184,7 @@ validate_response_bank "$RESPONSE_BANK_PATH"
 cd "$WORK_DIR"
 
 read -r -a N_VALUES_ARR <<< "$N_VALUES"
+read -r -a DEVICES_ARR <<< "$DEVICES"
 
 CMD=(
   python3 -m value_decoding.critic_bank_best_of_n_eval
@@ -197,6 +199,7 @@ CMD=(
   --device "$DEVICE"
 )
 
+[[ ${#DEVICES_ARR[@]} -gt 0 ]] && CMD+=(--devices "${DEVICES_ARR[@]}")
 [[ "$SKIP_MERGE" != "0" ]] && CMD+=(--skip_merge)
 [[ "$TRUST_REMOTE_CODE" != "0" ]] && CMD+=(--trust_remote_code)
 [[ "$RETOKENIZE_RESPONSES" != "0" ]] && CMD+=(--retokenize_responses)

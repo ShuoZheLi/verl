@@ -19,18 +19,21 @@ from typing import Any, Sequence
 
 import numpy as np
 import torch
+import torch.nn as nn
 from tqdm.auto import tqdm
 
-from value_decoding.checkpointing import (
+from best_of_n.checkpointing import (
     ensure_merged_component_checkpoint,
     load_actor_model,
+    load_critic_model,
     load_tokenizer,
     resolve_device,
     resolve_dtype,
     resolve_eos_token_ids,
 )
-from value_decoding.data import ExampleRecord, load_examples, score_response
-from value_decoding.decoding import ActorSamplingMode, ActorStepper, sample_token_from_actor, set_decode_seed
+from best_of_n.data import ExampleRecord, load_examples, score_response
+from best_of_n.decoding import ActorSamplingMode, ActorStepper, sample_token_from_actor, set_decode_seed
+
 
 
 try:
@@ -69,6 +72,75 @@ TOKENIZER_FINGERPRINT_FILES = (
 )
 RAY_NODE_RESOURCE_FRACTION = 1e-3
 RAY_PROGRESS_POLL_INTERVAL_SEC = 0.2
+
+
+LABEL_TO_ID = {"false_high": 1, "true_high_matched": 0}
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSON on line {line_number} of {path}: {exc}") from exc
+    return rows
+
+
+def _resolve_feature_path(row: dict[str, Any], feature_root: Path) -> Path:
+    h_final_path = row.get("h_final_path")
+    if not isinstance(h_final_path, str) or not h_final_path:
+        raise ValueError(f"Missing h_final_path for sample_id={row.get('sample_id')}")
+    relative = Path(h_final_path)
+    candidates: list[Path] = []
+    if relative.is_absolute():
+        candidates.append(relative)
+    else:
+        candidates.extend(
+            [
+                feature_root / relative,
+                feature_root / "features" / "h_final" / relative.name,
+                feature_root / "dataset" / relative,
+            ]
+        )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(
+        f"Could not find h_final for sample_id={row.get('sample_id')} h_final_path={h_final_path}; "
+        f"tried {[str(candidate) for candidate in candidates]}"
+    )
+
+
+def _load_h_final(path: Path, expected_sample_id: str | None = None) -> tuple[torch.Tensor, dict[str, Any]]:
+    try:
+        obj = torch.load(path, map_location="cpu", weights_only=True)
+    except TypeError:
+        obj = torch.load(path, map_location="cpu")
+    metadata: dict[str, Any] = {}
+    if isinstance(obj, dict):
+        if expected_sample_id is not None and obj.get("sample_id") not in {None, expected_sample_id}:
+            raise ValueError(f"Feature sample_id mismatch at {path}: {obj.get('sample_id')} != {expected_sample_id}")
+        tensor = obj.get("h_final")
+        metadata = {
+            "sample_id": obj.get("sample_id"),
+            "layer_index": obj.get("layer_index"),
+            "shape": obj.get("shape"),
+            "source": obj.get("source"),
+        }
+    else:
+        tensor = obj
+    if not isinstance(tensor, torch.Tensor):
+        raise TypeError(f"Expected tensor or dict with h_final tensor at {path}, got {type(obj)}")
+    tensor = tensor.detach().cpu().float()
+    if tensor.ndim != 1:
+        tensor = tensor.reshape(-1)
+    if not torch.isfinite(tensor).all():
+        raise ValueError(f"Non-finite h_final values in {path}")
+    return tensor, metadata
 
 
 def _make_main_module_importable() -> None:
@@ -172,6 +244,24 @@ class SampledResponse:
     task_score: float
 
 
+@dataclass(frozen=True)
+class ClassifierAidConfig:
+    classifier_dir: str
+    critic_model_dir: str
+    layer_index: int
+    threshold: float
+    diagnostic_dir: str
+    feature_root: str
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
+class CriticClassifierScores:
+    critic_value: float
+    false_high_probability: float
+    classifier_filtered: bool
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -214,6 +304,24 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.9,
         help="GPU memory utilization passed to vLLM when --generation_backend=vllm.",
+    )
+    parser.add_argument(
+        "--vllm_tensor_parallel_size",
+        type=int,
+        default=1,
+        help="Tensor parallel size passed to vLLM when --generation_backend=vllm.",
+    )
+    parser.add_argument(
+        "--vllm_max_model_len",
+        type=int,
+        default=None,
+        help="Optional max_model_len passed to vLLM. Defaults to the model config when omitted.",
+    )
+    parser.add_argument(
+        "--vllm_max_num_seqs",
+        type=int,
+        default=None,
+        help="Optional max_num_seqs passed to vLLM. Lower this if vLLM OOMs during warmup.",
     )
     parser.add_argument(
         "--vllm_enforce_eager",
@@ -265,11 +373,69 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable KV-cache decoding. This is slower but can help with unusual model implementations.",
     )
+    parser.add_argument(
+        "--classifier_aid_dir",
+        type=str,
+        default=None,
+        help="Optional trained false-high classifier directory. Enables classifier-aided critic Best-of-N.",
+    )
+    parser.add_argument(
+        "--critic_model_dir",
+        type=str,
+        default=None,
+        help="Merged HF critic model directory used for critic scoring when --classifier_aid_dir is set.",
+    )
+    parser.add_argument(
+        "--classifier_aid_layer_index",
+        type=int,
+        default=18,
+        help="Critic hidden_states index used as the false-high classifier feature.",
+    )
+    parser.add_argument(
+        "--classifier_aid_threshold",
+        type=float,
+        default=0.5,
+        help="Filter candidates with P(false_high) >= this threshold.",
+    )
+    parser.add_argument(
+        "--classifier_aid_diagnostic_dir",
+        type=str,
+        default=None,
+        help="Diagnostic split directory used to recompute classifier standardization. Defaults to metrics.json args.",
+    )
+    parser.add_argument(
+        "--classifier_aid_feature_root",
+        type=str,
+        default=None,
+        help="Feature root used to recompute classifier standardization. Defaults to metrics.json args.",
+    )
     return parser.parse_args()
 
 
 def _json_line(record: dict[str, Any]) -> str:
     return json.dumps(record, ensure_ascii=True) + "\n"
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, torch.device):
+        return str(value)
+    if dataclass_is_instance(value):
+        return {key: _json_safe(item) for key, item in asdict(value).items()}
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, np.ndarray):
+        return _json_safe(value.tolist())
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def dataclass_is_instance(value: Any) -> bool:
+    return hasattr(value, "__dataclass_fields__") and not isinstance(value, type)
 
 
 def _git_commit(repo_root: Path) -> str | None:
@@ -971,6 +1137,245 @@ def _score_sum_value(scores: np.ndarray) -> int | float:
     return total
 
 
+def _move_batch_to_device(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
+    return {key: value.to(device) if torch.is_tensor(value) else value for key, value in batch.items()}
+
+
+def _build_full_text(prompt_text: str, response_text: str) -> str:
+    return prompt_text.rstrip() + "\n\n" + response_text.lstrip()
+
+
+def _value_logits_to_scalar_values(critic, values: torch.Tensor) -> torch.Tensor:
+    if values.dim() == 2:
+        return values.float()
+    if values.dim() != 3:
+        raise ValueError(f"Unexpected critic value tensor shape: {tuple(values.shape)}")
+    if values.shape[-1] == 1:
+        return values.squeeze(-1).float()
+
+    from verl.trainer.ppo.value_categorical import (
+        extract_value_head_spec,
+        unscale_scalar_values,
+        value_logits_to_probs,
+        value_probs_to_scaled_scalar,
+    )
+
+    spec = extract_value_head_spec(getattr(critic, "config", {}))
+    probs = value_logits_to_probs(values.float())
+    support = spec.support(device=probs.device, dtype=probs.dtype)
+    scaled_values = value_probs_to_scaled_scalar(probs, support)
+    return unscale_scalar_values(scaled_values, spec).float()
+
+
+def _extract_scalar_values_from_critic_outputs(critic, outputs) -> torch.Tensor:
+    if hasattr(critic, "v_head"):
+        values = outputs[2]
+    elif hasattr(outputs, "logits"):
+        values = outputs.logits
+    elif isinstance(outputs, tuple):
+        values = outputs[0]
+    else:
+        raise TypeError(f"Unsupported critic output type: {type(outputs).__name__}")
+    return _value_logits_to_scalar_values(critic, values)
+
+
+def _extract_final_value(critic_outputs, *, critic, attention_mask: torch.Tensor) -> float:
+    values_attr = getattr(critic_outputs, "values", None)
+    if torch.is_tensor(values_attr):
+        values = values_attr
+        if values.dim() == 3 and values.shape[-1] == 1:
+            values = values.squeeze(-1)
+        elif values.dim() != 2:
+            raise ValueError(f"Unexpected outputs.values shape: {tuple(values.shape)}")
+        scalar_values = values.float()
+    else:
+        scalar_values = _extract_scalar_values_from_critic_outputs(critic, critic_outputs)
+
+    final_index = int(attention_mask.long().sum(dim=-1)[0].item()) - 1
+    if final_index < 0:
+        raise ValueError("Cannot extract final value from an empty sequence.")
+    value = float(scalar_values[0, final_index].detach().cpu().item())
+    if not math.isfinite(value):
+        raise ValueError(f"Non-finite critic value: {value}")
+    return value
+
+
+def _final_token_hidden_state(outputs, attention_mask: torch.Tensor, layer_index: int) -> torch.Tensor:
+    hidden_states = getattr(outputs, "hidden_states", None)
+    if hidden_states is None:
+        raise ValueError("Critic outputs do not include hidden_states; cannot run classifier aid.")
+    if not -len(hidden_states) <= layer_index < len(hidden_states):
+        raise ValueError(
+            f"classifier aid layer_index={layer_index} is out of range for {len(hidden_states)} hidden-state tensors."
+        )
+    final_index = int(attention_mask.long().sum(dim=-1)[0].item()) - 1
+    if final_index < 0:
+        raise ValueError("Cannot extract classifier feature from an empty critic sequence.")
+    return hidden_states[layer_index][0, final_index, :].detach().cpu().float().reshape(-1)
+
+
+def _standardization_from_classifier_training_split(
+    *,
+    diagnostic_dir: Path,
+    feature_root: Path,
+    enabled: bool,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    train_path = diagnostic_dir / "train.jsonl"
+    if not train_path.exists():
+        raise FileNotFoundError(f"Missing classifier-aid training split for standardization: {train_path}")
+    rows = _read_jsonl(train_path)
+    features: list[torch.Tensor] = []
+    for row in rows:
+        sample_id = str(row.get("sample_id"))
+        feature_path = _resolve_feature_path(row, feature_root)
+        feature, _metadata = _load_h_final(feature_path, expected_sample_id=sample_id)
+        features.append(feature)
+    if not features:
+        raise RuntimeError(f"No classifier-aid standardization rows loaded from {train_path}")
+    dims = {int(feature.numel()) for feature in features}
+    if len(dims) != 1:
+        raise ValueError(f"Inconsistent classifier-aid feature dimensions: {sorted(dims)}")
+    train_x = torch.stack(features).float()
+    if not enabled:
+        return torch.zeros_like(train_x[:1]), torch.ones_like(train_x[:1])
+    return train_x.mean(dim=0, keepdim=True), train_x.std(dim=0, keepdim=True).clamp_min(1e-6)
+
+
+def _make_classifier_model(model_type: str, input_dim: int, hidden_dim: int) -> nn.Module:
+    if model_type == "logreg":
+        return nn.Linear(input_dim, 2)
+    if model_type == "mlp":
+        return nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_dim, 2),
+        )
+    raise ValueError(f"Unsupported classifier aid model_type={model_type!r}")
+
+
+def _resolve_classifier_aid_config(args: argparse.Namespace) -> ClassifierAidConfig | None:
+    if args.classifier_aid_dir is None:
+        return None
+    classifier_dir = Path(args.classifier_aid_dir).expanduser().resolve()
+    metrics_path = classifier_dir / "metrics.json"
+    if not metrics_path.exists():
+        raise FileNotFoundError(f"Missing classifier aid metrics.json: {metrics_path}")
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    metrics_args = metrics.get("args", {})
+    diagnostic_dir = Path(args.classifier_aid_diagnostic_dir or metrics_args.get("diagnostic_dir", ""))
+    feature_root = Path(args.classifier_aid_feature_root or metrics_args.get("feature_root", ""))
+    if args.critic_model_dir is None:
+        raise ValueError("--critic_model_dir is required when --classifier_aid_dir is set.")
+    if not diagnostic_dir.exists():
+        raise FileNotFoundError(f"Missing classifier aid diagnostic dir: {diagnostic_dir}")
+    if not feature_root.exists():
+        raise FileNotFoundError(f"Missing classifier aid feature root: {feature_root}")
+    if not 0.0 <= float(args.classifier_aid_threshold) <= 1.0:
+        raise ValueError(f"--classifier_aid_threshold must be in [0, 1], got {args.classifier_aid_threshold}")
+    return ClassifierAidConfig(
+        classifier_dir=str(classifier_dir),
+        critic_model_dir=str(Path(args.critic_model_dir).expanduser().resolve()),
+        layer_index=int(args.classifier_aid_layer_index),
+        threshold=float(args.classifier_aid_threshold),
+        diagnostic_dir=str(diagnostic_dir.expanduser().resolve()),
+        feature_root=str(feature_root.expanduser().resolve()),
+    )
+
+
+class CriticClassifierScorer:
+    def __init__(
+        self,
+        *,
+        config: ClassifierAidConfig,
+        device: torch.device,
+        dtype: torch.dtype,
+        trust_remote_code: bool,
+    ) -> None:
+        self.config = config
+        self.device = device
+        self.critic_tokenizer = load_tokenizer(Path(config.critic_model_dir), trust_remote_code=trust_remote_code)
+        self.critic = load_critic_model(
+            Path(config.critic_model_dir),
+            dtype=dtype,
+            device=device,
+            trust_remote_code=trust_remote_code,
+        )
+        self.critic.eval()
+
+        classifier_dir = Path(config.classifier_dir)
+        metrics = json.loads((classifier_dir / "metrics.json").read_text(encoding="utf-8"))
+        model_type = str(metrics.get("model_type") or metrics.get("args", {}).get("model_type"))
+        input_dim = int(metrics["input_dim"])
+        hidden_dim = int(metrics.get("args", {}).get("hidden_dim", 256))
+        state_path = classifier_dir / f"{model_type}_state_dict.pt"
+        if not state_path.exists():
+            raise FileNotFoundError(f"Missing classifier aid state dict: {state_path}")
+        self.classifier = _make_classifier_model(model_type, input_dim, hidden_dim)
+        self.classifier.load_state_dict(torch.load(state_path, map_location="cpu", weights_only=True))
+        self.classifier.eval()
+        standardization_enabled = bool(metrics.get("standardization", {}).get("enabled", True))
+        self.standardization_mean, self.standardization_std = _standardization_from_classifier_training_split(
+            diagnostic_dir=Path(config.diagnostic_dir),
+            feature_root=Path(config.feature_root),
+            enabled=standardization_enabled,
+        )
+        if int(self.standardization_mean.shape[1]) != input_dim:
+            raise ValueError(
+                f"Classifier standardization dimension {self.standardization_mean.shape[1]} does not match input_dim={input_dim}."
+            )
+
+    def score(self, *, prompt_text: str, response_text: str) -> CriticClassifierScores:
+        full_text = _build_full_text(prompt_text, response_text)
+        inputs = self.critic_tokenizer(full_text, return_tensors="pt", return_token_type_ids=False)
+        inputs = _move_batch_to_device(inputs, self.device)
+        with torch.inference_mode():
+            try:
+                outputs = self.critic(**inputs, output_hidden_states=True, return_dict=True, use_cache=False)
+            except TypeError:
+                outputs = self.critic(**inputs, output_hidden_states=True, return_dict=True)
+            critic_value = _extract_final_value(outputs, critic=self.critic, attention_mask=inputs["attention_mask"])
+            feature = _final_token_hidden_state(outputs, inputs["attention_mask"], self.config.layer_index).reshape(1, -1)
+            standardized = (feature - self.standardization_mean) / self.standardization_std
+            logits = self.classifier(standardized)
+            false_high_probability = float(
+                torch.softmax(logits, dim=1)[0, LABEL_TO_ID["false_high"]].detach().cpu().item()
+            )
+        return CriticClassifierScores(
+            critic_value=float(critic_value),
+            false_high_probability=false_high_probability,
+            classifier_filtered=bool(false_high_probability >= self.config.threshold),
+        )
+
+
+def _add_classifier_aided_summary(prompt_summary: dict[str, Any], sorted_rows: Sequence[dict[str, Any]]) -> None:
+    if not sorted_rows or "critic_value" not in sorted_rows[0]:
+        return
+    critic_values = np.asarray([float(row["critic_value"]) for row in sorted_rows], dtype=np.float64)
+    best_index = int(np.argmax(critic_values))
+    best_row = sorted_rows[best_index]
+    kept_rows = [row for row in sorted_rows if not bool(row.get("classifier_filtered_as_false_high", False))]
+    fallback_used = len(kept_rows) == 0
+    aided_candidates = sorted_rows if fallback_used else kept_rows
+    aided_values = np.asarray([float(row["critic_value"]) for row in aided_candidates], dtype=np.float64)
+    aided_row = aided_candidates[int(np.argmax(aided_values))]
+    filtered_count = sum(int(bool(row.get("classifier_filtered_as_false_high", False))) for row in sorted_rows)
+    prompt_summary.update(
+        {
+            "critic_best_of_n_accuracy": float(best_row["task_score"]),
+            "critic_best_sample_index": int(best_row["sample_index"]),
+            "critic_best_value": float(best_row["critic_value"]),
+            "classifier_aided_best_of_n_accuracy": float(aided_row["task_score"]),
+            "classifier_aided_best_sample_index": int(aided_row["sample_index"]),
+            "classifier_aided_best_value": float(aided_row["critic_value"]),
+            "classifier_aided_best_false_high_probability": float(aided_row["classifier_false_high_probability"]),
+            "classifier_aid_filtered_count": int(filtered_count),
+            "classifier_aid_kept_count": int(len(sorted_rows) - filtered_count),
+            "classifier_aid_fallback_used": bool(fallback_used),
+        }
+    )
+
+
 def build_prompt_summary(
     *,
     actor_name: str,
@@ -1014,6 +1419,7 @@ def build_prompt_summary(
         "mean_bank_response_length": float(lengths.mean()),
         "std_bank_response_length": float(lengths.std()),
     }
+    _add_classifier_aided_summary(prompt_summary, sorted_rows)
     prompt_summary[oracle_key] = prompt_summary["oracle_best_of_n_accuracy"]
     return prompt_summary
 
@@ -1080,7 +1486,11 @@ def _worker_entry(
     generation_backend: str,
     vllm_logprobs_for_entropy: bool,
     vllm_gpu_memory_utilization: float,
+    vllm_tensor_parallel_size: int,
+    vllm_max_model_len: int | None,
+    vllm_max_num_seqs: int | None,
     vllm_enforce_eager: bool,
+    classifier_aid_config: ClassifierAidConfig | None,
     worker_root: str,
     progress_queue=None,
 ) -> None:
@@ -1113,17 +1523,31 @@ def _worker_entry(
                 raise ImportError("vLLM is required when --generation_backend=vllm, but it is not installed.")
             if device.type != "cuda":
                 raise ValueError("--generation_backend=vllm requires CUDA worker devices.")
-            vllm_llm = LLM(
-                model=str(actor_hf_path),
-                tokenizer=str(actor_hf_path),
-                dtype=_resolve_vllm_dtype_name(dtype_name),
-                trust_remote_code=trust_remote_code,
-                tensor_parallel_size=1,
-                gpu_memory_utilization=float(vllm_gpu_memory_utilization),
-                enforce_eager=bool(vllm_enforce_eager),
-            )
+            vllm_kwargs = {
+                "model": str(actor_hf_path),
+                "tokenizer": str(actor_hf_path),
+                "dtype": _resolve_vllm_dtype_name(dtype_name),
+                "trust_remote_code": trust_remote_code,
+                "tensor_parallel_size": int(vllm_tensor_parallel_size),
+                "gpu_memory_utilization": float(vllm_gpu_memory_utilization),
+                "enforce_eager": bool(vllm_enforce_eager),
+            }
+            if vllm_max_model_len is not None:
+                vllm_kwargs["max_model_len"] = int(vllm_max_model_len)
+            if vllm_max_num_seqs is not None:
+                vllm_kwargs["max_num_seqs"] = int(vllm_max_num_seqs)
+            vllm_llm = LLM(**vllm_kwargs)
         else:
             raise ValueError(f"Unsupported generation backend: {generation_backend}")
+
+        critic_classifier_scorer = None
+        if classifier_aid_config is not None:
+            critic_classifier_scorer = CriticClassifierScorer(
+                config=classifier_aid_config,
+                device=device,
+                dtype=dtype,
+                trust_remote_code=trust_remote_code,
+            )
 
         entropy_moments = RunningMoments()
         length_moments = RunningMoments()
@@ -1206,6 +1630,20 @@ def _worker_entry(
                         omit_response_token_ids=omit_response_token_ids,
                         store_token_entropies=store_token_entropies,
                     )
+                    if critic_classifier_scorer is not None:
+                        critic_scores = critic_classifier_scorer.score(
+                            prompt_text=example.prompt_text,
+                            response_text=sampled_response.response_text,
+                        )
+                        response_row.update(
+                            {
+                                "critic_value": float(critic_scores.critic_value),
+                                "classifier_false_high_probability": float(
+                                    critic_scores.false_high_probability
+                                ),
+                                "classifier_filtered_as_false_high": bool(critic_scores.classifier_filtered),
+                            }
+                        )
                     response_file.write(_json_line(response_row))
                     response_rows.append(response_row)
                     if response_row["mean_response_entropy"] is not None:
@@ -1310,7 +1748,11 @@ def _start_worker_processes(
                 "generation_backend": args.generation_backend,
                 "vllm_logprobs_for_entropy": args.vllm_logprobs_for_entropy,
                 "vllm_gpu_memory_utilization": args.vllm_gpu_memory_utilization,
+                "vllm_tensor_parallel_size": args.vllm_tensor_parallel_size,
+                "vllm_max_model_len": args.vllm_max_model_len,
+                "vllm_max_num_seqs": args.vllm_max_num_seqs,
                 "vllm_enforce_eager": args.vllm_enforce_eager,
+                "classifier_aid_config": args.classifier_aid_config,
                 "worker_root": str(worker_root),
                 "progress_queue": progress_queue,
             },
@@ -1624,6 +2066,40 @@ def _aggregate_actor_metrics(
             np.mean([float(prompt_summary["duplicate_response_fraction"]) for prompt_summary in prompt_summaries])
         ),
     }
+    if "critic_best_of_n_accuracy" in prompt_summaries[0]:
+        actor_metrics.update(
+            {
+                "critic_best_of_n_accuracy": float(
+                    np.mean([float(prompt_summary["critic_best_of_n_accuracy"]) for prompt_summary in prompt_summaries])
+                ),
+                "classifier_aided_best_of_n_accuracy": float(
+                    np.mean(
+                        [
+                            float(prompt_summary["classifier_aided_best_of_n_accuracy"])
+                            for prompt_summary in prompt_summaries
+                        ]
+                    )
+                ),
+                "classifier_aid_mean_filtered_count": float(
+                    np.mean([float(prompt_summary["classifier_aid_filtered_count"]) for prompt_summary in prompt_summaries])
+                ),
+                "classifier_aid_mean_kept_count": float(
+                    np.mean([float(prompt_summary["classifier_aid_kept_count"]) for prompt_summary in prompt_summaries])
+                ),
+                "classifier_aid_fallback_prompt_fraction": float(
+                    np.mean([float(prompt_summary["classifier_aid_fallback_used"]) for prompt_summary in prompt_summaries])
+                ),
+                "classifier_aided_minus_critic_best_of_n_accuracy": float(
+                    np.mean(
+                        [
+                            float(prompt_summary["classifier_aided_best_of_n_accuracy"])
+                            - float(prompt_summary["critic_best_of_n_accuracy"])
+                            for prompt_summary in prompt_summaries
+                        ]
+                    )
+                ),
+            }
+        )
     actor_metrics[oracle_key] = actor_metrics["oracle_best_of_n_accuracy"]
     return actor_metrics
 
@@ -1933,6 +2409,7 @@ def _write_output_readme(
         "- Torch backend token entropy is computed from the raw actor next-token distribution before temperature/top-p/top-k sampling is applied, matching the requested experiment definition.",
         "- vLLM backend marks entropy fields as null unless `--vllm_logprobs_for_entropy` is enabled and full-vocabulary logprobs are available.",
         "- Distinct responses are computed after `response.strip()` normalization.",
+        "- When classifier aid is enabled, critic_best_of_n selects the max critic_value response; classifier_aided_best_of_n first drops candidates flagged as false-high and falls back to critic ranking if all are dropped.",
         "",
         "Run config:",
         f"- Dataset: `{args.dataset_path}`",
@@ -1944,6 +2421,9 @@ def _write_output_readme(
         f"- Worker devices: `{args.worker_devices}`",
         f"- Generation backend: `{args.generation_backend}`",
         f"- vLLM logprobs for entropy: `{args.vllm_logprobs_for_entropy}`",
+        f"- Classifier aid dir: `{args.classifier_aid_dir}`",
+        f"- Critic model dir: `{args.critic_model_dir}`",
+        f"- Classifier aid threshold: `{args.classifier_aid_threshold}`",
         "",
         "Files:",
         "- `response_bank.jsonl`: one row per sampled response with task score, entropy diagnostics, and optional token ids / entropy traces.",
@@ -1960,6 +2440,13 @@ def _write_output_readme(
         metrics = actor_metrics[actor_name]
         mean_entropy = metrics["mean_response_entropy"]
         mean_entropy_text = "null" if mean_entropy is None else f"{mean_entropy:.6f}"
+        critic_text = ""
+        if "classifier_aided_best_of_n_accuracy" in metrics:
+            critic_text = (
+                f", critic_best_of_n={metrics['critic_best_of_n_accuracy']:.6f}, "
+                f"classifier_aided_best_of_n={metrics['classifier_aided_best_of_n_accuracy']:.6f}, "
+                f"aid_delta={metrics['classifier_aided_minus_critic_best_of_n_accuracy']:.6f}"
+            )
         lines.append(
             f"- {actor_name}: sampled_single={metrics['sampled_single_accuracy']:.6f}, "
             f"mean_sample={metrics['mean_sample_accuracy']:.6f}, "
@@ -1967,6 +2454,7 @@ def _write_output_readme(
             f"has_success={metrics['fraction_prompts_with_at_least_one_success']:.6f}, "
             f"mean_entropy={mean_entropy_text}, "
             f"distinct_fraction={metrics['mean_distinct_response_fraction']:.6f}"
+            f"{critic_text}"
         )
 
     (output_dir / "README.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1974,6 +2462,7 @@ def _write_output_readme(
 
 def main() -> int:
     args = parse_args()
+    args.classifier_aid_config = _resolve_classifier_aid_config(args)
     if len(args.actor_checkpoint_dirs) != len(args.actor_names):
         raise ValueError(
             "--actor_checkpoint_dirs and --actor_names must have the same number of entries "
@@ -2004,6 +2493,12 @@ def main() -> int:
             "--vllm_gpu_memory_utilization must be in (0, 1], "
             f"got {args.vllm_gpu_memory_utilization}"
         )
+    if args.vllm_tensor_parallel_size <= 0:
+        raise ValueError(f"--vllm_tensor_parallel_size must be > 0, got {args.vllm_tensor_parallel_size}")
+    if args.vllm_max_model_len is not None and args.vllm_max_model_len <= 0:
+        raise ValueError(f"--vllm_max_model_len must be > 0, got {args.vllm_max_model_len}")
+    if args.vllm_max_num_seqs is not None and args.vllm_max_num_seqs <= 0:
+        raise ValueError(f"--vllm_max_num_seqs must be > 0, got {args.vllm_max_num_seqs}")
     if not args.skip_plots and plt is None:
         raise RuntimeError(
             "matplotlib is required for plot generation but could not be imported."
@@ -2171,7 +2666,11 @@ def main() -> int:
                         generation_backend=args.generation_backend,
                         vllm_logprobs_for_entropy=args.vllm_logprobs_for_entropy,
                         vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
+                        vllm_tensor_parallel_size=args.vllm_tensor_parallel_size,
+                        vllm_max_model_len=args.vllm_max_model_len,
+                        vllm_max_num_seqs=args.vllm_max_num_seqs,
                         vllm_enforce_eager=args.vllm_enforce_eager,
+                        classifier_aid_config=args.classifier_aid_config,
                         worker_root=str(actor_worker_dir),
                         progress_queue=None,
                     )
@@ -2358,6 +2857,9 @@ def main() -> int:
             "generation_backend": args.generation_backend,
             "vllm_logprobs_for_entropy": bool(args.vllm_logprobs_for_entropy),
             "vllm_gpu_memory_utilization": float(args.vllm_gpu_memory_utilization),
+            "vllm_tensor_parallel_size": int(args.vllm_tensor_parallel_size),
+            "vllm_max_model_len": None if args.vllm_max_model_len is None else int(args.vllm_max_model_len),
+            "vllm_max_num_seqs": None if args.vllm_max_num_seqs is None else int(args.vllm_max_num_seqs),
             "vllm_enforce_eager": bool(args.vllm_enforce_eager),
         },
         "actors": actor_metrics,
@@ -2373,7 +2875,7 @@ def main() -> int:
         "eos_token_ids_by_actor": {
             actor_name: list(token_ids) for actor_name, token_ids in eos_token_ids_by_actor.items()
         },
-        "run_args": vars(args),
+        "run_args": {key: _json_safe(value) for key, value in vars(args).items()},
     }
     with summary_metrics_path.open("w", encoding="utf-8") as summary_file:
         json.dump(summary_payload, summary_file, ensure_ascii=True, indent=2)

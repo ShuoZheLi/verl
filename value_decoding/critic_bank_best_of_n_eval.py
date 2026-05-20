@@ -4,8 +4,10 @@ import argparse
 import csv
 import json
 import math
+import multiprocessing as mp
 import subprocess
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import fmean
@@ -50,6 +52,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n_values", nargs="+", type=int, default=list(DEFAULT_N_VALUES))
     parser.add_argument("--dtype", type=str, default="bf16", choices=["bf16", "fp16", "fp32"])
     parser.add_argument("--device", type=str, default=None)
+    parser.add_argument(
+        "--devices",
+        nargs="+",
+        default=None,
+        help=(
+            "Optional list of devices for prompt-sharded local multiprocessing, e.g. cuda:0 cuda:1 cuda:2 cuda:3. "
+            "When omitted, --device is used in a single process."
+        ),
+    )
     parser.add_argument("--trust_remote_code", action="store_true")
     parser.add_argument("--skip_merge", action="store_true")
     parser.add_argument(
@@ -71,6 +82,24 @@ def parse_args() -> argparse.Namespace:
         help="Copy every original response-bank field into critic_scored_response_bank.jsonl.",
     )
     return parser.parse_args()
+
+
+@dataclass(frozen=True)
+class ScoringConfig:
+    critic_checkpoint_dir: str
+    critic_hf_dir: str
+    dtype: str
+    trust_remote_code: bool
+    prompt_key: str
+    response_key: str
+    response_token_ids_key: str
+    max_prompt_length: int
+    max_response_tokens: int
+    retokenize_responses: bool
+    keep_all_original_fields: bool
+    prompt_index_key: str
+    sample_index_key: str
+    task_score_key: str
 
 
 def _json_line(record: dict[str, Any]) -> str:
@@ -198,6 +227,97 @@ def _score_sequence(
     if not math.isfinite(score):
         raise ValueError(f"Critic produced a non-finite value: {score}")
     return score
+
+
+def _score_rows_on_device(
+    *,
+    rows: Sequence[dict[str, Any]],
+    config: ScoringConfig,
+    device_name: str,
+) -> list[dict[str, Any]]:
+    dtype = resolve_dtype(config.dtype)
+    device = resolve_device(device_name)
+    critic_hf_dir = Path(config.critic_hf_dir)
+    tokenizer = load_tokenizer(critic_hf_dir, trust_remote_code=config.trust_remote_code)
+    critic = load_critic_model(critic_hf_dir, dtype=dtype, device=device, trust_remote_code=config.trust_remote_code)
+
+    scored_rows: list[dict[str, Any]] = []
+    progress = tqdm(
+        rows,
+        desc=f"Scoring response bank on {device}",
+        position=_device_progress_position(device_name),
+        leave=True,
+    )
+    for row in progress:
+        prompt_ids = _prompt_token_ids(
+            row,
+            tokenizer=tokenizer,
+            prompt_key=config.prompt_key,
+            max_prompt_length=config.max_prompt_length,
+        )
+        response_ids = _response_token_ids(
+            row,
+            tokenizer=tokenizer,
+            response_key=config.response_key,
+            response_token_ids_key=config.response_token_ids_key,
+            max_response_tokens=config.max_response_tokens,
+            retokenize_responses=config.retokenize_responses,
+        )
+        sequence_ids = prompt_ids + response_ids
+        critic_value = _score_sequence(critic=critic, device=device, sequence_ids=sequence_ids)
+
+        scored_row = _copy_original_fields(row, keep_all_original_fields=config.keep_all_original_fields)
+        for required_field in (
+            config.prompt_index_key,
+            config.sample_index_key,
+            config.task_score_key,
+            config.prompt_key,
+            config.response_key,
+        ):
+            _ensure_field_copy(scored_row, row, required_field)
+        scored_row.update(
+            {
+                "critic_checkpoint_dir": config.critic_checkpoint_dir,
+                "critic_hf_dir": config.critic_hf_dir,
+                "critic_final_trajectory_value": critic_value,
+                "critic_prompt_tokens_used": int(len(prompt_ids)),
+                "critic_response_tokens_used": int(len(response_ids)),
+                "critic_sequence_tokens_used": int(len(sequence_ids)),
+                "_source_line_number": int(row["_source_line_number"]),
+            }
+        )
+        scored_rows.append(scored_row)
+    return scored_rows
+
+
+def _device_progress_position(device_name: str) -> int:
+    try:
+        device = torch.device(device_name)
+    except Exception:
+        return 0
+    if device.type == "cuda":
+        return 0 if device.index is None else int(device.index)
+    return 0
+
+
+def _score_worker(payload: tuple[list[dict[str, Any]], ScoringConfig, str]) -> list[dict[str, Any]]:
+    rows, config, device_name = payload
+    return _score_rows_on_device(rows=rows, config=config, device_name=device_name)
+
+
+def _partition_rows_by_prompt(
+    rows: Sequence[dict[str, Any]],
+    *,
+    prompt_index_key: str,
+    num_partitions: int,
+) -> list[list[dict[str, Any]]]:
+    if num_partitions <= 0:
+        raise ValueError(f"num_partitions must be positive, got {num_partitions}")
+    partitions: list[list[dict[str, Any]]] = [[] for _ in range(num_partitions)]
+    for row in rows:
+        prompt_index = int(row[prompt_index_key])
+        partitions[prompt_index % num_partitions].append(row)
+    return partitions
 
 
 def _copy_original_fields(row: dict[str, Any], *, keep_all_original_fields: bool) -> dict[str, Any]:
@@ -406,53 +526,47 @@ def main() -> int:
         skip_merge=args.skip_merge,
     )
 
-    tokenizer = load_tokenizer(critic_hf_dir, trust_remote_code=args.trust_remote_code)
-    critic = load_critic_model(critic_hf_dir, dtype=dtype, device=device, trust_remote_code=args.trust_remote_code)
-
     rows = _load_jsonl(response_bank_path)
+    scoring_config = ScoringConfig(
+        critic_checkpoint_dir=str(critic_checkpoint_dir),
+        critic_hf_dir=str(critic_hf_dir),
+        dtype=args.dtype,
+        trust_remote_code=bool(args.trust_remote_code),
+        prompt_key=args.prompt_key,
+        response_key=args.response_key,
+        response_token_ids_key=args.response_token_ids_key,
+        max_prompt_length=int(args.max_prompt_length),
+        max_response_tokens=int(args.max_response_tokens),
+        retokenize_responses=bool(args.retokenize_responses),
+        keep_all_original_fields=bool(args.keep_all_original_fields),
+        prompt_index_key=args.prompt_index_key,
+        sample_index_key=args.sample_index_key,
+        task_score_key=args.task_score_key,
+    )
+
+    if args.devices:
+        devices = [str(device_name) for device_name in args.devices]
+        partitions = _partition_rows_by_prompt(
+            rows,
+            prompt_index_key=args.prompt_index_key,
+            num_partitions=len(devices),
+        )
+        worker_payloads = [
+            (partition_rows, scoring_config, device_name)
+            for partition_rows, device_name in zip(partitions, devices, strict=True)
+            if partition_rows
+        ]
+        mp_context = mp.get_context("spawn")
+        with mp_context.Pool(processes=len(worker_payloads)) as pool:
+            scored_chunks = pool.map(_score_worker, worker_payloads)
+        scored_rows = [row for chunk in scored_chunks for row in chunk]
+    else:
+        scored_rows = _score_rows_on_device(rows=rows, config=scoring_config, device_name=str(device))
+
+    scored_rows = sorted(scored_rows, key=lambda row: int(row["_source_line_number"]))
     scored_path = output_dir / "critic_scored_response_bank.jsonl"
-    scored_rows: list[dict[str, Any]] = []
-
     with scored_path.open("w", encoding="utf-8") as scored_file:
-        for row in tqdm(rows, desc="Scoring response bank"):
-            prompt_ids = _prompt_token_ids(
-                row,
-                tokenizer=tokenizer,
-                prompt_key=args.prompt_key,
-                max_prompt_length=args.max_prompt_length,
-            )
-            response_ids = _response_token_ids(
-                row,
-                tokenizer=tokenizer,
-                response_key=args.response_key,
-                response_token_ids_key=args.response_token_ids_key,
-                max_response_tokens=args.max_response_tokens,
-                retokenize_responses=args.retokenize_responses,
-            )
-            sequence_ids = prompt_ids + response_ids
-            critic_value = _score_sequence(critic=critic, device=device, sequence_ids=sequence_ids)
-
-            scored_row = _copy_original_fields(row, keep_all_original_fields=args.keep_all_original_fields)
-            for required_field in (
-                args.prompt_index_key,
-                args.sample_index_key,
-                args.task_score_key,
-                args.prompt_key,
-                args.response_key,
-            ):
-                _ensure_field_copy(scored_row, row, required_field)
-            scored_row.update(
-                {
-                    "critic_checkpoint_dir": str(critic_checkpoint_dir),
-                    "critic_hf_dir": str(critic_hf_dir),
-                    "critic_final_trajectory_value": critic_value,
-                    "critic_prompt_tokens_used": int(len(prompt_ids)),
-                    "critic_response_tokens_used": int(len(response_ids)),
-                    "critic_sequence_tokens_used": int(len(sequence_ids)),
-                    "_source_line_number": int(row["_source_line_number"]),
-                }
-            )
-            scored_rows.append(scored_row)
+        for scored_row in scored_rows:
             scored_file.write(_json_line({key: value for key, value in scored_row.items() if not key.startswith("_")}))
 
     grouped = _group_by_prompt(
@@ -492,6 +606,7 @@ def main() -> int:
         "n_values": n_values,
         "dtype": args.dtype,
         "device": str(device),
+        "devices": [str(device_name) for device_name in args.devices] if args.devices else None,
         "max_prompt_length": int(args.max_prompt_length),
         "max_response_tokens": int(args.max_response_tokens),
         "retokenize_responses": bool(args.retokenize_responses),

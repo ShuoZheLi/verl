@@ -138,3 +138,5 @@ chunk_guidance_eval_7b_testset/
 chunk_guidance_eval_7b_testset.zip
 step_boundary_detect/output
 actor_proposal_diagnostic_math500
+
+value_decoding/output_archive
