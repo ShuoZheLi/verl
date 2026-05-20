@@ -580,33 +580,76 @@ def _vf_loss(
     return float((0.5 * _aggregate_loss(clipped, response_mask, loss_agg_mode)).detach().cpu().item())
 
 
-def _endpoint_values(values: torch.Tensor, response_mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    valid_rows = response_mask.bool().any(dim=-1)
+def _endpoint_values(
+    full_values: torch.Tensor,
+    *,
+    prompt_lengths: torch.Tensor,
+    response_mask: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+    """Extract prompt-end and full-trajectory-end critic values.
+
+    These endpoint diagnostics only need two state values per example:
+    ``prompt_len - 1`` and the last response-aligned value position. This matches
+    PPO training, where critic values are sliced as ``[-response_len - 1 : -1]``.
+    Treat rows whose
+    endpoint indices are unavailable as invalid for endpoint metrics rather than
+    falling back to an earlier response position.
+    """
+    if full_values.dim() != 2:
+        raise ValueError(f"Expected full_values shape (batch, seq), got {tuple(full_values.shape)}")
+    if prompt_lengths.dim() != 1 or prompt_lengths.shape[0] != full_values.shape[0]:
+        raise ValueError(
+            f"prompt_lengths must have shape ({full_values.shape[0]},), got {tuple(prompt_lengths.shape)}"
+        )
+    if response_mask.dim() != 2 or response_mask.shape[0] != full_values.shape[0]:
+        raise ValueError(
+            f"response_mask must have shape ({full_values.shape[0]}, response_width), "
+            f"got {tuple(response_mask.shape)}"
+        )
+    response_lengths = response_mask.to(dtype=torch.bool).sum(dim=-1).to(dtype=torch.long)
+    prompt_end_indices = prompt_lengths.to(device=full_values.device, dtype=torch.long) - 1
+    trajectory_end_indices = prompt_end_indices + response_lengths.to(device=full_values.device) - 1
+    endpoint_available = (
+        (prompt_end_indices >= 0)
+        & (response_lengths.to(device=full_values.device) > 0)
+        & (trajectory_end_indices < full_values.shape[1])
+    )
+    missing_endpoint_examples = int(
+        (~endpoint_available & (response_lengths.to(device=full_values.device) > 0)).sum().item()
+    )
+    valid_rows = endpoint_available
     if not valid_rows.any():
-        empty = values.new_empty((0,), dtype=values.dtype)
-        return valid_rows, empty, empty
-    prompt_end_values = values[valid_rows, 0]
-    valid_mask = response_mask[valid_rows].bool()
-    valid_values = values[valid_rows]
-    positions = torch.arange(valid_mask.shape[-1], device=values.device).unsqueeze(0).expand_as(valid_mask)
-    last_indices = torch.where(valid_mask, positions + 1, torch.zeros_like(positions)).max(dim=-1).values - 1
-    trajectory_end_values = valid_values.gather(1, last_indices.long().unsqueeze(-1)).squeeze(-1)
-    return valid_rows, prompt_end_values, trajectory_end_values
+        empty = full_values.new_empty((0,), dtype=full_values.dtype)
+        return valid_rows, empty, empty, missing_endpoint_examples
+    prompt_end_values = full_values[valid_rows].gather(
+        1, prompt_end_indices[valid_rows].long().unsqueeze(-1)
+    ).squeeze(-1)
+    trajectory_end_values = full_values[valid_rows].gather(
+        1, trajectory_end_indices[valid_rows].long().unsqueeze(-1)
+    ).squeeze(-1)
+    return valid_rows, prompt_end_values, trajectory_end_values, missing_endpoint_examples
 
 
 def _response_aligned_values(
     full_values: torch.Tensor,
     *,
     prompt_lengths: torch.Tensor,
-    response_width: int,
-) -> torch.Tensor:
+    response_mask: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, int, int]:
     """Extract response-aligned critic values using the same offset as PPO training.
 
     For a sequence ``prompt + response``, the critic value at ``prompt_len - 1`` is
     the prompt-end state before generating the first response token. The next
     positions align with subsequent response states. This per-row gather is needed
     because prompts have variable lengths inside a padded evaluation batch.
+
+    Some critic implementations return values only up to the longest valid
+    unpadded sequence in a batch instead of the padded input width. When a row
+    needs value positions beyond that returned width, keep the available prefix
+    and clear the corresponding tail of ``response_mask`` so downstream metrics
+    are computed over positions that actually have critic predictions.
     """
+    response_width = response_mask.shape[1]
     if response_width <= 0:
         raise ValueError(f"response_width must be > 0, got {response_width}")
     if full_values.dim() != 2:
@@ -615,17 +658,31 @@ def _response_aligned_values(
         raise ValueError(
             f"prompt_lengths must have shape ({full_values.shape[0]},), got {tuple(prompt_lengths.shape)}"
         )
+    if response_mask.dim() != 2 or response_mask.shape[0] != full_values.shape[0]:
+        raise ValueError(
+            f"response_mask must have shape ({full_values.shape[0]}, response_width), "
+            f"got {tuple(response_mask.shape)}"
+        )
     start = prompt_lengths.to(device=full_values.device, dtype=torch.long) - 1
     if torch.any(start < 0):
         raise ValueError("Each prompt must contain at least one token.")
-    offsets = torch.arange(response_width, device=full_values.device, dtype=torch.long)
-    gather_indices = start.unsqueeze(1) + offsets.unsqueeze(0)
-    if torch.any(gather_indices >= full_values.shape[1]):
-        raise ValueError(
-            "Critic returned too few value positions for response alignment: "
-            f"values={tuple(full_values.shape)}, max_index={int(gather_indices.max().item())}"
-        )
-    return full_values.gather(1, gather_indices)
+
+    values = full_values.new_zeros((full_values.shape[0], response_width), dtype=full_values.dtype)
+    aligned_mask = response_mask.clone()
+    truncated_tokens = 0
+    truncated_examples = 0
+    for row_idx in range(full_values.shape[0]):
+        row_start = int(start[row_idx].item())
+        available = max(0, min(response_width, full_values.shape[1] - row_start))
+        if available > 0:
+            values[row_idx, :available] = full_values[row_idx, row_start : row_start + available]
+        if available < response_width:
+            removed = int(aligned_mask[row_idx, available:].sum().detach().cpu().item())
+            if removed > 0:
+                truncated_tokens += removed
+                truncated_examples += 1
+            aligned_mask[row_idx, available:] = 0
+    return values, aligned_mask, truncated_tokens, truncated_examples
 
 
 def evaluate_critic(
@@ -637,6 +694,7 @@ def evaluate_critic(
     device: torch.device,
 ) -> tuple[dict[str, float], list[dict[str, Any]]]:
     total_valid = 0
+    endpoint_valid_count = 0
     reward_sum = 0.0
     prompt_gap_sum = 0.0
     traj_gap_sum = 0.0
@@ -644,6 +702,9 @@ def evaluate_critic(
     vf_loss_seq_weighted_sum = 0.0
     token_count = 0.0
     seq_count = 0.0
+    alignment_truncated_tokens = 0
+    alignment_truncated_examples = 0
+    endpoint_missing_examples = 0
     per_rows: list[dict[str, Any]] = []
 
     for batch in tqdm(list(_chunks(trajectories, config.batch_size)), desc="Critic eval", unit="batch"):
@@ -652,7 +713,7 @@ def evaluate_critic(
         response_masks = [row["response_mask"] for row in batch]
         prompt_lengths = torch.tensor([len(row["prompt_ids"]) for row in batch], dtype=torch.long, device=device)
         input_ids, attention_mask = _pad_2d(full_ids, pad_value=tokenizer.pad_token_id, device=device)
-        response_tensor, response_present_mask = _pad_2d(response_ids, pad_value=tokenizer.pad_token_id, device=device)
+        _, response_present_mask = _pad_2d(response_ids, pad_value=tokenizer.pad_token_id, device=device)
         response_mask = torch.zeros_like(response_present_mask)
         for idx, mask_row in enumerate(response_masks):
             if mask_row:
@@ -661,12 +722,22 @@ def evaluate_critic(
 
         with torch.inference_mode():
             full_values = critic_sequence_values(critic, input_ids=input_ids, attention_mask=attention_mask).float()
-        response_len = response_tensor.shape[1]
-        values = _response_aligned_values(
+        original_response_mask = response_mask
+        reward_valid_rows = original_response_mask.bool().any(dim=-1)
+        valid_rows, prompt_end_values, trajectory_end_values, missing_endpoint_examples = _endpoint_values(
             full_values,
             prompt_lengths=prompt_lengths,
-            response_width=response_len,
+            response_mask=original_response_mask,
         )
+        endpoint_missing_examples += missing_endpoint_examples
+
+        values, response_mask, batch_truncated_tokens, batch_truncated_examples = _response_aligned_values(
+            full_values,
+            prompt_lengths=prompt_lengths,
+            response_mask=original_response_mask,
+        )
+        alignment_truncated_tokens += batch_truncated_tokens
+        alignment_truncated_examples += batch_truncated_examples
         values = values * response_mask.to(dtype=values.dtype)
         token_rewards = _token_level_rewards(rewards, response_mask)
         returns = _compute_gae_returns(
@@ -676,28 +747,33 @@ def evaluate_critic(
             gamma=config.gamma,
             lam=config.lam,
         )
-        valid_rows, prompt_end_values, trajectory_end_values = _endpoint_values(values, response_mask)
-        valid_rewards = rewards[valid_rows]
-        if valid_rewards.numel() == 0:
-            continue
+        reward_values = rewards[reward_valid_rows]
+        if reward_values.numel() > 0:
+            total_valid += int(reward_values.numel())
+            reward_sum += float(reward_values.sum().detach().cpu().item())
 
-        prompt_gaps = torch.abs(prompt_end_values - valid_rewards)
-        trajectory_gaps = torch.abs(trajectory_end_values - valid_rewards)
-        valid_count = int(valid_rewards.numel())
-        total_valid += valid_count
-        reward_sum += float(valid_rewards.sum().detach().cpu().item())
-        prompt_gap_sum += float(prompt_gaps.sum().detach().cpu().item())
-        traj_gap_sum += float(trajectory_gaps.sum().detach().cpu().item())
+        endpoint_rewards = rewards[valid_rows]
+        if endpoint_rewards.numel() > 0:
+            prompt_gaps = torch.abs(prompt_end_values - endpoint_rewards)
+            trajectory_gaps = torch.abs(trajectory_end_values - endpoint_rewards)
+            endpoint_count = int(endpoint_rewards.numel())
+            endpoint_valid_count += endpoint_count
+            prompt_gap_sum += float(prompt_gaps.sum().detach().cpu().item())
+            traj_gap_sum += float(trajectory_gaps.sum().detach().cpu().item())
+        else:
+            prompt_gaps = full_values.new_empty((0,), dtype=full_values.dtype)
+            trajectory_gaps = full_values.new_empty((0,), dtype=full_values.dtype)
 
         loss_mat = torch.maximum(
             (values - returns) ** 2,
             (torch.clamp(values, values - config.cliprange_value, values + config.cliprange_value) - returns) ** 2,
         )
         batch_token_count = float(response_mask.sum().detach().cpu().item())
-        batch_seq_count = float(valid_count)
+        vf_valid_rows = response_mask.bool().any(dim=-1)
+        batch_seq_count = float(vf_valid_rows.sum().detach().cpu().item())
         token_loss = 0.5 * ((loss_mat * response_mask).sum() / torch.clamp(response_mask.sum(), min=1.0))
         seq_losses = (loss_mat * response_mask).sum(dim=-1) / torch.clamp(response_mask.sum(dim=-1), min=1)
-        seq_loss = 0.5 * (seq_losses[valid_rows].sum() / max(valid_count, 1))
+        seq_loss = 0.5 * (seq_losses[vf_valid_rows].sum() / max(int(batch_seq_count), 1))
         vf_loss_token_weighted_sum += float(token_loss.detach().cpu().item()) * batch_token_count
         vf_loss_seq_weighted_sum += float(seq_loss.detach().cpu().item()) * batch_seq_count
         token_count += batch_token_count
@@ -743,8 +819,8 @@ def evaluate_critic(
         "reward_mean": reward_sum / max(total_valid, 1),
         "accuracy": reward_sum / max(total_valid, 1),
         "acc/mean@1": reward_sum / max(total_valid, 1),
-        "critic/prompt_end_vs_reward_gap": prompt_gap_sum / max(total_valid, 1),
-        "critic/trajectory_end_vs_reward_gap": traj_gap_sum / max(total_valid, 1),
+        "critic/prompt_end_vs_reward_gap": prompt_gap_sum / max(endpoint_valid_count, 1),
+        "critic/trajectory_end_vs_reward_gap": traj_gap_sum / max(endpoint_valid_count, 1),
         # Same name as training. With old_values equal to the evaluated critic's
         # current values, value clipping is inactive; for the default token-mean
         # aggregation this is 0.5 * mean((V - GAE_return)^2) over valid response tokens.
@@ -753,6 +829,10 @@ def evaluate_critic(
         else vf_loss_seq_weighted_sum / max(seq_count, 1.0),
         "critic/vf_loss_token_mean": vf_loss_token_weighted_sum / max(token_count, 1.0),
         "critic/vf_loss_seq_mean_token_mean": vf_loss_seq_weighted_sum / max(seq_count, 1.0),
+        "critic/value_alignment_truncated_tokens": float(alignment_truncated_tokens),
+        "critic/value_alignment_truncated_examples": float(alignment_truncated_examples),
+        "critic/endpoint_valid_examples": float(endpoint_valid_count),
+        "critic/endpoint_missing_examples": float(endpoint_missing_examples),
         "total_response_tokens": token_count,
         "gamma": float(config.gamma),
         "lam": float(config.lam),
