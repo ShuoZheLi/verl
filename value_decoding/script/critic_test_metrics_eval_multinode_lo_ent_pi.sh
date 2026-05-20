@@ -6,8 +6,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
 #SBATCH --time=3:20:00
-#SBATCH --output=slurm-%j_critic_test_metrics.out
-#SBATCH --error=slurm-%j_critic_test_metrics.err
+#SBATCH --output=slurm-%j_lo_ent_pi_critic_test_metrics.out
+#SBATCH --error=slurm-%j_lo_ent_pi_critic_test_metrics.err
 
 set -euo pipefail
 
@@ -44,7 +44,7 @@ python3 -V
 # -----------------------------
 # Run identity
 # -----------------------------
-RUN_NAME="critic_test_metrics_math500"
+RUN_NAME="lo_ent_pi_critic_test_metrics"
 RUN_ID="${RUN_NAME}_${SLURM_JOB_ID}"
 
 # -----------------------------
@@ -54,14 +54,12 @@ RUN_ID="${RUN_NAME}_${SLURM_JOB_ID}"
 #   1. a PPO export containing actor/ and critic/ subdirectories, or
 #   2. a plain HF actor checkpoint, in which case only accuracy is logged.
 CHECKPOINT_PATHS=(
-  "/scratch/10587/npg493/verl_runs/qwen2.5_7B_ppo_664998/global_step_100"
-  "/scratch/10587/npg493/verl_runs/qwen2.5_7B_ppo_664998/global_step_200"
-  "/scratch/10587/npg493/verl_runs/qwen2.5_7B_ppo_664998/global_step_300"
-  "/scratch/10587/npg493/verl_runs/qwen2.5_7B_ppo_664998/global_step_400"
-  "/scratch/10587/npg493/verl_runs/qwen2.5_7B_ppo_664998/global_step_500"
-  "/scratch/10587/npg493/verl_runs/qwen2.5_7B_ppo_664998/global_step_600"
-  "/scratch/10587/npg493/verl_runs/qwen2.5_7B_ppo_664998/global_step_700"
-  "/scratch/10587/npg493/verl_runs/qwen2.5_7B_ppo_664998/global_step_800"
+  "/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_100"
+  "/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_200"
+  "/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_300"
+  "/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_400"
+  "/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_500"
+  "/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_600"
 )
 
 if [[ -n "${CHECKPOINT_PATHS_OVERRIDE:-}" ]]; then
@@ -80,7 +78,7 @@ ARCHIVE_DIR="${ARCHIVE_ROOT}/${RUN_ID}"
 SCRATCH_ROOT="${SCRATCH}/value_decoding_runs"
 RUN_DIR="${SCRATCH_ROOT}/${RUN_ID}"
 LOG_DIR="${RUN_DIR}/logs"
-OUTPUT_DIR="${RUN_DIR}/critic_test_metrics_math500"
+OUTPUT_DIR="${RUN_DIR}/lo_ent_pi_critic_test_metrics"
 
 mkdir -p "$LOG_DIR" "$ARCHIVE_ROOT" "$OUTPUT_DIR"
 
