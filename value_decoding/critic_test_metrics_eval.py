@@ -608,15 +608,14 @@ def _endpoint_values(
         )
     response_lengths = response_mask.to(dtype=torch.bool).sum(dim=-1).to(dtype=torch.long)
     prompt_end_indices = prompt_lengths.to(device=full_values.device, dtype=torch.long) - 1
-    trajectory_end_indices = prompt_end_indices + response_lengths.to(device=full_values.device) - 1
+    response_lengths = response_lengths.to(device=full_values.device)
+    trajectory_end_indices = prompt_end_indices + response_lengths - 1
     endpoint_available = (
         (prompt_end_indices >= 0)
-        & (response_lengths.to(device=full_values.device) > 0)
+        & (response_lengths > 0)
         & (trajectory_end_indices < full_values.shape[1])
     )
-    missing_endpoint_examples = int(
-        (~endpoint_available & (response_lengths.to(device=full_values.device) > 0)).sum().item()
-    )
+    missing_endpoint_examples = int((~endpoint_available & (response_lengths > 0)).sum().item())
     valid_rows = endpoint_available
     if not valid_rows.any():
         empty = full_values.new_empty((0,), dtype=full_values.dtype)
@@ -654,6 +653,8 @@ def _response_aligned_values(
         raise ValueError(f"response_width must be > 0, got {response_width}")
     if full_values.dim() != 2:
         raise ValueError(f"Expected full_values shape (batch, seq), got {tuple(full_values.shape)}")
+    if full_values.shape[1] <= 0:
+        raise ValueError("Critic returned zero value positions.")
     if prompt_lengths.dim() != 1 or prompt_lengths.shape[0] != full_values.shape[0]:
         raise ValueError(
             f"prompt_lengths must have shape ({full_values.shape[0]},), got {tuple(prompt_lengths.shape)}"
@@ -667,21 +668,16 @@ def _response_aligned_values(
     if torch.any(start < 0):
         raise ValueError("Each prompt must contain at least one token.")
 
-    values = full_values.new_zeros((full_values.shape[0], response_width), dtype=full_values.dtype)
-    aligned_mask = response_mask.clone()
-    truncated_tokens = 0
-    truncated_examples = 0
-    for row_idx in range(full_values.shape[0]):
-        row_start = int(start[row_idx].item())
-        available = max(0, min(response_width, full_values.shape[1] - row_start))
-        if available > 0:
-            values[row_idx, :available] = full_values[row_idx, row_start : row_start + available]
-        if available < response_width:
-            removed = int(aligned_mask[row_idx, available:].sum().detach().cpu().item())
-            if removed > 0:
-                truncated_tokens += removed
-                truncated_examples += 1
-            aligned_mask[row_idx, available:] = 0
+    offsets = torch.arange(response_width, device=full_values.device, dtype=torch.long)
+    gather_indices = start.unsqueeze(1) + offsets.unsqueeze(0)
+    available_mask = gather_indices < full_values.shape[1]
+    safe_indices = gather_indices.clamp(min=0, max=full_values.shape[1] - 1)
+    values = full_values.gather(1, safe_indices) * available_mask.to(dtype=full_values.dtype)
+
+    aligned_mask = response_mask * available_mask.to(dtype=response_mask.dtype)
+    truncated_positions = response_mask.to(dtype=torch.bool) & ~available_mask
+    truncated_tokens = int(truncated_positions.sum().detach().cpu().item())
+    truncated_examples = int(truncated_positions.any(dim=-1).sum().detach().cpu().item())
     return values, aligned_mask, truncated_tokens, truncated_examples
 
 

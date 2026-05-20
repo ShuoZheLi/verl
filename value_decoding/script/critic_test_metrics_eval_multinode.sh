@@ -96,7 +96,9 @@ SHUFFLE_EXAMPLES=0
 MAX_PROMPT_LENGTH=2048
 MAX_NEW_TOKENS=2048
 BATCH_SIZE=4
-ACTOR_MICRO_BATCH_SIZE=1
+# vLLM handles batched prompts efficiently. Keep this modest to preserve
+# robustness for long 2048+2048-token requests while avoiding 500 serial calls.
+ACTOR_MICRO_BATCH_SIZE=32
 DTYPE="bf16"
 DEVICE="cuda:0"
 
@@ -109,7 +111,7 @@ ACTOR_TOP_K=0
 VLLM_GPU_MEMORY_UTILIZATION=0.90
 VLLM_TENSOR_PARALLEL_SIZE=1
 VLLM_MAX_MODEL_LEN=4096
-VLLM_MAX_NUM_SEQS=""
+VLLM_MAX_NUM_SEQS=32
 VLLM_ENFORCE_EAGER=1
 
 # PPO critic target/loss defaults.
