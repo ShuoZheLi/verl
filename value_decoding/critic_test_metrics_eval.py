@@ -476,7 +476,9 @@ def generate_trajectories_vllm(
                     tokenizer=tokenizer,
                     eos_token_ids=eos_token_ids,
                 )
-                response_text = _vllm_output_text(output, tokenizer)
+                # Decode from the exact token IDs we store/score so text and IDs
+                # cannot diverge after EOS/pad trimming.
+                response_text = tokenizer.decode(response_ids, skip_special_tokens=True)
             score = score_response(example, response_text)
             trajectories.append(
                 {
@@ -789,6 +791,17 @@ def _clear_cuda_cache(device: torch.device) -> None:
         torch.cuda.empty_cache()
 
 
+def _cleanup_vllm(device: torch.device) -> None:
+    try:
+        from vllm.distributed.parallel_state import destroy_distributed_environment, destroy_model_parallel
+
+        destroy_model_parallel()
+        destroy_distributed_environment()
+    except Exception as exc:
+        print(f"WARNING: vLLM cleanup skipped or partially failed: {exc}")
+    _clear_cuda_cache(device)
+
+
 def main() -> None:
     config = parse_args()
     config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -843,7 +856,7 @@ def main() -> None:
                 eos_token_ids=eos_token_ids,
             )
             del llm
-            _clear_cuda_cache(device)
+            _cleanup_vllm(device)
         else:
             raise ValueError(f"Unsupported generation backend: {config.generation_backend}")
 
