@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
 import json
 import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -22,6 +24,19 @@ from value_decoding.checkpointing import (
 )
 from value_decoding.data import ExampleRecord, load_examples, score_response
 from value_decoding.decoding import ActorSamplingMode, critic_sequence_values, set_decode_seed
+
+# This environment lacks a linkable libcudart for FlashInfer's JIT sampler in
+# some runs. vLLM has a non-FlashInfer sampler fallback, so default to that
+# unless the caller explicitly overrides the variable.
+os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
+
+try:
+    from vllm import LLM, SamplingParams
+    from vllm.inputs.data import TokensPrompt
+except ImportError:
+    LLM = None
+    SamplingParams = None
+    TokensPrompt = None
 
 
 @dataclass(frozen=True)
@@ -45,6 +60,12 @@ class EvalConfig:
     actor_temperature: float
     actor_top_p: float
     actor_top_k: int
+    generation_backend: str
+    vllm_gpu_memory_utilization: float
+    vllm_tensor_parallel_size: int
+    vllm_max_model_len: int | None
+    vllm_max_num_seqs: int | None
+    vllm_enforce_eager: bool
     gamma: float
     lam: float
     cliprange_value: float
@@ -82,6 +103,12 @@ def parse_args() -> EvalConfig:
     parser.add_argument("--actor_temperature", type=float, default=1.0)
     parser.add_argument("--actor_top_p", type=float, default=1.0)
     parser.add_argument("--actor_top_k", type=int, default=0)
+    parser.add_argument("--generation_backend", choices=("torch", "vllm"), default="torch")
+    parser.add_argument("--vllm_gpu_memory_utilization", type=float, default=0.9)
+    parser.add_argument("--vllm_tensor_parallel_size", type=int, default=1)
+    parser.add_argument("--vllm_max_model_len", type=int, default=None)
+    parser.add_argument("--vllm_max_num_seqs", type=int, default=None)
+    parser.add_argument("--vllm_enforce_eager", action="store_true")
     parser.add_argument("--gamma", type=float, default=1.0)
     parser.add_argument("--lam", type=float, default=1.0)
     parser.add_argument("--cliprange_value", type=float, default=0.5)
@@ -109,6 +136,17 @@ def parse_args() -> EvalConfig:
         raise ValueError(f"--actor_top_k must be >= 0, got {args.actor_top_k}")
     if not 0.0 < args.actor_top_p <= 1.0:
         raise ValueError(f"--actor_top_p must be in (0, 1], got {args.actor_top_p}")
+    if not 0.0 < args.vllm_gpu_memory_utilization <= 1.0:
+        raise ValueError(
+            "--vllm_gpu_memory_utilization must be in (0, 1], "
+            f"got {args.vllm_gpu_memory_utilization}"
+        )
+    if args.vllm_tensor_parallel_size <= 0:
+        raise ValueError(f"--vllm_tensor_parallel_size must be > 0, got {args.vllm_tensor_parallel_size}")
+    if args.vllm_max_model_len is not None and args.vllm_max_model_len <= 0:
+        raise ValueError(f"--vllm_max_model_len must be > 0, got {args.vllm_max_model_len}")
+    if args.vllm_max_num_seqs is not None and args.vllm_max_num_seqs <= 0:
+        raise ValueError(f"--vllm_max_num_seqs must be > 0, got {args.vllm_max_num_seqs}")
 
     return EvalConfig(**vars(args))
 
@@ -130,6 +168,36 @@ def _load_actor(model_dir: Path, *, dtype: torch.dtype, device: torch.device, tr
     model.to(device)
     model.eval()
     return model
+
+
+def _resolve_vllm_dtype_name(dtype_name: str) -> str:
+    normalized = dtype_name.lower()
+    if normalized == "bf16":
+        return "bfloat16"
+    if normalized == "fp16":
+        return "float16"
+    if normalized == "fp32":
+        return "float32"
+    return dtype_name
+
+
+def _load_vllm_actor(model_dir: Path, *, config: EvalConfig):
+    if LLM is None:
+        raise ImportError("vLLM is required when --generation_backend=vllm, but it is not installed.")
+    kwargs = {
+        "model": str(model_dir),
+        "tokenizer": str(model_dir),
+        "dtype": _resolve_vllm_dtype_name(config.dtype),
+        "trust_remote_code": config.trust_remote_code,
+        "tensor_parallel_size": int(config.vllm_tensor_parallel_size),
+        "gpu_memory_utilization": float(config.vllm_gpu_memory_utilization),
+        "enforce_eager": bool(config.vllm_enforce_eager),
+    }
+    if config.vllm_max_model_len is not None:
+        kwargs["max_model_len"] = int(config.vllm_max_model_len)
+    if config.vllm_max_num_seqs is not None:
+        kwargs["max_num_seqs"] = int(config.vllm_max_num_seqs)
+    return LLM(**kwargs)
 
 
 def _resolve_component_dirs(config: EvalConfig, checkpoint_path: Path, output_dir: Path) -> tuple[Path, Path]:
@@ -194,6 +262,33 @@ def _chunks(items: list[Any], size: int) -> Iterable[list[Any]]:
         yield items[start : start + size]
 
 
+def _build_response_mask(response_ids: list[int], eos_token_ids: tuple[int, ...]) -> list[int]:
+    eos_set = set(int(token_id) for token_id in eos_token_ids)
+    response_mask: list[int] = []
+    seen_eos = False
+    for token_id in response_ids:
+        if seen_eos:
+            response_mask.append(0)
+            continue
+        response_mask.append(1)
+        if int(token_id) in eos_set:
+            seen_eos = True
+    return response_mask
+
+
+def _trim_response_ids(response_ids: Iterable[int], *, tokenizer, eos_token_ids: tuple[int, ...]) -> list[int]:
+    eos_set = set(int(token_id) for token_id in eos_token_ids)
+    trimmed: list[int] = []
+    for token_id in response_ids:
+        token_id = int(token_id)
+        if tokenizer.pad_token_id is not None and token_id == int(tokenizer.pad_token_id):
+            continue
+        trimmed.append(token_id)
+        if token_id in eos_set:
+            break
+    return trimmed
+
+
 def _generate_batch(
     *,
     actor,
@@ -249,30 +344,19 @@ def _generate_batch(
     sequences = generated.sequences
     input_width = int(input_ids.shape[1])
     rows: list[dict[str, Any]] = []
-    eos_set = set(int(token_id) for token_id in eos_token_ids)
     for row_idx, example in enumerate(examples):
         prompt_length = int(prompt_lengths[row_idx].item())
         prompt_ids = input_ids[row_idx][attention_mask[row_idx].bool()].detach().cpu().tolist()
         # HF generate appends new tokens after the padded input width, not after each
         # row's unpadded prompt length. This matches both left- and right-padded batches.
-        response_ids = sequences[row_idx, input_width:].detach().cpu().tolist()
-        for token_pos, token_id in enumerate(response_ids):
-            if int(token_id) in eos_set:
-                response_ids = response_ids[: token_pos + 1]
-                break
-        if tokenizer.pad_token_id is not None:
-            response_ids = [int(token_id) for token_id in response_ids if int(token_id) != tokenizer.pad_token_id]
+        response_ids = _trim_response_ids(
+            sequences[row_idx, input_width:].detach().cpu().tolist(),
+            tokenizer=tokenizer,
+            eos_token_ids=eos_token_ids,
+        )
         response_text = tokenizer.decode(response_ids, skip_special_tokens=True)
         score = score_response(example, response_text)
-        response_mask = []
-        seen_eos = False
-        for token_id in response_ids:
-            if seen_eos:
-                response_mask.append(0)
-                continue
-            response_mask.append(1)
-            if int(token_id) in eos_set:
-                seen_eos = True
+        response_mask = _build_response_mask(response_ids, eos_token_ids)
         rows.append(
             {
                 "example": example,
@@ -286,7 +370,7 @@ def _generate_batch(
     return rows
 
 
-def generate_trajectories(
+def generate_trajectories_torch(
     *,
     actor,
     tokenizer,
@@ -312,6 +396,98 @@ def generate_trajectories(
                 top_k=config.actor_top_k,
             )
         )
+    return trajectories
+
+
+def _vllm_output_token_ids(output: Any) -> tuple[int, ...]:
+    token_ids = getattr(output, "token_ids", None)
+    if token_ids is None:
+        token_ids = getattr(output, "output_token_ids", None)
+    if token_ids is None:
+        return ()
+    return tuple(int(token_id) for token_id in token_ids)
+
+
+def _vllm_output_text(output: Any, tokenizer) -> str:
+    text = getattr(output, "text", None)
+    if text is not None:
+        return str(text)
+    return tokenizer.decode(_vllm_output_token_ids(output), skip_special_tokens=True)
+
+
+def generate_trajectories_vllm(
+    *,
+    llm,
+    tokenizer,
+    examples: list[ExampleRecord],
+    config: EvalConfig,
+    eos_token_ids: tuple[int, ...],
+) -> list[dict[str, Any]]:
+    if SamplingParams is None:
+        raise ImportError("vLLM is required when --generation_backend=vllm, but it is not installed.")
+
+    trajectories: list[dict[str, Any]] = []
+    vllm_top_k = 0 if int(config.actor_top_k) <= 0 else int(config.actor_top_k)
+    do_greedy = config.actor_sampling_mode == ActorSamplingMode.GREEDY.value or config.actor_temperature <= 0.0
+    sampling_params = SamplingParams(
+        n=1,
+        temperature=0.0 if do_greedy else float(config.actor_temperature),
+        top_p=1.0 if do_greedy else float(config.actor_top_p),
+        top_k=0 if do_greedy else vllm_top_k,
+        max_tokens=int(config.max_new_tokens),
+        seed=int(config.seed),
+        stop_token_ids=list(eos_token_ids),
+        skip_special_tokens=True,
+    )
+
+    for batch in tqdm(list(_chunks(examples, config.actor_micro_batch_size)), desc="Generating", unit="batch"):
+        prompt_token_ids_by_example: list[list[int]] = []
+        prompts: list[Any] = []
+        for example in batch:
+            if example.prompt_token_ids is not None:
+                prompt_token_ids = list(example.prompt_token_ids)
+            else:
+                tokenized = tokenizer(
+                    example.prompt_text,
+                    truncation=True,
+                    max_length=config.max_prompt_length,
+                    return_attention_mask=False,
+                    return_token_type_ids=False,
+                )
+                prompt_token_ids = [int(token_id) for token_id in tokenized["input_ids"]]
+            prompt_token_ids_by_example.append(prompt_token_ids)
+            prompts.append(
+                TokensPrompt(prompt_token_ids=prompt_token_ids)
+                if TokensPrompt is not None
+                else {"prompt_token_ids": prompt_token_ids}
+            )
+
+        request_outputs = llm.generate(prompts=prompts, sampling_params=sampling_params, use_tqdm=False)
+        if len(request_outputs) != len(batch):
+            raise RuntimeError(f"vLLM returned {len(request_outputs)} outputs for {len(batch)} prompts.")
+        for example, prompt_ids, request_output in zip(batch, prompt_token_ids_by_example, request_outputs, strict=True):
+            if not request_output.outputs:
+                response_ids: list[int] = []
+                response_text = ""
+            else:
+                output = request_output.outputs[0]
+                response_ids = _trim_response_ids(
+                    _vllm_output_token_ids(output),
+                    tokenizer=tokenizer,
+                    eos_token_ids=eos_token_ids,
+                )
+                response_text = _vllm_output_text(output, tokenizer)
+            score = score_response(example, response_text)
+            trajectories.append(
+                {
+                    "example": example,
+                    "prompt_ids": [int(token_id) for token_id in prompt_ids],
+                    "response_ids": response_ids,
+                    "response_mask": _build_response_mask(response_ids, eos_token_ids),
+                    "response_text": response_text,
+                    "reward": float(score),
+                }
+            )
     return trajectories
 
 
@@ -607,6 +783,12 @@ def _write_summary(output_dir: Path, summary_rows: list[dict[str, Any]]) -> None
     _write_json(output_dir / "summary.json", {"runs": summary_rows})
 
 
+def _clear_cuda_cache(device: torch.device) -> None:
+    gc.collect()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+
 def main() -> None:
     config = parse_args()
     config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -636,19 +818,34 @@ def main() -> None:
         )
         if not examples:
             raise ValueError("No examples selected for evaluation.")
-        actor = _load_actor(actor_dir, dtype=dtype, device=device, trust_remote_code=config.trust_remote_code)
         eos_token_ids = resolve_eos_token_ids(actor_dir, tokenizer)
-        trajectories = generate_trajectories(
-            actor=actor,
-            tokenizer=tokenizer,
-            examples=examples,
-            config=config,
-            device=device,
-            eos_token_ids=eos_token_ids,
-        )
-        del actor
-        if device.type == "cuda":
-            torch.cuda.empty_cache()
+        if config.generation_backend == "torch":
+            actor = _load_actor(actor_dir, dtype=dtype, device=device, trust_remote_code=config.trust_remote_code)
+            trajectories = generate_trajectories_torch(
+                actor=actor,
+                tokenizer=tokenizer,
+                examples=examples,
+                config=config,
+                device=device,
+                eos_token_ids=eos_token_ids,
+            )
+            del actor
+            _clear_cuda_cache(device)
+        elif config.generation_backend == "vllm":
+            if device.type != "cuda":
+                raise ValueError("--generation_backend=vllm requires --device to be a CUDA device.")
+            llm = _load_vllm_actor(actor_dir, config=config)
+            trajectories = generate_trajectories_vllm(
+                llm=llm,
+                tokenizer=tokenizer,
+                examples=examples,
+                config=config,
+                eos_token_ids=eos_token_ids,
+            )
+            del llm
+            _clear_cuda_cache(device)
+        else:
+            raise ValueError(f"Unsupported generation backend: {config.generation_backend}")
 
         per_rows: list[dict[str, Any]] = []
         if _looks_like_critic_checkpoint(critic_dir, trust_remote_code=config.trust_remote_code):
@@ -662,8 +859,7 @@ def main() -> None:
                 device=device,
             )
             del critic
-            if device.type == "cuda":
-                torch.cuda.empty_cache()
+            _clear_cuda_cache(device)
         else:
             message = (
                 f"{critic_dir} does not look like a critic/value-head checkpoint; "
@@ -692,6 +888,12 @@ def main() -> None:
             "actor_temperature": config.actor_temperature,
             "actor_top_p": config.actor_top_p,
             "actor_top_k": config.actor_top_k,
+            "generation_backend": config.generation_backend,
+            "vllm_gpu_memory_utilization": config.vllm_gpu_memory_utilization,
+            "vllm_tensor_parallel_size": config.vllm_tensor_parallel_size,
+            "vllm_max_model_len": config.vllm_max_model_len,
+            "vllm_max_num_seqs": config.vllm_max_num_seqs,
+            "vllm_enforce_eager": config.vllm_enforce_eager,
             "loss_agg_mode": config.loss_agg_mode,
             "require_critic": config.require_critic,
         }

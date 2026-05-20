@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=00:20:00
+#SBATCH --time=10:20:00
 #SBATCH --output=slurm-%j_critic_test_metrics.out
 #SBATCH --error=slurm-%j_critic_test_metrics.err
 
@@ -31,6 +31,7 @@ export HF_HOME
 export TIKTOKEN_ENCODINGS_BASE
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=true
+export VLLM_USE_FLASHINFER_SAMPLER="${VLLM_USE_FLASHINFER_SAMPLER:-0}"
 
 # Reduce harmless Transformers warnings for greedy generation.
 export TRANSFORMERS_VERBOSITY=error
@@ -99,10 +100,16 @@ DTYPE="bf16"
 DEVICE="cuda:0"
 
 # Match default validation/pass@1 unless changed.
+GENERATION_BACKEND="vllm"
 ACTOR_SAMPLING_MODE="greedy"
 ACTOR_TEMPERATURE=1.0
 ACTOR_TOP_P=1.0
 ACTOR_TOP_K=0
+VLLM_GPU_MEMORY_UTILIZATION=0.55
+VLLM_TENSOR_PARALLEL_SIZE=1
+VLLM_MAX_MODEL_LEN=""
+VLLM_MAX_NUM_SEQS=""
+VLLM_ENFORCE_EAGER=0
 
 # PPO critic target/loss defaults.
 GAMMA=1.0
@@ -209,10 +216,13 @@ CMD=(
   --actor_micro_batch_size "$ACTOR_MICRO_BATCH_SIZE"
   --dtype "$DTYPE"
   --device "$DEVICE"
+  --generation_backend "$GENERATION_BACKEND"
   --actor_sampling_mode "$ACTOR_SAMPLING_MODE"
   --actor_temperature "$ACTOR_TEMPERATURE"
   --actor_top_p "$ACTOR_TOP_P"
   --actor_top_k "$ACTOR_TOP_K"
+  --vllm_gpu_memory_utilization "$VLLM_GPU_MEMORY_UTILIZATION"
+  --vllm_tensor_parallel_size "$VLLM_TENSOR_PARALLEL_SIZE"
   --gamma "$GAMMA"
   --lam "$LAM"
   --cliprange_value "$CLIPRANGE_VALUE"
@@ -226,6 +236,9 @@ CMD=(
 [[ "$SKIP_MERGE" != "0" ]] && CMD+=(--skip_merge)
 [[ "$REQUIRE_CRITIC" != "0" ]] && CMD+=(--require_critic)
 [[ "$SAVE_TRAJECTORIES" != "0" ]] && CMD+=(--save_trajectories)
+[[ "$VLLM_ENFORCE_EAGER" != "0" ]] && CMD+=(--vllm_enforce_eager)
+[[ -n "$VLLM_MAX_MODEL_LEN" ]] && CMD+=(--vllm_max_model_len "$VLLM_MAX_MODEL_LEN")
+[[ -n "$VLLM_MAX_NUM_SEQS" ]] && CMD+=(--vllm_max_num_seqs "$VLLM_MAX_NUM_SEQS")
 [[ -n "$HF_SOURCE_DIR" ]] && CMD+=(--hf_source_dir "$HF_SOURCE_DIR")
 
 printf 'Running command:\n'
