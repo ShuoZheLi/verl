@@ -602,6 +602,11 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+def _write_summary(output_dir: Path, summary_rows: list[dict[str, Any]]) -> None:
+    _write_csv(output_dir / "summary.csv", summary_rows)
+    _write_json(output_dir / "summary.json", {"runs": summary_rows})
+
+
 def main() -> None:
     config = parse_args()
     config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -712,10 +717,9 @@ def main() -> None:
 
         summary = {"checkpoint": str(checkpoint_path), **metrics}
         summary_rows.append(summary)
+        _write_summary(config.output_dir, summary_rows)
         print(json.dumps(summary, indent=2, sort_keys=True))
 
-    _write_csv(config.output_dir / "summary.csv", summary_rows)
-    _write_json(config.output_dir / "summary.json", {"runs": summary_rows})
     print(f"\nWrote results to {config.output_dir}")
 
 
