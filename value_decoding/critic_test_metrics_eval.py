@@ -10,6 +10,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+# vLLM must see this before any CUDA initialization; otherwise its engine can
+# fork after torch.cuda has been touched and fail with "Cannot re-initialize
+# CUDA in forked subprocess" on Slurm/TACC.
+os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+# This environment can lack a linkable libcudart for FlashInfer's JIT sampler
+# in some runs. vLLM has a non-FlashInfer sampler fallback, so default to that
+# unless the caller explicitly overrides the variable.
+os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
+
 import torch
 from tqdm.auto import tqdm
 from transformers import AutoConfig, AutoModelForCausalLM
@@ -24,11 +33,6 @@ from value_decoding.checkpointing import (
 )
 from value_decoding.data import ExampleRecord, load_examples, score_response
 from value_decoding.decoding import ActorSamplingMode, critic_sequence_values, set_decode_seed
-
-# This environment lacks a linkable libcudart for FlashInfer's JIT sampler in
-# some runs. vLLM has a non-FlashInfer sampler fallback, so default to that
-# unless the caller explicitly overrides the variable.
-os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
 
 try:
     from vllm import LLM, SamplingParams
