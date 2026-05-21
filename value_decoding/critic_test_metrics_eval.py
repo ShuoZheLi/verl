@@ -77,6 +77,7 @@ class EvalConfig:
     trust_remote_code: bool
     skip_merge: bool
     hf_source_dir: Path | None
+    merged_checkpoint_root: Path | None
     save_trajectories: bool
     require_critic: bool
 
@@ -120,6 +121,15 @@ def parse_args() -> EvalConfig:
     parser.add_argument("--trust_remote_code", action="store_true")
     parser.add_argument("--skip_merge", action="store_true")
     parser.add_argument("--hf_source_dir", type=Path, default=None)
+    parser.add_argument(
+        "--merged_checkpoint_root",
+        type=Path,
+        default=None,
+        help=(
+            "Optional shared directory for merged Hugging Face actor/critic checkpoints. "
+            "Use this when running multiple seeds into separate output directories to avoid re-merging FSDP shards."
+        ),
+    )
     parser.add_argument("--save_trajectories", action="store_true")
     parser.add_argument(
         "--require_critic",
@@ -205,17 +215,19 @@ def _load_vllm_actor(model_dir: Path, *, config: EvalConfig):
 
 
 def _resolve_component_dirs(config: EvalConfig, checkpoint_path: Path, output_dir: Path) -> tuple[Path, Path]:
+    merged_root = config.merged_checkpoint_root or output_dir / "merged_hf"
+    merged_root = merged_root / _checkpoint_name(checkpoint_path)
     actor_dir = ensure_merged_component_checkpoint(
         checkpoint_path,
         component="actor",
-        merged_root=output_dir / "merged_hf" / _checkpoint_name(checkpoint_path),
+        merged_root=merged_root,
         hf_source_dir=config.hf_source_dir,
         skip_merge=config.skip_merge,
     )
     critic_dir = ensure_merged_component_checkpoint(
         checkpoint_path,
         component="critic",
-        merged_root=output_dir / "merged_hf" / _checkpoint_name(checkpoint_path),
+        merged_root=merged_root,
         hf_source_dir=config.hf_source_dir,
         skip_merge=config.skip_merge,
     )
@@ -988,6 +1000,7 @@ def main() -> None:
             "vllm_max_num_seqs": config.vllm_max_num_seqs,
             "vllm_enforce_eager": config.vllm_enforce_eager,
             "loss_agg_mode": config.loss_agg_mode,
+            "merged_checkpoint_root": str(config.merged_checkpoint_root) if config.merged_checkpoint_root else None,
             "require_critic": config.require_critic,
         }
         _write_json(run_dir / "metrics.json", {"metrics": metrics, "metadata": metadata})

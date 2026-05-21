@@ -6,8 +6,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
 #SBATCH --time=3:20:00
-#SBATCH --output=slurm-%j_hi_ent_pi_critic_test_metrics.out
-#SBATCH --error=slurm-%j_hi_ent_pi_critic_test_metrics.err
+#SBATCH --output=slurm-%j_hi_ent_pi_critic_test_metrics_seed_42_111_222.out
+#SBATCH --error=slurm-%j_hi_ent_pi_critic_test_metrics_seed_42_111_222.err
 
 set -euo pipefail
 
@@ -80,9 +80,10 @@ ARCHIVE_DIR="${ARCHIVE_ROOT}/${RUN_ID}"
 SCRATCH_ROOT="${SCRATCH}/value_decoding_runs"
 RUN_DIR="${SCRATCH_ROOT}/${RUN_ID}"
 LOG_DIR="${RUN_DIR}/logs"
-OUTPUT_DIR="${RUN_DIR}/hi_ent_pi_critic_test_metrics"
+OUTPUT_ROOT="${RUN_DIR}/hi_ent_pi_critic_test_metrics"
+MERGED_CHECKPOINT_ROOT="${RUN_DIR}/merged_hf"
 
-mkdir -p "$LOG_DIR" "$ARCHIVE_ROOT" "$OUTPUT_DIR"
+mkdir -p "$LOG_DIR" "$ARCHIVE_ROOT" "$OUTPUT_ROOT" "$MERGED_CHECKPOINT_ROOT"
 
 # -----------------------------
 # Evaluation config
@@ -104,7 +105,7 @@ DEVICE="cuda:0"
 
 # Match default validation/pass@1 unless changed.
 GENERATION_BACKEND="vllm"
-ACTOR_SAMPLING_MODE="greedy"
+ACTOR_SAMPLING_MODE="sample"
 ACTOR_TEMPERATURE=1.0
 ACTOR_TOP_P=1.0
 ACTOR_TOP_K=0
@@ -120,7 +121,22 @@ LAM=1.0
 CLIPRANGE_VALUE=0.5
 LOSS_AGG_MODE="token-mean"
 
-SEED=42
+# Run one or more sampling seeds sequentially in this Slurm job.
+# Submit-time override examples:
+#   sbatch --export=ALL,RANDOM_SEEDS_OVERRIDE="42,43,44" ...
+#   sbatch --export=ALL,RANDOM_SEEDS_OVERRIDE="42:43:44" ...
+RANDOM_SEEDS=("${SEED:-42 111 222}")
+if [[ -n "${RANDOM_SEEDS_OVERRIDE:-${SEEDS_OVERRIDE:-}}" ]]; then
+  seed_spec="${RANDOM_SEEDS_OVERRIDE:-${SEEDS_OVERRIDE:-}}"
+  seed_spec="${seed_spec//,/ }"
+  seed_spec="${seed_spec//:/ }"
+  read -r -a RANDOM_SEEDS <<< "$seed_spec"
+fi
+if (( ${#RANDOM_SEEDS[@]} == 0 )); then
+  echo "No random seeds provided." >&2
+  exit 1
+fi
+
 TRUST_REMOTE_CODE=0
 SKIP_MERGE=0
 REQUIRE_CRITIC=0
@@ -190,8 +206,10 @@ echo "Run ID: $RUN_ID"
 echo "SLURM nodes: ${SLURM_JOB_NODELIST:-unknown}"
 echo "SCRATCH: $SCRATCH"
 echo "RUN_DIR: $RUN_DIR"
-echo "OUTPUT_DIR: $OUTPUT_DIR"
+echo "OUTPUT_ROOT: $OUTPUT_ROOT"
 echo "ARCHIVE_DIR: $ARCHIVE_DIR"
+echo "MERGED_CHECKPOINT_ROOT: $MERGED_CHECKPOINT_ROOT"
+echo "RANDOM_SEEDS: ${RANDOM_SEEDS[*]}"
 echo "SCRIPT_PATH: $SCRIPT_PATH"
 
 echo "Checking inputs..."
@@ -205,48 +223,102 @@ done
 
 cd "$WORK_DIR"
 
-CMD=(
-  python3 -m value_decoding.critic_test_metrics_eval
-  --dataset_path "$DATASET_PATH"
-  --checkpoint_paths "${CHECKPOINT_PATHS[@]}"
-  --output_dir "$OUTPUT_DIR"
-  --prompt_key "$PROMPT_KEY"
-  --start_index "$START_INDEX"
-  --max_examples "$MAX_EXAMPLES"
-  --max_prompt_length "$MAX_PROMPT_LENGTH"
-  --max_new_tokens "$MAX_NEW_TOKENS"
-  --batch_size "$BATCH_SIZE"
-  --actor_micro_batch_size "$ACTOR_MICRO_BATCH_SIZE"
-  --dtype "$DTYPE"
-  --device "$DEVICE"
-  --generation_backend "$GENERATION_BACKEND"
-  --actor_sampling_mode "$ACTOR_SAMPLING_MODE"
-  --actor_temperature "$ACTOR_TEMPERATURE"
-  --actor_top_p "$ACTOR_TOP_P"
-  --actor_top_k "$ACTOR_TOP_K"
-  --vllm_gpu_memory_utilization "$VLLM_GPU_MEMORY_UTILIZATION"
-  --vllm_tensor_parallel_size "$VLLM_TENSOR_PARALLEL_SIZE"
-  --gamma "$GAMMA"
-  --lam "$LAM"
-  --cliprange_value "$CLIPRANGE_VALUE"
-  --loss_agg_mode "$LOSS_AGG_MODE"
-  --seed "$SEED"
+build_cmd() {
+  local seed="$1"
+  local seed_output_dir="$2"
+  CMD=(
+    python3 -m value_decoding.critic_test_metrics_eval
+    --dataset_path "$DATASET_PATH"
+    --checkpoint_paths "${CHECKPOINT_PATHS[@]}"
+    --output_dir "$seed_output_dir"
+    --merged_checkpoint_root "$MERGED_CHECKPOINT_ROOT"
+    --prompt_key "$PROMPT_KEY"
+    --start_index "$START_INDEX"
+    --max_examples "$MAX_EXAMPLES"
+    --max_prompt_length "$MAX_PROMPT_LENGTH"
+    --max_new_tokens "$MAX_NEW_TOKENS"
+    --batch_size "$BATCH_SIZE"
+    --actor_micro_batch_size "$ACTOR_MICRO_BATCH_SIZE"
+    --dtype "$DTYPE"
+    --device "$DEVICE"
+    --generation_backend "$GENERATION_BACKEND"
+    --actor_sampling_mode "$ACTOR_SAMPLING_MODE"
+    --actor_temperature "$ACTOR_TEMPERATURE"
+    --actor_top_p "$ACTOR_TOP_P"
+    --actor_top_k "$ACTOR_TOP_K"
+    --vllm_gpu_memory_utilization "$VLLM_GPU_MEMORY_UTILIZATION"
+    --vllm_tensor_parallel_size "$VLLM_TENSOR_PARALLEL_SIZE"
+    --gamma "$GAMMA"
+    --lam "$LAM"
+    --cliprange_value "$CLIPRANGE_VALUE"
+    --loss_agg_mode "$LOSS_AGG_MODE"
+    --seed "$seed"
+  )
+
+  [[ -n "$RESPONSE_KEY" ]] && CMD+=(--response_key "$RESPONSE_KEY")
+  [[ "$SHUFFLE_EXAMPLES" != "0" ]] && CMD+=(--shuffle_examples)
+  [[ "$TRUST_REMOTE_CODE" != "0" ]] && CMD+=(--trust_remote_code)
+  [[ "$SKIP_MERGE" != "0" ]] && CMD+=(--skip_merge)
+  [[ "$REQUIRE_CRITIC" != "0" ]] && CMD+=(--require_critic)
+  [[ "$SAVE_TRAJECTORIES" != "0" ]] && CMD+=(--save_trajectories)
+  [[ "$VLLM_ENFORCE_EAGER" != "0" ]] && CMD+=(--vllm_enforce_eager)
+  [[ -n "$VLLM_MAX_MODEL_LEN" ]] && CMD+=(--vllm_max_model_len "$VLLM_MAX_MODEL_LEN")
+  [[ -n "$VLLM_MAX_NUM_SEQS" ]] && CMD+=(--vllm_max_num_seqs "$VLLM_MAX_NUM_SEQS")
+  [[ -n "$HF_SOURCE_DIR" ]] && CMD+=(--hf_source_dir "$HF_SOURCE_DIR")
+}
+
+for seed in "${RANDOM_SEEDS[@]}"; do
+  if [[ -z "$seed" ]]; then
+    continue
+  fi
+  if ! [[ "$seed" =~ ^[0-9]+$ ]]; then
+    echo "Invalid random seed: $seed" >&2
+    exit 1
+  fi
+
+  seed_output_dir="${OUTPUT_ROOT}/seed_${seed}"
+  mkdir -p "$seed_output_dir"
+  build_cmd "$seed" "$seed_output_dir"
+
+  printf 'Running seed %s command:\n' "$seed"
+  printf ' %q' "${CMD[@]}"
+  printf '\n'
+  "${CMD[@]}" 2>&1 | tee "$LOG_DIR/critic_test_metrics_eval_seed_${seed}.log"
+done
+
+python3 - "$OUTPUT_ROOT" "${RANDOM_SEEDS[@]}" <<'PY'
+import csv
+import json
+import sys
+from pathlib import Path
+
+output_root = Path(sys.argv[1])
+seeds = [seed for seed in sys.argv[2:] if seed]
+combined_rows = []
+for seed in seeds:
+    summary_path = output_root / f"seed_{seed}" / "summary.json"
+    if not summary_path.is_file():
+        raise SystemExit(f"Missing per-seed summary: {summary_path}")
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    for row in payload.get("runs", []):
+        combined_rows.append({"seed": int(seed), "seed_output_dir": str(summary_path.parent), **row})
+
+output_root.mkdir(parents=True, exist_ok=True)
+(output_root / "all_seeds_summary.json").write_text(
+    json.dumps({"runs": combined_rows}, indent=2, sort_keys=True),
+    encoding="utf-8",
 )
+if combined_rows:
+    fieldnames = []
+    for row in combined_rows:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
+    with (output_root / "all_seeds_summary.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(combined_rows)
+print(f"Wrote combined seed summary to {output_root}")
+PY
 
-[[ -n "$RESPONSE_KEY" ]] && CMD+=(--response_key "$RESPONSE_KEY")
-[[ "$SHUFFLE_EXAMPLES" != "0" ]] && CMD+=(--shuffle_examples)
-[[ "$TRUST_REMOTE_CODE" != "0" ]] && CMD+=(--trust_remote_code)
-[[ "$SKIP_MERGE" != "0" ]] && CMD+=(--skip_merge)
-[[ "$REQUIRE_CRITIC" != "0" ]] && CMD+=(--require_critic)
-[[ "$SAVE_TRAJECTORIES" != "0" ]] && CMD+=(--save_trajectories)
-[[ "$VLLM_ENFORCE_EAGER" != "0" ]] && CMD+=(--vllm_enforce_eager)
-[[ -n "$VLLM_MAX_MODEL_LEN" ]] && CMD+=(--vllm_max_model_len "$VLLM_MAX_MODEL_LEN")
-[[ -n "$VLLM_MAX_NUM_SEQS" ]] && CMD+=(--vllm_max_num_seqs "$VLLM_MAX_NUM_SEQS")
-[[ -n "$HF_SOURCE_DIR" ]] && CMD+=(--hf_source_dir "$HF_SOURCE_DIR")
-
-printf 'Running command:\n'
-printf ' %q' "${CMD[@]}"
-printf '\n'
-"${CMD[@]}" 2>&1 | tee "$LOG_DIR/critic_test_metrics_eval.log"
-
-echo "Critic test metrics evaluation finished successfully."
+echo "Critic test metrics evaluation finished successfully for seeds: ${RANDOM_SEEDS[*]}"
