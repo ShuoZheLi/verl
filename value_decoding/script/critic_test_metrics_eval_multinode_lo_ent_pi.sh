@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=3:20:00
+#SBATCH --time=5:20:00
 #SBATCH --output=slurm-%j_lo_ent_pi_critic_test_metrics_seed_42_111_222.out
 #SBATCH --error=slurm-%j_lo_ent_pi_critic_test_metrics_seed_42_111_222.err
 
