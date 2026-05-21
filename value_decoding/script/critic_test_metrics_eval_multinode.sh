@@ -252,16 +252,16 @@ build_cmd() {
     --seed "$seed"
   )
 
-  [[ -n "$RESPONSE_KEY" ]] && CMD+=(--response_key "$RESPONSE_KEY")
-  [[ "$SHUFFLE_EXAMPLES" != "0" ]] && CMD+=(--shuffle_examples)
-  [[ "$TRUST_REMOTE_CODE" != "0" ]] && CMD+=(--trust_remote_code)
-  [[ "$SKIP_MERGE" != "0" ]] && CMD+=(--skip_merge)
-  [[ "$REQUIRE_CRITIC" != "0" ]] && CMD+=(--require_critic)
-  [[ "$SAVE_TRAJECTORIES" != "0" ]] && CMD+=(--save_trajectories)
-  [[ "$VLLM_ENFORCE_EAGER" != "0" ]] && CMD+=(--vllm_enforce_eager)
-  [[ -n "$VLLM_MAX_MODEL_LEN" ]] && CMD+=(--vllm_max_model_len "$VLLM_MAX_MODEL_LEN")
-  [[ -n "$VLLM_MAX_NUM_SEQS" ]] && CMD+=(--vllm_max_num_seqs "$VLLM_MAX_NUM_SEQS")
-  [[ -n "$HF_SOURCE_DIR" ]] && CMD+=(--hf_source_dir "$HF_SOURCE_DIR")
+  if [[ -n "$RESPONSE_KEY" ]]; then CMD+=(--response_key "$RESPONSE_KEY"); fi
+  if [[ "$SHUFFLE_EXAMPLES" != "0" ]]; then CMD+=(--shuffle_examples); fi
+  if [[ "$TRUST_REMOTE_CODE" != "0" ]]; then CMD+=(--trust_remote_code); fi
+  if [[ "$SKIP_MERGE" != "0" ]]; then CMD+=(--skip_merge); fi
+  if [[ "$REQUIRE_CRITIC" != "0" ]]; then CMD+=(--require_critic); fi
+  if [[ "$SAVE_TRAJECTORIES" != "0" ]]; then CMD+=(--save_trajectories); fi
+  if [[ "$VLLM_ENFORCE_EAGER" != "0" ]]; then CMD+=(--vllm_enforce_eager); fi
+  if [[ -n "$VLLM_MAX_MODEL_LEN" ]]; then CMD+=(--vllm_max_model_len "$VLLM_MAX_MODEL_LEN"); fi
+  if [[ -n "$VLLM_MAX_NUM_SEQS" ]]; then CMD+=(--vllm_max_num_seqs "$VLLM_MAX_NUM_SEQS"); fi
+  if [[ -n "$HF_SOURCE_DIR" ]]; then CMD+=(--hf_source_dir "$HF_SOURCE_DIR"); fi
 }
 
 for seed in "${RANDOM_SEEDS[@]}"; do
@@ -281,6 +281,7 @@ for seed in "${RANDOM_SEEDS[@]}"; do
   printf ' %q' "${CMD[@]}"
   printf '\n'
   "${CMD[@]}" 2>&1 | tee "$LOG_DIR/critic_test_metrics_eval_seed_${seed}.log"
+  echo "Seed $seed finished successfully."
 done
 
 python3 - "$OUTPUT_ROOT" "${RANDOM_SEEDS[@]}" <<'PY'
