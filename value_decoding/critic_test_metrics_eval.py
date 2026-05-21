@@ -5,7 +5,9 @@ import csv
 import gc
 import json
 import math
+import multiprocessing
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -881,9 +883,61 @@ def _clear_cuda_cache(device: torch.device) -> None:
     gc.collect()
     if device.type == "cuda":
         torch.cuda.empty_cache()
+        try:
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass
 
 
-def _cleanup_vllm(device: torch.device) -> None:
+def _call_noarg_method(obj: Any, method_name: str) -> bool:
+    method = getattr(obj, method_name, None)
+    if not callable(method):
+        return False
+    method()
+    return True
+
+
+def _shutdown_vllm_instance(llm: Any) -> None:
+    shutdown_objects = [
+        llm,
+        getattr(llm, "llm_engine", None),
+        getattr(getattr(llm, "llm_engine", None), "engine_core", None),
+        getattr(getattr(llm, "llm_engine", None), "model_executor", None),
+    ]
+    for obj in shutdown_objects:
+        if obj is None:
+            continue
+        for method_name in ("shutdown", "close"):
+            try:
+                if _call_noarg_method(obj, method_name):
+                    break
+            except Exception as exc:
+                print(f"WARNING: vLLM {type(obj).__name__}.{method_name} failed: {exc}")
+
+
+def _terminate_vllm_engine_processes() -> None:
+    children = [
+        child
+        for child in multiprocessing.active_children()
+        if child.name.startswith("EngineCore") or "vllm" in child.name.lower()
+    ]
+    for child in children:
+        if not child.is_alive():
+            continue
+        print(f"Terminating lingering vLLM child process {child.name} pid={child.pid}")
+        child.terminate()
+    for child in children:
+        child.join(timeout=10)
+        if child.is_alive():
+            print(f"Killing lingering vLLM child process {child.name} pid={child.pid}")
+            child.kill()
+            child.join(timeout=10)
+
+
+def _cleanup_vllm(device: torch.device, llm: Any | None = None) -> None:
+    if llm is not None:
+        _shutdown_vllm_instance(llm)
+    _terminate_vllm_engine_processes()
     try:
         from vllm.distributed.parallel_state import destroy_distributed_environment, destroy_model_parallel
 
@@ -891,6 +945,8 @@ def _cleanup_vllm(device: torch.device) -> None:
         destroy_distributed_environment()
     except Exception as exc:
         print(f"WARNING: vLLM cleanup skipped or partially failed: {exc}")
+    _clear_cuda_cache(device)
+    time.sleep(2)
     _clear_cuda_cache(device)
 
 
@@ -939,16 +995,19 @@ def main() -> None:
         elif config.generation_backend == "vllm":
             if device.type != "cuda":
                 raise ValueError("--generation_backend=vllm requires --device to be a CUDA device.")
-            llm = _load_vllm_actor(actor_dir, config=config)
-            trajectories = generate_trajectories_vllm(
-                llm=llm,
-                tokenizer=tokenizer,
-                examples=examples,
-                config=config,
-                eos_token_ids=eos_token_ids,
-            )
-            del llm
-            _cleanup_vllm(device)
+            llm = None
+            try:
+                llm = _load_vllm_actor(actor_dir, config=config)
+                trajectories = generate_trajectories_vllm(
+                    llm=llm,
+                    tokenizer=tokenizer,
+                    examples=examples,
+                    config=config,
+                    eos_token_ids=eos_token_ids,
+                )
+            finally:
+                _cleanup_vllm(device, llm=llm)
+                del llm
         else:
             raise ValueError(f"Unsupported generation backend: {config.generation_backend}")
 
