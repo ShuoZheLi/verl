@@ -125,13 +125,10 @@ LOSS_AGG_MODE="token-mean"
 # Submit-time override examples:
 #   sbatch --export=ALL,RANDOM_SEEDS_OVERRIDE="42,43,44" ...
 #   sbatch --export=ALL,RANDOM_SEEDS_OVERRIDE="42:43:44" ...
-RANDOM_SEEDS=("${SEED:-42,111,222}")
-if [[ -n "${RANDOM_SEEDS_OVERRIDE:-${SEEDS_OVERRIDE:-}}" ]]; then
-  seed_spec="${RANDOM_SEEDS_OVERRIDE:-${SEEDS_OVERRIDE:-}}"
-  seed_spec="${seed_spec//,/ }"
-  seed_spec="${seed_spec//:/ }"
-  read -r -a RANDOM_SEEDS <<< "$seed_spec"
-fi
+seed_spec="${RANDOM_SEEDS_OVERRIDE:-${SEEDS_OVERRIDE:-${SEED:-42,111,222}}}"
+seed_spec="${seed_spec//,/ }"
+seed_spec="${seed_spec//:/ }"
+read -r -a RANDOM_SEEDS <<< "$seed_spec"
 if (( ${#RANDOM_SEEDS[@]} == 0 )); then
   echo "No random seeds provided." >&2
   exit 1
