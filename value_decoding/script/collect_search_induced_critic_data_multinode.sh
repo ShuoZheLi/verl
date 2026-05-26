@@ -2,10 +2,10 @@
 #SBATCH --job-name=collect_search_data
 #SBATCH --account=ECS26006
 #SBATCH --partition=gh
-#SBATCH --nodes=1
+#SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=00:15:00
+#SBATCH --time=10:15:00
 #SBATCH --output=slurm-%j.out
 #SBATCH --error=slurm-%j.err
 
@@ -49,7 +49,7 @@ RUN_ID="${RUN_NAME}_${SLURM_JOB_ID}"
 # Edit these for the actor/collector pair you want to collect from.
 ACTOR_CHECKPOINT_DIR="/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_600"
 COLLECTOR_CRITIC_CHECKPOINT_DIR="/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_600"
-DATASET_PATH="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/train.parquet"
+DATASET_PATH="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/math_7500_train.parquet"
 WORK_DIR="/work2/09576/shuozhe/verl"
 export PYTHONPATH="${WORK_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 
@@ -75,7 +75,8 @@ CRITIC_HF_SOURCE_DIR=""
 PROMPT_KEY="prompt"
 RESPONSE_KEY=""
 START_INDEX=0
-MAX_PROMPTS=2000
+# MAX_PROMPTS=2000
+MAX_PROMPTS=7500
 SHUFFLE_PROMPTS=0
 
 CHUNK_SIZE=128
