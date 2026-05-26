@@ -2,10 +2,10 @@
 #SBATCH --job-name=collect_search_data
 #SBATCH --account=ECS26006
 #SBATCH --partition=gh
-#SBATCH --nodes=2
+#SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=00:20:00
+#SBATCH --time=00:15:00
 #SBATCH --output=slurm-%j.out
 #SBATCH --error=slurm-%j.err
 
