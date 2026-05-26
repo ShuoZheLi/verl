@@ -6,8 +6,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
 #SBATCH --time=10:15:00
-#SBATCH --output=slurm-%j.out
-#SBATCH --error=slurm-%j.err
+#SBATCH --output=slurm-%j_low_ent_600_induced_critic_data_7500.out
+#SBATCH --error=slurm-%j_low_ent_600_induced_critic_data_7500.err
 
 set -euo pipefail
 
