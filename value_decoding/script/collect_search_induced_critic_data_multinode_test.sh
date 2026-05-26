@@ -173,6 +173,29 @@ raise SystemExit(f"{component}: unsupported checkpoint layout at {component_dir}
 PY
 }
 
+archive_submitted_script() {
+  local archive_dir="${OUTPUT_DIR}/submitted_script"
+  mkdir -p "$archive_dir"
+
+  local saved_path="${archive_dir}/$(basename "${BASH_SOURCE[0]}")"
+  local candidates=(
+    "${BASH_SOURCE[0]}"
+    "$0"
+    "$SCRIPT_PATH"
+  )
+
+  for candidate in "${candidates[@]}"; do
+    if [[ -n "$candidate" && -f "$candidate" ]]; then
+      cp "$candidate" "$saved_path" || true
+      echo "Saved launcher script snapshot to: $saved_path"
+      return 0
+    fi
+  done
+
+  echo "Warning: could not find launcher script to archive; continuing." >&2
+  return 0
+}
+
 count_dataset_rows() {
   python3 - "$DATASET_PATH" <<'PY'
 import sys
@@ -377,7 +400,7 @@ ls -ld "$ACTOR_CHECKPOINT_DIR"
 ls -ld "$COLLECTOR_CRITIC_CHECKPOINT_DIR"
 validate_component_checkpoint "$ACTOR_CHECKPOINT_DIR" actor
 validate_component_checkpoint "$COLLECTOR_CRITIC_CHECKPOINT_DIR" critic
-cp "$SCRIPT_PATH" "$LOG_DIR/$(basename "$SCRIPT_PATH")"
+archive_submitted_script
 
 nodes=$(scontrol show hostnames "$SLURM_JOB_NODELIST")
 nodes_array=($nodes)
