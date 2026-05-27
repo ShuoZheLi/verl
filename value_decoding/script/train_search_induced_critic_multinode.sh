@@ -73,6 +73,7 @@ GRAD_ACCUM_STEPS=1
 NUM_TRAIN_EPOCHS=4
 LR="1e-6"
 WEIGHT_DECAY="0.0"
+ADAM_EPS="1e-5"
 MAX_SEQ_LENGTH=1024
 TRAINABLE_SCOPE="all"   # all, value_head. Full finetune of this critic OOMs on one GH200.
 GRADIENT_CHECKPOINTING=1        # set 1 if TRAINABLE_SCOPE="all" and memory is tight.
@@ -250,6 +251,7 @@ CMD=(
   --num_train_epochs "$NUM_TRAIN_EPOCHS"
   --lr "$LR"
   --weight_decay "$WEIGHT_DECAY"
+  --adam_eps "$ADAM_EPS"
   --max_seq_length "$MAX_SEQ_LENGTH"
   --trainable_scope "$TRAINABLE_SCOPE"
   --eval_every_steps "$EVAL_EVERY_STEPS"

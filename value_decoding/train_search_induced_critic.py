@@ -353,6 +353,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_train_steps", type=int, default=None, help="Optional optimizer-step limit for smoke tests.")
     parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--weight_decay", type=float, default=0.0)
+    parser.add_argument("--adam_eps", type=float, default=1e-8)
     parser.add_argument("--max_seq_length", type=int, default=4096)
     parser.add_argument("--trainable_scope", type=str, default="all", choices=("all", "value_head"))
     parser.add_argument("--gradient_checkpointing", action="store_true")
@@ -679,11 +680,22 @@ def wrap_with_fsdp_if_needed(
     )
 
 
-def clip_grad_norm(model: torch.nn.Module, max_norm: float) -> None:
-    if isinstance(model, FSDP):
-        model.clip_grad_norm_(max_norm)
+def assert_finite_tensor(name: str, tensor: torch.Tensor, *, step: int, distributed: DistributedContext) -> None:
+    if torch.isfinite(tensor.detach()).all().item():
+        return
+    finite_mask = torch.isfinite(tensor.detach())
+    finite_values = tensor.detach()[finite_mask].float()
+    if finite_values.numel() > 0:
+        details = f"finite_min={finite_values.min().item():.6g} finite_max={finite_values.max().item():.6g}"
     else:
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+        details = "no finite values"
+    raise FloatingPointError(f"Non-finite {name} on rank {distributed.rank} at step {step}: {details}")
+
+
+def clip_grad_norm(model: torch.nn.Module, max_norm: float) -> torch.Tensor:
+    if isinstance(model, FSDP):
+        return model.clip_grad_norm_(max_norm)
+    return torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm, error_if_nonfinite=True)
 
 
 def collate_candidates(examples: Sequence[CandidateExample], *, pad_token_id: int) -> dict[str, Any]:
@@ -1320,6 +1332,7 @@ def main() -> None:
             (parameter for parameter in critic.parameters() if parameter.requires_grad),
             lr=float(args.lr),
             weight_decay=float(args.weight_decay),
+            eps=float(args.adam_eps),
         )
         global_step = 0
         micro_step = 0
@@ -1349,6 +1362,7 @@ def main() -> None:
             for batch in iterator:
                 batch = batch_to_device(batch, device)
                 values = critic_last_token_values_trainable(critic, batch["input_ids"], batch["attention_mask"])
+                assert_finite_tensor("critic values", values, step=global_step + 1, distributed=distributed)
                 loss_dict = compute_loss(
                     values,
                     batch["target_reward"],
@@ -1357,6 +1371,7 @@ def main() -> None:
                     rank_loss_weight=float(args.rank_loss_weight),
                 )
                 loss = loss_dict["loss"]
+                assert_finite_tensor("loss", loss, step=global_step + 1, distributed=distributed)
                 loss.backward()
                 micro_step += 1
                 gradient_accumulated_batches += 1
@@ -1367,7 +1382,8 @@ def main() -> None:
                 for parameter in critic.parameters():
                     if parameter.grad is not None:
                         parameter.grad.div_(float(gradient_accumulated_batches))
-                clip_grad_norm(critic, 1.0)
+                grad_norm = clip_grad_norm(critic, 1.0)
+                assert_finite_tensor("gradient norm", torch.as_tensor(grad_norm, device=device), step=global_step + 1, distributed=distributed)
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 gradient_accumulated_batches = 0
@@ -1447,7 +1463,8 @@ def main() -> None:
                 for parameter in critic.parameters():
                     if parameter.grad is not None:
                         parameter.grad.div_(float(gradient_accumulated_batches))
-                clip_grad_norm(critic, 1.0)
+                grad_norm = clip_grad_norm(critic, 1.0)
+                assert_finite_tensor("gradient norm", torch.as_tensor(grad_norm, device=device), step=global_step + 1, distributed=distributed)
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 gradient_accumulated_batches = 0
