@@ -1143,6 +1143,7 @@ def run_eval_and_log(
     args: argparse.Namespace,
     distributed: DistributedContext,
     extra_fields: dict[str, Any] | None = None,
+    log_to_wandb: bool = True,
 ) -> dict[str, Any] | None:
     metrics = evaluate_critic(
         critic,
@@ -1157,10 +1158,11 @@ def run_eval_and_log(
             output_dir / "main_results.csv",
             {"step": step, "train_loss": train_loss, **metrics},
         )
-        wandb_payload = {"global_step": step, "eval/step": step, **{f"eval/{key}": value for key, value in metrics.items()}}
+        wandb_payload = {"eval/step": step, **{f"eval/{key}": value for key, value in metrics.items()}}
         for key, value in (extra_fields or {}).items():
             wandb_payload[f"eval/{key}"] = value
-        wandb_log(wandb_run, wandb_payload, step=step)
+        if log_to_wandb:
+            wandb_log(wandb_run, wandb_payload, step=step)
         if not args.no_plots:
             write_plots(output_dir)
     barrier(distributed)
@@ -1288,25 +1290,11 @@ def main() -> None:
             save_json(output_dir / "config.json", config_payload)
             wandb_run = init_wandb(args, config_payload)
             if wandb_run is not None:
-                wandb_run.define_metric("global_step")
-                wandb_run.define_metric("train/step")
-                wandb_run.define_metric("eval/step")
-                wandb_run.define_metric("train/*", step_metric="global_step")
-                wandb_run.define_metric("eval/*", step_metric="global_step")
-                wandb_run.define_metric("run/*", step_metric="global_step")
-                wandb_log(
-                    wandb_run,
-                    {
-                        "global_step": 0,
-                        "run/initialized": 1,
-                        "run/world_size": distributed.world_size,
-                        "run/effective_batch_size": int(args.batch_size) * int(args.grad_accum_steps) * distributed.world_size,
-                        "run/train_num_examples": len(train_dataset),
-                        "run/eval_num_examples": len(eval_dataset),
-                        "run/max_eval_examples": 0 if args.max_eval_examples is None else int(args.max_eval_examples),
-                    },
-                    step=0,
-                )
+                wandb_run.summary["world_size"] = distributed.world_size
+                wandb_run.summary["effective_batch_size"] = int(args.batch_size) * int(args.grad_accum_steps) * distributed.world_size
+                wandb_run.summary["train_num_examples"] = len(train_dataset)
+                wandb_run.summary["eval_num_examples"] = len(eval_dataset)
+                wandb_run.summary["max_eval_examples"] = 0 if args.max_eval_examples is None else int(args.max_eval_examples)
         else:
             wandb_run = None
         barrier(distributed)
@@ -1388,26 +1376,8 @@ def main() -> None:
                         "effective_batch_size": int(args.batch_size) * int(args.grad_accum_steps) * distributed.world_size,
                     }
                     append_jsonl(output_dir / "train_log.jsonl", last_train_log)
-                    wandb_log(
-                        wandb_run,
-                        {
-                            "global_step": global_step,
-                            "train/step": global_step,
-                            "train/loss": last_train_log["loss"],
-                            "train/loss_mse": last_train_log["loss_mse"],
-                            "train/loss_bce": last_train_log["loss_bce"],
-                            "train/loss_rank": last_train_log["loss_rank"],
-                            "train/num_rankable_groups_in_batch": last_train_log["num_rankable_groups_in_batch"],
-                            "train/num_pairs_in_batch": last_train_log["num_pairs_in_batch"],
-                            "train/value_mean": last_train_log["value_mean"],
-                            "train/target_mean": last_train_log["target_mean"],
-                            "train/lr": last_train_log["lr"],
-                            "train/epoch": epoch,
-                            "train/effective_batch_size": last_train_log["effective_batch_size"],
-                        },
-                        step=global_step,
-                    )
 
+                eval_metrics = None
                 if global_step % int(args.eval_every_steps) == 0:
                     eval_metrics = run_eval_and_log(
                         critic=critic,
@@ -1419,7 +1389,27 @@ def main() -> None:
                         wandb_run=wandb_run,
                         args=args,
                         distributed=distributed,
+                        log_to_wandb=False,
                     )
+
+                if distributed.is_main_process:
+                    wandb_payload = {
+                        "train/step": global_step,
+                        "train/loss": last_train_log["loss"],
+                        "train/loss_mse": last_train_log["loss_mse"],
+                        "train/loss_bce": last_train_log["loss_bce"],
+                        "train/loss_rank": last_train_log["loss_rank"],
+                        "train/num_rankable_groups_in_batch": last_train_log["num_rankable_groups_in_batch"],
+                        "train/num_pairs_in_batch": last_train_log["num_pairs_in_batch"],
+                        "train/value_mean": last_train_log["value_mean"],
+                        "train/target_mean": last_train_log["target_mean"],
+                        "train/lr": last_train_log["lr"],
+                        "train/epoch": epoch,
+                        "train/effective_batch_size": last_train_log["effective_batch_size"],
+                    }
+                    if eval_metrics is not None:
+                        wandb_payload.update({"eval/step": global_step, **{f"eval/{key}": value for key, value in eval_metrics.items()}})
+                    wandb_log(wandb_run, wandb_payload, step=global_step)
                 if global_step % int(args.save_every_steps) == 0:
                     checkpoint_dir = save_checkpoint(critic, tokenizer, output_dir, global_step, distributed=distributed)
                     if distributed.is_main_process:
@@ -1458,7 +1448,6 @@ def main() -> None:
                     wandb_log(
                         wandb_run,
                         {
-                            "global_step": global_step,
                             "train/step": global_step,
                             "train/flushed_epoch_remainder": True,
                             "train/epoch": epoch,
@@ -1483,22 +1472,12 @@ def main() -> None:
             args=args,
             distributed=distributed,
             extra_fields={"final": True},
+            log_to_wandb=(global_step % int(args.eval_every_steps) != 0),
         )
         final_checkpoint_dir = save_checkpoint(critic, tokenizer, output_dir, global_step, distributed=distributed)
         if distributed.is_main_process:
             final_row = {"step": global_step, "final": True, **(final_metrics or {})}
             save_json(output_dir / "final_metrics.json", final_row)
-            wandb_log(
-                wandb_run,
-                {
-                    "global_step": global_step,
-                    "eval/step": global_step,
-                    "eval/final": True,
-                    "eval/final_checkpoint_step": global_step,
-                    **{f"eval/{key}": value for key, value in (final_metrics or {}).items()},
-                },
-                step=global_step,
-            )
             if wandb_run is not None:
                 wandb_run.summary["final_checkpoint_dir"] = str(final_checkpoint_dir)
                 for key, value in (final_metrics or {}).items():
