@@ -5,7 +5,7 @@
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=00:12:00
+#SBATCH --time=00:20:00
 #SBATCH --output=slurm-%j_train_search_induced_critic_test.out
 #SBATCH --error=slurm-%j_train_search_induced_critic_test.err
 
@@ -68,12 +68,12 @@ LOSS_TYPE="hybrid"              # mse, bce, pairwise, hybrid
 RANK_LOSS_WEIGHT=0.1
 BATCH_SAMPLING_MODE="mixed"     # uniform, prompt_balanced, rankable_prioritized, mixed
 BATCH_SIZE=32
-EVAL_BATCH_SIZE=32
+EVAL_BATCH_SIZE=1
 GRAD_ACCUM_STEPS=1
 NUM_TRAIN_EPOCHS=2
 LR="1e-5"
 WEIGHT_DECAY="0.0"
-MAX_SEQ_LENGTH=2048
+MAX_SEQ_LENGTH=1024
 TRAINABLE_SCOPE="all"   # all, value_head. Full finetune of this critic OOMs on one GH200.
 GRADIENT_CHECKPOINTING=1        # set 1 if TRAINABLE_SCOPE="all" and memory is tight.
 DTYPE="bf16"
@@ -86,10 +86,12 @@ RANKABLE_GROUP_FRACTION=0.5
 EVAL_EVERY_STEPS=100
 SAVE_EVERY_STEPS=100
 EVAL_AT_START=0
-MAX_EVAL_EXAMPLES=""            # set for fast debug eval, e.g. 1024
+MAX_EVAL_EXAMPLES="2048"        # empty for full eval; finite keeps rank-0 eval affordable
 MAX_TRAIN_STEPS=""              # set for debug, e.g. 2
 NUM_WORKERS=0
-DEVICE="cuda:0"
+DEVICE="cuda:0"  # ignored in distributed mode; each rank uses cuda:${SLURM_LOCALID}
+DISTRIBUTED_BACKEND="fsdp"
+FSDP_CPU_OFFLOAD=0
 # Vista gh nodes already expose the allocated GPU to the task; requesting --gres=gpu:1
 # can be invalid on this partition. Leave empty unless your cluster requires it.
 SRUN_GPU_ARGS=()
@@ -259,6 +261,7 @@ CMD=(
   --device "$DEVICE"
   --merged_root "$MERGED_ROOT"
   --num_workers "$NUM_WORKERS"
+  --distributed_backend "$DISTRIBUTED_BACKEND"
 )
 
 [[ -n "$POSITIVE_FRACTION" ]] && CMD+=(--positive_fraction "$POSITIVE_FRACTION")
@@ -270,6 +273,7 @@ CMD=(
 [[ "$SKIP_MERGE" != "0" ]] && CMD+=(--skip_merge)
 [[ "$NO_PLOTS" != "0" ]] && CMD+=(--no_plots)
 [[ "$GRADIENT_CHECKPOINTING" != "0" ]] && CMD+=(--gradient_checkpointing)
+[[ "$FSDP_CPU_OFFLOAD" != "0" ]] && CMD+=(--fsdp_cpu_offload)
 
 if [[ "$USE_WANDB" != "0" ]]; then
   CMD+=(
@@ -297,11 +301,19 @@ if [[ "$RUN_END_TO_END_CHUNK_EVAL" != "0" ]]; then
   [[ -n "$CHUNK_EVAL_MAX_EXAMPLES" ]] && CMD+=(--chunk_eval_max_examples "$CHUNK_EVAL_MAX_EXAMPLES")
 fi
 
+MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
+MASTER_PORT=$((29500 + SLURM_JOB_ID % 10000))
+NUM_TRAIN_TASKS="${SLURM_NTASKS:-$SLURM_NNODES}"
+export MASTER_ADDR MASTER_PORT
+export WORLD_SIZE="$NUM_TRAIN_TASKS"
+
+echo "Distributed launch: MASTER_ADDR=${MASTER_ADDR} MASTER_PORT=${MASTER_PORT} WORLD_SIZE=${WORLD_SIZE} TASKS=${NUM_TRAIN_TASKS}" | tee "${LOG_DIR}/distributed_env.log"
+
 printf 'Command:' | tee "${LOG_DIR}/train_command.log"
 printf ' %q' "${CMD[@]}" | tee -a "${LOG_DIR}/train_command.log"
 printf '\n' | tee -a "${LOG_DIR}/train_command.log"
 
-srun --nodes=1 --ntasks=1 "${SRUN_GPU_ARGS[@]}" "${CMD[@]}" 2>&1 | tee "${LOG_DIR}/train.log"
+srun --nodes="${SLURM_NNODES}" --ntasks="$NUM_TRAIN_TASKS" "${SRUN_GPU_ARGS[@]}" "${CMD[@]}" 2>&1 | tee "${LOG_DIR}/train.log"
 
 echo "Search-induced critic training finished successfully."
 echo "Output: $OUTPUT_DIR"

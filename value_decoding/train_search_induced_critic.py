@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import csv
 import json
 import math
@@ -15,7 +16,10 @@ from typing import Any, Iterator, Sequence
 
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
+from torch.distributed.fsdp import CPUOffload, FullStateDictConfig, FullyShardedDataParallel as FSDP, StateDictType
+from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset, Sampler
 from tqdm.auto import tqdm
@@ -372,6 +376,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chunk_eval_generation_backend", type=str, default="vllm", choices=("torch", "vllm"))
 
     parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--distributed_backend", type=str, default="none", choices=("none", "fsdp"))
+    parser.add_argument("--fsdp_cpu_offload", action="store_true")
     parser.add_argument("--trust_remote_code", action="store_true")
     parser.add_argument("--skip_merge", action="store_true")
     parser.add_argument("--critic_hf_source_dir", type=str, default=None)
@@ -396,6 +402,103 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+@dataclass(frozen=True)
+class DistributedContext:
+    enabled: bool
+    rank: int
+    world_size: int
+    local_rank: int
+    device: torch.device
+
+    @property
+    def is_main_process(self) -> bool:
+        return self.rank == 0
+
+
+def init_distributed_context(args: argparse.Namespace) -> DistributedContext:
+    if args.distributed_backend == "none":
+        return DistributedContext(
+            enabled=False,
+            rank=0,
+            world_size=1,
+            local_rank=0,
+            device=resolve_device(args.device),
+        )
+
+    if args.distributed_backend != "fsdp":
+        raise ValueError(f"Unsupported distributed backend: {args.distributed_backend}")
+    if args.trainable_scope != "all":
+        raise ValueError(
+            "--distributed_backend fsdp currently requires --trainable_scope all. "
+            "FSDP with frozen base parameters can fail during multi-rank backward; "
+            "use --distributed_backend none for value_head-only training."
+        )
+    if not torch.cuda.is_available():
+        raise RuntimeError("FSDP distributed training requires CUDA devices.")
+
+    rank = int(os.environ.get("RANK", os.environ.get("SLURM_PROCID", "0")))
+    world_size = int(os.environ.get("WORLD_SIZE", os.environ.get("SLURM_NTASKS", "1")))
+    local_rank = int(os.environ.get("LOCAL_RANK", os.environ.get("SLURM_LOCALID", "0")))
+    torch.cuda.set_device(local_rank)
+    device = torch.device(f"cuda:{local_rank}")
+
+    if not dist.is_initialized():
+        try:
+            dist.init_process_group(
+                backend="nccl",
+                init_method="env://",
+                rank=rank,
+                world_size=world_size,
+                device_id=device,
+            )
+        except TypeError:
+            dist.init_process_group(backend="nccl", init_method="env://", rank=rank, world_size=world_size)
+    return DistributedContext(
+        enabled=True,
+        rank=rank,
+        world_size=world_size,
+        local_rank=local_rank,
+        device=device,
+    )
+
+
+def cleanup_distributed_context(distributed: DistributedContext) -> None:
+    if distributed.enabled and dist.is_initialized():
+        # Do not barrier during exception cleanup: if one rank failed, a final
+        # barrier can hang surviving ranks. Normal success paths barrier before
+        # reaching cleanup.
+        dist.destroy_process_group()
+
+
+def rank_print(distributed: DistributedContext, message: str) -> None:
+    if distributed.is_main_process:
+        print(message, flush=True)
+
+
+def barrier(distributed: DistributedContext) -> None:
+    if distributed.enabled and dist.is_initialized():
+        dist.barrier()
+
+
+def reduce_loss_dict_for_logging(loss_dict: dict[str, Any], distributed: DistributedContext) -> dict[str, Any]:
+    if not distributed.enabled:
+        return loss_dict
+    reduced = dict(loss_dict)
+    tensor_keys = ("loss", "loss_mse", "loss_bce", "loss_rank", "value_mean", "target_mean")
+    for key in tensor_keys:
+        tensor = reduced.get(key)
+        if not torch.is_tensor(tensor):
+            continue
+        value = tensor.detach().float()
+        dist.all_reduce(value, op=dist.ReduceOp.AVG)
+        reduced[key] = value
+    for key in ("num_rankable_groups_in_batch", "num_pairs_in_batch"):
+        value = torch.tensor(float(reduced.get(key, 0)), device=distributed.device)
+        dist.all_reduce(value, op=dist.ReduceOp.SUM)
+        reduced[key] = int(value.item())
+    return reduced
 
 
 def init_wandb(args: argparse.Namespace, config: dict[str, Any]):
@@ -514,6 +617,54 @@ def log_cuda_memory(label: str, device: torch.device) -> None:
         f"reserved={reserved_gib:.2f}GiB total={total_gib:.2f}GiB",
         flush=True,
     )
+
+
+def infer_transformer_layer_classes(model: torch.nn.Module) -> set[type[torch.nn.Module]]:
+    layer_classes: set[type[torch.nn.Module]] = set()
+    for module in model.modules():
+        class_name = module.__class__.__name__
+        if class_name.endswith("DecoderLayer") or class_name.endswith("EncoderLayer") or class_name.endswith("Block"):
+            layer_classes.add(module.__class__)
+    return layer_classes
+
+
+def wrap_with_fsdp_if_needed(
+    model: torch.nn.Module,
+    *,
+    distributed: DistributedContext,
+    args: argparse.Namespace,
+) -> torch.nn.Module:
+    if not distributed.enabled:
+        return model
+    transformer_layer_classes = infer_transformer_layer_classes(model)
+    auto_wrap_policy = None
+    if transformer_layer_classes:
+        auto_wrap_policy = functools.partial(
+            transformer_auto_wrap_policy,
+            transformer_layer_cls=transformer_layer_classes,
+        )
+        rank_print(
+            distributed,
+            "FSDP auto-wrap layer classes: " + ", ".join(sorted(cls.__name__ for cls in transformer_layer_classes)),
+        )
+    else:
+        rank_print(distributed, "FSDP auto-wrap layer classes not found; wrapping whole model.")
+
+    cpu_offload = CPUOffload(offload_params=True) if args.fsdp_cpu_offload else None
+    return FSDP(
+        model,
+        auto_wrap_policy=auto_wrap_policy,
+        cpu_offload=cpu_offload,
+        device_id=distributed.device,
+        use_orig_params=True,
+    )
+
+
+def clip_grad_norm(model: torch.nn.Module, max_norm: float) -> None:
+    if isinstance(model, FSDP):
+        model.clip_grad_norm_(max_norm)
+    else:
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
 
 def collate_candidates(examples: Sequence[CandidateExample], *, pad_token_id: int) -> dict[str, Any]:
@@ -861,10 +1012,28 @@ def append_main_results(path: Path, row: dict[str, Any]) -> None:
         writer.writerow({field: row.get(field) for field in MAIN_RESULTS_FIELDS})
 
 
-def save_checkpoint(critic, tokenizer, output_dir: Path, step: int) -> Path:
+def unwrap_model(model):
+    return model.module if hasattr(model, "module") else model
+
+
+def save_checkpoint(critic, tokenizer, output_dir: Path, step: int, *, distributed: DistributedContext) -> Path:
     checkpoint_dir = output_dir / "checkpoints" / f"step_{step:06d}"
+    if distributed.enabled:
+        save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+        with FSDP.state_dict_type(critic, StateDictType.FULL_STATE_DICT, save_policy):
+            state_dict = critic.state_dict()
+        if distributed.is_main_process:
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            model_to_save = unwrap_model(critic)
+            if not hasattr(model_to_save, "save_pretrained"):
+                raise TypeError(f"Critic model of type {type(model_to_save).__name__} does not support save_pretrained().")
+            model_to_save.save_pretrained(str(checkpoint_dir), state_dict=state_dict, safe_serialization=True)
+            tokenizer.save_pretrained(str(checkpoint_dir))
+        barrier(distributed)
+        return checkpoint_dir
+
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    model_to_save = critic.module if hasattr(critic, "module") else critic
+    model_to_save = unwrap_model(critic)
     if not hasattr(model_to_save, "save_pretrained"):
         raise TypeError(f"Critic model of type {type(model_to_save).__name__} does not support save_pretrained().")
     model_to_save.save_pretrained(str(checkpoint_dir), safe_serialization=True)
@@ -956,6 +1125,42 @@ def make_git_commit(repo_root: Path) -> str | None:
         return None
 
 
+def run_eval_and_log(
+    *,
+    critic,
+    eval_loader: DataLoader,
+    device: torch.device,
+    output_dir: Path,
+    step: int,
+    train_loss: float | None,
+    wandb_run,
+    args: argparse.Namespace,
+    distributed: DistributedContext,
+    extra_fields: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    metrics = evaluate_critic(
+        critic,
+        eval_loader,
+        device=device,
+        max_examples=args.max_eval_examples,
+    )
+    if distributed.is_main_process:
+        eval_row = {"step": step, **(extra_fields or {}), **metrics}
+        append_jsonl(output_dir / "eval_metrics.jsonl", eval_row)
+        append_main_results(
+            output_dir / "main_results.csv",
+            {"step": step, "train_loss": train_loss, **metrics},
+        )
+        wandb_payload = {"eval/step": step, **{f"eval/{key}": value for key, value in metrics.items()}}
+        for key, value in (extra_fields or {}).items():
+            wandb_payload[f"eval/{key}"] = value
+        wandb_log(wandb_run, wandb_payload, step=step)
+        if not args.no_plots:
+            write_plots(output_dir)
+    barrier(distributed)
+    return metrics if distributed.is_main_process else None
+
+
 def main() -> None:
     args = parse_args()
     if args.batch_size <= 0:
@@ -967,289 +1172,322 @@ def main() -> None:
     if args.save_every_steps <= 0:
         raise ValueError("--save_every_steps must be positive")
 
-    set_seed(int(args.seed))
-    output_dir = Path(args.output_dir).resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
+    distributed = init_distributed_context(args)
+    try:
+        set_seed(int(args.seed) + distributed.rank)
+        output_dir = Path(args.output_dir).resolve()
+        if distributed.is_main_process:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        barrier(distributed)
 
-    init_checkpoint_dir = Path(args.init_critic_checkpoint_dir).resolve()
-    critic_hf_dir = ensure_merged_component_checkpoint(
-        init_checkpoint_dir,
-        component="critic",
-        merged_root=Path(args.merged_root).resolve() if args.merged_root else None,
-        hf_source_dir=Path(args.critic_hf_source_dir).resolve() if args.critic_hf_source_dir else None,
-        skip_merge=bool(args.skip_merge),
-    )
-    dtype = resolve_dtype(args.dtype)
-    device = resolve_device(args.device)
-    tokenizer = load_tokenizer(critic_hf_dir, trust_remote_code=bool(args.trust_remote_code))
-    critic = load_critic_model(
-        critic_hf_dir,
-        dtype=dtype,
-        device=device,
-        trust_remote_code=bool(args.trust_remote_code),
-    )
-    if type(critic).__name__ == "PRMCriticAdapter":
-        raise TypeError("Training PRM critic adapters is not supported by this script; use a value-head critic checkpoint.")
-    gradient_checkpointing_enabled = enable_gradient_checkpointing_if_requested(critic, bool(args.gradient_checkpointing))
-    trainable_info = configure_trainable_parameters(critic, args.trainable_scope)
-    print(
-        "Trainable parameters: "
-        f"{trainable_info['trainable_parameter_count']:,} / {trainable_info['total_parameter_count']:,} "
-        f"({100.0 * trainable_info['trainable_parameter_fraction']:.4f}%) "
-        f"scope={args.trainable_scope} gradient_checkpointing={gradient_checkpointing_enabled}",
-        flush=True,
-    )
-    critic.train()
-    log_cuda_memory("after_model_load", device)
+        init_checkpoint_dir = Path(args.init_critic_checkpoint_dir).resolve()
+        if distributed.is_main_process:
+            critic_hf_dir = ensure_merged_component_checkpoint(
+                init_checkpoint_dir,
+                component="critic",
+                merged_root=Path(args.merged_root).resolve() if args.merged_root else None,
+                hf_source_dir=Path(args.critic_hf_source_dir).resolve() if args.critic_hf_source_dir else None,
+                skip_merge=bool(args.skip_merge),
+            )
+            critic_hf_dir_payload = [str(critic_hf_dir)]
+        else:
+            critic_hf_dir_payload = [None]
+        if distributed.enabled:
+            dist.broadcast_object_list(critic_hf_dir_payload, src=0)
+        critic_hf_dir = Path(critic_hf_dir_payload[0])
+        barrier(distributed)
 
-    train_dataset = SearchInducedCriticDataset(
-        args.train_data_path,
-        tokenizer=tokenizer,
-        max_seq_length=int(args.max_seq_length),
-    )
-    eval_dataset = SearchInducedCriticDataset(
-        args.eval_data_path,
-        tokenizer=tokenizer,
-        max_seq_length=int(args.max_seq_length),
-    )
-    pad_token_id = int(tokenizer.pad_token_id)
-    train_sampler = SearchInducedBatchSampler(
-        train_dataset,
-        batch_size=int(args.batch_size),
-        mode=args.batch_sampling_mode,
-        seed=int(args.seed),
-        max_examples_per_prompt_per_batch=int(args.max_examples_per_prompt_per_batch),
-        positive_fraction=args.positive_fraction,
-        rankable_group_fraction=float(args.rankable_group_fraction),
-    )
-    train_loader = DataLoader(
-        train_dataset,
-        batch_sampler=train_sampler,
-        collate_fn=lambda examples: collate_candidates(examples, pad_token_id=pad_token_id),
-        num_workers=int(args.num_workers),
-    )
-    eval_loader = DataLoader(
-        eval_dataset,
-        batch_size=int(args.eval_batch_size or args.batch_size),
-        shuffle=False,
-        collate_fn=lambda examples: collate_candidates(examples, pad_token_id=pad_token_id),
-        num_workers=int(args.num_workers),
-    )
-
-    config_payload = vars(args).copy()
-    config_payload.update(
-        {
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "repo_root": str(Path(__file__).resolve().parents[1]),
-            "git_commit": make_git_commit(Path(__file__).resolve().parents[1]),
-            "resolved_critic_hf_dir": str(critic_hf_dir),
-            "train_num_examples": len(train_dataset),
-            "eval_num_examples": len(eval_dataset),
-            "train_num_rankable_groups": len(train_dataset.rankable_group_ids),
-            "eval_num_rankable_groups": len(eval_dataset.rankable_group_ids),
-            "train_missing_token_id_rows": train_dataset.num_missing_token_ids,
-            "train_missing_prompt_text_rows": train_dataset.num_missing_prompt_text,
-            "eval_missing_token_id_rows": eval_dataset.num_missing_token_ids,
-            "eval_missing_prompt_text_rows": eval_dataset.num_missing_prompt_text,
-            "gradient_checkpointing_enabled": gradient_checkpointing_enabled,
-            **trainable_info,
-        }
-    )
-    save_json(output_dir / "config.json", config_payload)
-    wandb_run = init_wandb(args, config_payload)
-    if wandb_run is not None:
-        wandb_run.define_metric("train/step")
-        wandb_run.define_metric("train/*", step_metric="train/step")
-        wandb_run.define_metric("eval/step")
-        wandb_run.define_metric("eval/*", step_metric="eval/step")
-
-    optimizer = AdamW(
-        (parameter for parameter in critic.parameters() if parameter.requires_grad),
-        lr=float(args.lr),
-        weight_decay=float(args.weight_decay),
-    )
-    global_step = 0
-    micro_step = 0
-    gradient_accumulated_batches = 0
-    optimizer.zero_grad(set_to_none=True)
-    last_train_log: dict[str, Any] = {"loss": None}
-
-    if args.eval_at_start:
-        eval_metrics = evaluate_critic(
-            critic,
-            eval_loader,
+        dtype = resolve_dtype(args.dtype)
+        device = distributed.device
+        tokenizer = load_tokenizer(critic_hf_dir, trust_remote_code=bool(args.trust_remote_code))
+        critic = load_critic_model(
+            critic_hf_dir,
+            dtype=dtype,
             device=device,
-            max_examples=args.max_eval_examples,
+            trust_remote_code=bool(args.trust_remote_code),
         )
-        eval_row = {"step": 0, "eval_at_start": True, **eval_metrics}
-        append_jsonl(output_dir / "eval_metrics.jsonl", eval_row)
-        append_main_results(
-            output_dir / "main_results.csv",
-            {"step": 0, "train_loss": None, **eval_metrics},
+        if type(critic).__name__ == "PRMCriticAdapter":
+            raise TypeError("Training PRM critic adapters is not supported by this script; use a value-head critic checkpoint.")
+        gradient_checkpointing_enabled = enable_gradient_checkpointing_if_requested(critic, bool(args.gradient_checkpointing))
+        trainable_info = configure_trainable_parameters(critic, args.trainable_scope)
+        rank_print(
+            distributed,
+            "Trainable parameters: "
+            f"{trainable_info['trainable_parameter_count']:,} / {trainable_info['total_parameter_count']:,} "
+            f"({100.0 * trainable_info['trainable_parameter_fraction']:.4f}%) "
+            f"scope={args.trainable_scope} gradient_checkpointing={gradient_checkpointing_enabled} "
+            f"distributed={args.distributed_backend} world_size={distributed.world_size}",
         )
-        wandb_log(
-            wandb_run,
-            {"eval/step": 0, "eval/eval_at_start": True, **{f"eval/{key}": value for key, value in eval_metrics.items()}},
-            step=0,
+        critic = wrap_with_fsdp_if_needed(critic, distributed=distributed, args=args)
+        critic.train()
+        if distributed.is_main_process:
+            log_cuda_memory("after_model_load", device)
+
+        train_dataset = SearchInducedCriticDataset(
+            args.train_data_path,
+            tokenizer=tokenizer,
+            max_seq_length=int(args.max_seq_length),
         )
-        if not args.no_plots:
-            write_plots(output_dir)
+        eval_dataset = SearchInducedCriticDataset(
+            args.eval_data_path,
+            tokenizer=tokenizer,
+            max_seq_length=int(args.max_seq_length),
+        )
+        pad_token_id = int(tokenizer.pad_token_id)
+        train_sampler = SearchInducedBatchSampler(
+            train_dataset,
+            batch_size=int(args.batch_size),
+            mode=args.batch_sampling_mode,
+            seed=int(args.seed) + distributed.rank * 1009,
+            max_examples_per_prompt_per_batch=int(args.max_examples_per_prompt_per_batch),
+            positive_fraction=args.positive_fraction,
+            rankable_group_fraction=float(args.rankable_group_fraction),
+        )
+        train_loader = DataLoader(
+            train_dataset,
+            batch_sampler=train_sampler,
+            collate_fn=lambda examples: collate_candidates(examples, pad_token_id=pad_token_id),
+            num_workers=int(args.num_workers),
+        )
+        eval_loader = DataLoader(
+            eval_dataset,
+            batch_size=int(args.eval_batch_size or args.batch_size),
+            shuffle=False,
+            collate_fn=lambda examples: collate_candidates(examples, pad_token_id=pad_token_id),
+            num_workers=int(args.num_workers),
+        )
 
-    progress = tqdm(total=args.max_train_steps, desc="train steps") if args.max_train_steps else None
-    stop_training = False
-    for epoch in range(int(args.num_train_epochs)):
-        train_sampler.set_epoch(epoch)
-        for batch in tqdm(train_loader, desc=f"epoch {epoch + 1}", leave=False):
-            batch = batch_to_device(batch, device)
-            values = critic_last_token_values_trainable(critic, batch["input_ids"], batch["attention_mask"])
-            loss_dict = compute_loss(
-                values,
-                batch["target_reward"],
-                batch,
-                loss_type=args.loss_type,
-                rank_loss_weight=float(args.rank_loss_weight),
-            )
-            loss = loss_dict["loss"]
-            loss.backward()
-            micro_step += 1
-            gradient_accumulated_batches += 1
-
-            if micro_step % int(args.grad_accum_steps) != 0:
-                continue
-
-            for parameter in critic.parameters():
-                if parameter.grad is not None:
-                    parameter.grad.div_(float(gradient_accumulated_batches))
-            torch.nn.utils.clip_grad_norm_(critic.parameters(), 1.0)
-            optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
-            gradient_accumulated_batches = 0
-            global_step += 1
-            if progress is not None:
-                progress.update(1)
-
-            last_train_log = {
-                "step": global_step,
-                "epoch": epoch,
-                "loss": float(loss_dict["loss"].detach().cpu().item()),
-                "loss_mse": float(loss_dict["loss_mse"].cpu().item()),
-                "loss_bce": float(loss_dict["loss_bce"].cpu().item()),
-                "loss_rank": float(loss_dict["loss_rank"].cpu().item()),
-                "num_rankable_groups_in_batch": int(loss_dict["num_rankable_groups_in_batch"]),
-                "num_pairs_in_batch": int(loss_dict["num_pairs_in_batch"]),
-                "value_mean": float(loss_dict["value_mean"].cpu().item()),
-                "target_mean": float(loss_dict["target_mean"].cpu().item()),
-                "lr": float(optimizer.param_groups[0]["lr"]),
+        config_payload = vars(args).copy()
+        config_payload.update(
+            {
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "repo_root": str(Path(__file__).resolve().parents[1]),
+                "git_commit": make_git_commit(Path(__file__).resolve().parents[1]),
+                "resolved_critic_hf_dir": str(critic_hf_dir),
+                "train_num_examples": len(train_dataset),
+                "eval_num_examples": len(eval_dataset),
+                "train_num_rankable_groups": len(train_dataset.rankable_group_ids),
+                "eval_num_rankable_groups": len(eval_dataset.rankable_group_ids),
+                "train_missing_token_id_rows": train_dataset.num_missing_token_ids,
+                "train_missing_prompt_text_rows": train_dataset.num_missing_prompt_text,
+                "eval_missing_token_id_rows": eval_dataset.num_missing_token_ids,
+                "eval_missing_prompt_text_rows": eval_dataset.num_missing_prompt_text,
+                "gradient_checkpointing_enabled": gradient_checkpointing_enabled,
+                "distributed_enabled": distributed.enabled,
+                "world_size": distributed.world_size,
+                **trainable_info,
             }
-            append_jsonl(output_dir / "train_log.jsonl", last_train_log)
-            wandb_log(
-                wandb_run,
-                {
-                    "train/step": global_step,
-                    "train/loss": last_train_log["loss"],
-                    "train/loss_mse": last_train_log["loss_mse"],
-                    "train/loss_bce": last_train_log["loss_bce"],
-                    "train/loss_rank": last_train_log["loss_rank"],
-                    "train/num_rankable_groups_in_batch": last_train_log["num_rankable_groups_in_batch"],
-                    "train/num_pairs_in_batch": last_train_log["num_pairs_in_batch"],
-                    "train/value_mean": last_train_log["value_mean"],
-                    "train/target_mean": last_train_log["target_mean"],
-                    "train/lr": last_train_log["lr"],
-                    "train/epoch": epoch,
-                },
-                step=global_step,
+        )
+        if distributed.is_main_process:
+            save_json(output_dir / "config.json", config_payload)
+            wandb_run = init_wandb(args, config_payload)
+            if wandb_run is not None:
+                wandb_run.define_metric("train/step")
+                wandb_run.define_metric("train/*", step_metric="train/step")
+                wandb_run.define_metric("eval/step")
+                wandb_run.define_metric("eval/*", step_metric="eval/step")
+        else:
+            wandb_run = None
+        barrier(distributed)
+
+        optimizer = AdamW(
+            (parameter for parameter in critic.parameters() if parameter.requires_grad),
+            lr=float(args.lr),
+            weight_decay=float(args.weight_decay),
+        )
+        global_step = 0
+        micro_step = 0
+        gradient_accumulated_batches = 0
+        optimizer.zero_grad(set_to_none=True)
+        last_train_log: dict[str, Any] = {"loss": None}
+
+        if args.eval_at_start:
+            run_eval_and_log(
+                critic=critic,
+                eval_loader=eval_loader,
+                device=device,
+                output_dir=output_dir,
+                step=0,
+                train_loss=None,
+                wandb_run=wandb_run,
+                args=args,
+                distributed=distributed,
+                extra_fields={"eval_at_start": True},
             )
 
-            if global_step % int(args.eval_every_steps) == 0:
-                eval_metrics = evaluate_critic(
-                    critic,
-                    eval_loader,
-                    device=device,
-                    max_examples=args.max_eval_examples,
+        progress = tqdm(total=args.max_train_steps, desc="train steps", disable=not distributed.is_main_process) if args.max_train_steps else None
+        stop_training = False
+        for epoch in range(int(args.num_train_epochs)):
+            train_sampler.set_epoch(epoch)
+            iterator = tqdm(train_loader, desc=f"epoch {epoch + 1}", leave=False, disable=not distributed.is_main_process)
+            for batch in iterator:
+                batch = batch_to_device(batch, device)
+                values = critic_last_token_values_trainable(critic, batch["input_ids"], batch["attention_mask"])
+                loss_dict = compute_loss(
+                    values,
+                    batch["target_reward"],
+                    batch,
+                    loss_type=args.loss_type,
+                    rank_loss_weight=float(args.rank_loss_weight),
                 )
-                eval_row = {"step": global_step, **eval_metrics}
-                append_jsonl(output_dir / "eval_metrics.jsonl", eval_row)
-                append_main_results(
-                    output_dir / "main_results.csv",
-                    {"step": global_step, "train_loss": last_train_log.get("loss"), **eval_metrics},
-                )
-                wandb_log(
-                    wandb_run,
-                    {"eval/step": global_step, **{f"eval/{key}": value for key, value in eval_metrics.items()}},
-                    step=global_step,
-                )
-                if not args.no_plots:
-                    write_plots(output_dir)
+                loss = loss_dict["loss"]
+                loss.backward()
+                micro_step += 1
+                gradient_accumulated_batches += 1
 
-            if global_step % int(args.save_every_steps) == 0:
-                checkpoint_dir = save_checkpoint(critic, tokenizer, output_dir, global_step)
-                maybe_run_chunk_eval(args, checkpoint_dir, global_step, output_dir)
+                if micro_step % int(args.grad_accum_steps) != 0:
+                    continue
 
-            if args.max_train_steps is not None and global_step >= int(args.max_train_steps):
-                stop_training = True
+                for parameter in critic.parameters():
+                    if parameter.grad is not None:
+                        parameter.grad.div_(float(gradient_accumulated_batches))
+                clip_grad_norm(critic, 1.0)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                gradient_accumulated_batches = 0
+                global_step += 1
+                if progress is not None:
+                    progress.update(1)
+
+                reduced_loss_dict = reduce_loss_dict_for_logging(loss_dict, distributed)
+                if distributed.is_main_process:
+                    last_train_log = {
+                        "step": global_step,
+                        "epoch": epoch,
+                        "loss": float(reduced_loss_dict["loss"].detach().cpu().item()),
+                        "loss_mse": float(reduced_loss_dict["loss_mse"].cpu().item()),
+                        "loss_bce": float(reduced_loss_dict["loss_bce"].cpu().item()),
+                        "loss_rank": float(reduced_loss_dict["loss_rank"].cpu().item()),
+                        "num_rankable_groups_in_batch": int(reduced_loss_dict["num_rankable_groups_in_batch"]),
+                        "num_pairs_in_batch": int(reduced_loss_dict["num_pairs_in_batch"]),
+                        "value_mean": float(reduced_loss_dict["value_mean"].cpu().item()),
+                        "target_mean": float(reduced_loss_dict["target_mean"].cpu().item()),
+                        "lr": float(optimizer.param_groups[0]["lr"]),
+                        "world_size": distributed.world_size,
+                        "effective_batch_size": int(args.batch_size) * int(args.grad_accum_steps) * distributed.world_size,
+                    }
+                    append_jsonl(output_dir / "train_log.jsonl", last_train_log)
+                    wandb_log(
+                        wandb_run,
+                        {
+                            "train/step": global_step,
+                            "train/loss": last_train_log["loss"],
+                            "train/loss_mse": last_train_log["loss_mse"],
+                            "train/loss_bce": last_train_log["loss_bce"],
+                            "train/loss_rank": last_train_log["loss_rank"],
+                            "train/num_rankable_groups_in_batch": last_train_log["num_rankable_groups_in_batch"],
+                            "train/num_pairs_in_batch": last_train_log["num_pairs_in_batch"],
+                            "train/value_mean": last_train_log["value_mean"],
+                            "train/target_mean": last_train_log["target_mean"],
+                            "train/lr": last_train_log["lr"],
+                            "train/epoch": epoch,
+                            "train/effective_batch_size": last_train_log["effective_batch_size"],
+                        },
+                        step=global_step,
+                    )
+
+                if global_step % int(args.eval_every_steps) == 0:
+                    eval_metrics = run_eval_and_log(
+                        critic=critic,
+                        eval_loader=eval_loader,
+                        device=device,
+                        output_dir=output_dir,
+                        step=global_step,
+                        train_loss=last_train_log.get("loss"),
+                        wandb_run=wandb_run,
+                        args=args,
+                        distributed=distributed,
+                    )
+                if global_step % int(args.save_every_steps) == 0:
+                    checkpoint_dir = save_checkpoint(critic, tokenizer, output_dir, global_step, distributed=distributed)
+                    if distributed.is_main_process:
+                        maybe_run_chunk_eval(args, checkpoint_dir, global_step, output_dir)
+                    barrier(distributed)
+
+                if args.max_train_steps is not None and global_step >= int(args.max_train_steps):
+                    stop_training = True
+                stop_tensor = torch.tensor(int(stop_training), device=device)
+                if distributed.enabled:
+                    dist.all_reduce(stop_tensor, op=dist.ReduceOp.MAX)
+                stop_training = bool(stop_tensor.item())
+                if stop_training:
+                    break
+            if stop_training:
                 break
-        if stop_training:
-            break
-        if gradient_accumulated_batches > 0:
-            for parameter in critic.parameters():
-                if parameter.grad is not None:
-                    parameter.grad.div_(float(gradient_accumulated_batches))
-            torch.nn.utils.clip_grad_norm_(critic.parameters(), 1.0)
-            optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
-            gradient_accumulated_batches = 0
-            global_step += 1
-            if progress is not None:
-                progress.update(1)
-            remainder_log = {
-                **last_train_log,
-                "step": global_step,
-                "epoch": epoch,
-                "flushed_epoch_remainder": True,
-            }
-            append_jsonl(output_dir / "train_log.jsonl", remainder_log)
+            if gradient_accumulated_batches > 0:
+                for parameter in critic.parameters():
+                    if parameter.grad is not None:
+                        parameter.grad.div_(float(gradient_accumulated_batches))
+                clip_grad_norm(critic, 1.0)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                gradient_accumulated_batches = 0
+                global_step += 1
+                if progress is not None:
+                    progress.update(1)
+                if distributed.is_main_process:
+                    remainder_log = {
+                        **last_train_log,
+                        "step": global_step,
+                        "epoch": epoch,
+                        "flushed_epoch_remainder": True,
+                    }
+                    append_jsonl(output_dir / "train_log.jsonl", remainder_log)
+                    wandb_log(
+                        wandb_run,
+                        {
+                            "train/step": global_step,
+                            "train/flushed_epoch_remainder": True,
+                            "train/epoch": epoch,
+                        },
+                        step=global_step,
+                    )
+
+        if progress is not None:
+            progress.close()
+
+        if global_step == 0:
+            raise RuntimeError("Training finished before any optimizer step. Reduce --grad_accum_steps or check the data.")
+
+        final_metrics = run_eval_and_log(
+            critic=critic,
+            eval_loader=eval_loader,
+            device=device,
+            output_dir=output_dir,
+            step=global_step,
+            train_loss=last_train_log.get("loss"),
+            wandb_run=wandb_run,
+            args=args,
+            distributed=distributed,
+            extra_fields={"final": True},
+        )
+        final_checkpoint_dir = save_checkpoint(critic, tokenizer, output_dir, global_step, distributed=distributed)
+        if distributed.is_main_process:
+            final_row = {"step": global_step, "final": True, **(final_metrics or {})}
+            save_json(output_dir / "final_metrics.json", final_row)
             wandb_log(
                 wandb_run,
                 {
-                    "train/step": global_step,
-                    "train/flushed_epoch_remainder": True,
-                    "train/epoch": epoch,
+                    "eval/step": global_step,
+                    "eval/final": True,
+                    "eval/final_checkpoint_step": global_step,
+                    **{f"eval/{key}": value for key, value in (final_metrics or {}).items()},
                 },
                 step=global_step,
             )
-
-    if progress is not None:
-        progress.close()
-
-    if global_step == 0:
-        raise RuntimeError("Training finished before any optimizer step. Reduce --grad_accum_steps or check the data.")
-
-    final_metrics = evaluate_critic(critic, eval_loader, device=device, max_examples=args.max_eval_examples)
-    final_row = {"step": global_step, "final": True, **final_metrics}
-    append_jsonl(output_dir / "eval_metrics.jsonl", final_row)
-    append_main_results(output_dir / "main_results.csv", {"step": global_step, "train_loss": last_train_log.get("loss"), **final_metrics})
-    final_checkpoint_dir = save_checkpoint(critic, tokenizer, output_dir, global_step)
-    save_json(output_dir / "final_metrics.json", final_row)
-    wandb_log(
-        wandb_run,
-        {
-            "eval/step": global_step,
-            "eval/final": True,
-            "eval/final_checkpoint_step": global_step,
-            **{f"eval/{key}": value for key, value in final_metrics.items()},
-        },
-        step=global_step,
-    )
-    if wandb_run is not None:
-        wandb_run.summary["final_checkpoint_dir"] = str(final_checkpoint_dir)
-        for key, value in final_metrics.items():
-            if isinstance(value, (int, float, bool)) and value is not None and math.isfinite(float(value)):
-                wandb_run.summary[f"final/{key}"] = value
-    if not args.no_plots:
-        write_plots(output_dir)
-    maybe_run_chunk_eval(args, final_checkpoint_dir, global_step, output_dir)
-    wandb_finish(wandb_run)
-    print(json.dumps({"step": global_step, "final_checkpoint_dir": str(final_checkpoint_dir), **final_metrics}, indent=2, sort_keys=True))
+            if wandb_run is not None:
+                wandb_run.summary["final_checkpoint_dir"] = str(final_checkpoint_dir)
+                for key, value in (final_metrics or {}).items():
+                    if isinstance(value, (int, float, bool)) and value is not None and math.isfinite(float(value)):
+                        wandb_run.summary[f"final/{key}"] = value
+            if not args.no_plots:
+                write_plots(output_dir)
+            maybe_run_chunk_eval(args, final_checkpoint_dir, global_step, output_dir)
+            wandb_finish(wandb_run)
+            print(json.dumps({"step": global_step, "final_checkpoint_dir": str(final_checkpoint_dir), **(final_metrics or {})}, indent=2, sort_keys=True))
+        barrier(distributed)
+    finally:
+        cleanup_distributed_context(distributed)
 
 
 if __name__ == "__main__":
