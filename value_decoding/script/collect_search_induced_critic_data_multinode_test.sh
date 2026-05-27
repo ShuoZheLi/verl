@@ -204,8 +204,16 @@ archive_submitted_script() {
 count_dataset_rows() {
   python3 - "$DATASET_PATH" <<'PY'
 import sys
-import pandas as pd
-print(len(pd.read_parquet(sys.argv[1], columns=[])))
+
+path = sys.argv[1]
+try:
+    import pyarrow.parquet as pq
+
+    print(pq.ParquetFile(path).metadata.num_rows)
+except Exception:
+    import pandas as pd
+
+    print(len(pd.read_parquet(path)))
 PY
 }
 

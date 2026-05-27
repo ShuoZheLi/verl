@@ -116,7 +116,10 @@ SCRIPT_PATH="${WORK_DIR}/value_decoding/script/$(basename "${BASH_SOURCE[0]}")"
 sync_to_work() {
   echo "Syncing run directory back to WORK..."
   mkdir -p "$ARCHIVE_DIR"
-  rsync -a "$RUN_DIR"/ "$ARCHIVE_DIR"/ || true
+  rsync -a \
+    --exclude='merged_hf/' \
+    --exclude='merged_hf/***' \
+    "$RUN_DIR"/ "$ARCHIVE_DIR"/ || true
   echo "Archived run to: $ARCHIVE_DIR"
 }
 
