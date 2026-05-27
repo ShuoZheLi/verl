@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=train_simc_critic
 #SBATCH --account=ECS26006
-#SBATCH --partition=gh-dev
+#SBATCH --partition=gh
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
