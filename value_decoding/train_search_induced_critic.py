@@ -526,19 +526,35 @@ def init_wandb(args: argparse.Namespace, config: dict[str, Any]):
     return wandb.init(**init_kwargs)
 
 
-def wandb_log(wandb_run, metrics: dict[str, Any], *, step: int | None = None, commit: bool = True) -> None:
-    if wandb_run is None:
-        return
+def wandb_log(
+    wandb_run,
+    metrics: dict[str, Any],
+    *,
+    step: int | None = None,
+    commit: bool = True,
+    mirror_path: Path | None = None,
+) -> None:
     clean_metrics = {
         key: value
         for key, value in metrics.items()
         if isinstance(value, (int, float, bool)) and value is not None and math.isfinite(float(value))
     }
-    if clean_metrics:
-        if step is None:
-            wandb_run.log(clean_metrics, commit=commit)
-        else:
-            wandb_run.log(clean_metrics, step=int(step), commit=commit)
+    if mirror_path is not None and clean_metrics:
+        append_jsonl(
+            mirror_path,
+            {
+                "wandb_step": None if step is None else int(step),
+                "commit": bool(commit),
+                "keys": sorted(clean_metrics),
+                "metrics": clean_metrics,
+            },
+        )
+    if wandb_run is None or not clean_metrics:
+        return
+    if step is None:
+        wandb_run.log(clean_metrics, commit=commit)
+    else:
+        wandb_run.log(clean_metrics, step=int(step), commit=commit)
 
 
 def wandb_finish(wandb_run) -> None:
@@ -1162,7 +1178,7 @@ def run_eval_and_log(
         for key, value in (extra_fields or {}).items():
             wandb_payload[f"eval/{key}"] = value
         if log_to_wandb:
-            wandb_log(wandb_run, wandb_payload, step=step)
+            wandb_log(wandb_run, wandb_payload, step=step, mirror_path=output_dir / "wandb_log_payloads.jsonl")
         if not args.no_plots:
             write_plots(output_dir)
     barrier(distributed)
@@ -1297,6 +1313,7 @@ def main() -> None:
                 wandb_run.summary["max_eval_examples"] = 0 if args.max_eval_examples is None else int(args.max_eval_examples)
         else:
             wandb_run = None
+        wandb_mirror_path = output_dir / "wandb_log_payloads.jsonl" if distributed.is_main_process else None
         barrier(distributed)
 
         optimizer = AdamW(
@@ -1409,7 +1426,7 @@ def main() -> None:
                     }
                     if eval_metrics is not None:
                         wandb_payload.update({"eval/step": global_step, **{f"eval/{key}": value for key, value in eval_metrics.items()}})
-                    wandb_log(wandb_run, wandb_payload, step=global_step)
+                    wandb_log(wandb_run, wandb_payload, step=global_step, mirror_path=wandb_mirror_path)
                 if global_step % int(args.save_every_steps) == 0:
                     checkpoint_dir = save_checkpoint(critic, tokenizer, output_dir, global_step, distributed=distributed)
                     if distributed.is_main_process:
@@ -1453,6 +1470,7 @@ def main() -> None:
                             "train/epoch": epoch,
                         },
                         step=global_step,
+                        mirror_path=wandb_mirror_path,
                     )
 
         if progress is not None:

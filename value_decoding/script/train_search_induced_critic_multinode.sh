@@ -104,7 +104,7 @@ NO_PLOTS=0
 
 # Weights & Biases logging. Set USE_WANDB=1 after `wandb login` or with WANDB_API_KEY in the job env.
 USE_WANDB=1
-WANDB_PROJECT="value-decoding"
+WANDB_PROJECT="value-decoding-train"
 WANDB_ENTITY=""
 WANDB_RUN_NAME="${RUN_ID}"
 WANDB_GROUP="search_induced_critic"
