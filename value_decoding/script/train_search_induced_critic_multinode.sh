@@ -71,10 +71,10 @@ BATCH_SIZE=32
 EVAL_BATCH_SIZE=64
 GRAD_ACCUM_STEPS=1
 NUM_TRAIN_EPOCHS=4
-LR="1e-6"
+LR="1e-5"
 WEIGHT_DECAY="0.0"
 ADAM_EPS="1e-5"
-MAX_SEQ_LENGTH=1024
+MAX_SEQ_LENGTH=2048
 TRAINABLE_SCOPE="all"   # all, value_head. Full finetune of this critic OOMs on one GH200.
 GRADIENT_CHECKPOINTING=1        # set 1 if TRAINABLE_SCOPE="all" and memory is tight.
 DTYPE="bf16"      # FSDP uses fp32 master params with bf16 forward/reduce where supported.
