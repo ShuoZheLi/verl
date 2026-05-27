@@ -526,7 +526,7 @@ def init_wandb(args: argparse.Namespace, config: dict[str, Any]):
     return wandb.init(**init_kwargs)
 
 
-def wandb_log(wandb_run, metrics: dict[str, Any], *, step: int) -> None:
+def wandb_log(wandb_run, metrics: dict[str, Any], *, step: int, commit: bool = True) -> None:
     if wandb_run is None:
         return
     clean_metrics = {
@@ -535,7 +535,7 @@ def wandb_log(wandb_run, metrics: dict[str, Any], *, step: int) -> None:
         if isinstance(value, (int, float, bool)) and value is not None and math.isfinite(float(value))
     }
     if clean_metrics:
-        wandb_run.log(clean_metrics, step=int(step))
+        wandb_run.log(clean_metrics, step=int(step), commit=commit)
 
 
 def wandb_finish(wandb_run) -> None:
@@ -1286,6 +1286,18 @@ def main() -> None:
                 wandb_run.define_metric("train/*", step_metric="train/step")
                 wandb_run.define_metric("eval/step")
                 wandb_run.define_metric("eval/*", step_metric="eval/step")
+                wandb_log(
+                    wandb_run,
+                    {
+                        "run/initialized": 1,
+                        "run/world_size": distributed.world_size,
+                        "run/effective_batch_size": int(args.batch_size) * int(args.grad_accum_steps) * distributed.world_size,
+                        "run/train_num_examples": len(train_dataset),
+                        "run/eval_num_examples": len(eval_dataset),
+                        "run/max_eval_examples": 0 if args.max_eval_examples is None else int(args.max_eval_examples),
+                    },
+                    step=0,
+                )
         else:
             wandb_run = None
         barrier(distributed)
