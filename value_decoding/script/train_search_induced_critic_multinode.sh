@@ -2,10 +2,10 @@
 #SBATCH --job-name=train_simc_critic
 #SBATCH --account=ECS26006
 #SBATCH --partition=gh
-#SBATCH --nodes=2
+#SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=00:20:00
+#SBATCH --time=10:00:00
 #SBATCH --output=slurm-%j_train_search_induced_critic_test.out
 #SBATCH --error=slurm-%j_train_search_induced_critic_test.err
 
@@ -70,7 +70,7 @@ BATCH_SAMPLING_MODE="mixed"     # uniform, prompt_balanced, rankable_prioritized
 BATCH_SIZE=32
 EVAL_BATCH_SIZE=1
 GRAD_ACCUM_STEPS=1
-NUM_TRAIN_EPOCHS=2
+NUM_TRAIN_EPOCHS=4
 LR="1e-5"
 WEIGHT_DECAY="0.0"
 MAX_SEQ_LENGTH=1024
@@ -85,8 +85,8 @@ RANKABLE_GROUP_FRACTION=0.5
 
 EVAL_EVERY_STEPS=100
 SAVE_EVERY_STEPS=100
-EVAL_AT_START=0
-MAX_EVAL_EXAMPLES="2048"        # empty for full eval; finite keeps rank-0 eval affordable
+EVAL_AT_START=1
+MAX_EVAL_EXAMPLES=""        # empty for full eval; finite keeps rank-0 eval affordable
 MAX_TRAIN_STEPS=""              # set for debug, e.g. 2
 NUM_WORKERS=0
 DEVICE="cuda:0"  # ignored in distributed mode; each rank uses cuda:${SLURM_LOCALID}
