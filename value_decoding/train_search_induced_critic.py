@@ -360,6 +360,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--eval_every_steps", type=int, default=200)
     parser.add_argument("--save_every_steps", type=int, default=200)
+    parser.add_argument("--eval_at_start", action="store_true", help="Run held-out eval once at step 0 before training.")
     parser.add_argument("--run_end_to_end_chunk_eval", action="store_true")
     parser.add_argument("--chunk_eval_script_path", type=str, default=None)
     parser.add_argument("--chunk_eval_actor_checkpoint_dir", type=str, default=None)
@@ -978,6 +979,27 @@ def main() -> None:
     gradient_accumulated_batches = 0
     optimizer.zero_grad(set_to_none=True)
     last_train_log: dict[str, Any] = {"loss": None}
+
+    if args.eval_at_start:
+        eval_metrics = evaluate_critic(
+            critic,
+            eval_loader,
+            device=device,
+            max_examples=args.max_eval_examples,
+        )
+        eval_row = {"step": 0, "eval_at_start": True, **eval_metrics}
+        append_jsonl(output_dir / "eval_metrics.jsonl", eval_row)
+        append_main_results(
+            output_dir / "main_results.csv",
+            {"step": 0, "train_loss": None, **eval_metrics},
+        )
+        wandb_log(
+            wandb_run,
+            {"eval/step": 0, "eval/eval_at_start": True, **{f"eval/{key}": value for key, value in eval_metrics.items()}},
+            step=0,
+        )
+        if not args.no_plots:
+            write_plots(output_dir)
 
     progress = tqdm(total=args.max_train_steps, desc="train steps") if args.max_train_steps else None
     stop_training = False

@@ -2,12 +2,12 @@
 #SBATCH --job-name=train_simc_critic
 #SBATCH --account=ECS26006
 #SBATCH --partition=gh
-#SBATCH --nodes=1
+#SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=12:00:00
-#SBATCH --output=slurm-%j_train_search_induced_critic.out
-#SBATCH --error=slurm-%j_train_search_induced_critic.err
+#SBATCH --time=00:12:00
+#SBATCH --output=slurm-%j_train_search_induced_critic_test.out
+#SBATCH --error=slurm-%j_train_search_induced_critic_test.err
 
 set -euo pipefail
 
@@ -42,8 +42,8 @@ RUN_ID="${RUN_NAME}_${SLURM_JOB_ID}"
 # Paths: edit these for your run
 # -----------------------------
 INIT_CRITIC_CHECKPOINT_DIR="/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_600"
-TRAIN_DATA_PATH="/work2/09576/shuozhe/verl/value_decoding/output_archive/search_induced_candidates.jsonl"
-EVAL_DATA_PATH="/work2/09576/shuozhe/verl/value_decoding/output_archive/search_induced_candidates.jsonl"
+TRAIN_DATA_PATH="/work2/09576/shuozhe/verl/value_decoding/output_archive/search_induced_critic_data_722759/search_induced_critic_data/search_induced_candidates.jsonl"
+EVAL_DATA_PATH="/work2/09576/shuozhe/verl/value_decoding/output_archive/search_induced_critic_data_723857/search_induced_critic_data/search_induced_candidates.jsonl"
 WORK_DIR="/work2/09576/shuozhe/verl"
 export PYTHONPATH="${WORK_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 
@@ -82,6 +82,7 @@ RANKABLE_GROUP_FRACTION=0.5
 
 EVAL_EVERY_STEPS=100
 SAVE_EVERY_STEPS=100
+EVAL_AT_START=0
 MAX_EVAL_EXAMPLES=""            # set for fast debug eval, e.g. 1024
 MAX_TRAIN_STEPS=""              # set for debug, e.g. 2
 NUM_WORKERS=0
@@ -253,6 +254,7 @@ CMD=(
 [[ -n "$POSITIVE_FRACTION" ]] && CMD+=(--positive_fraction "$POSITIVE_FRACTION")
 [[ -n "$MAX_EVAL_EXAMPLES" ]] && CMD+=(--max_eval_examples "$MAX_EVAL_EXAMPLES")
 [[ -n "$MAX_TRAIN_STEPS" ]] && CMD+=(--max_train_steps "$MAX_TRAIN_STEPS")
+[[ "$EVAL_AT_START" != "0" ]] && CMD+=(--eval_at_start)
 [[ -n "$CRITIC_HF_SOURCE_DIR" ]] && CMD+=(--critic_hf_source_dir "$CRITIC_HF_SOURCE_DIR")
 [[ "$TRUST_REMOTE_CODE" != "0" ]] && CMD+=(--trust_remote_code)
 [[ "$SKIP_MERGE" != "0" ]] && CMD+=(--skip_merge)
