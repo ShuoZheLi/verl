@@ -350,6 +350,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--weight_decay", type=float, default=0.0)
     parser.add_argument("--max_seq_length", type=int, default=4096)
+    parser.add_argument("--trainable_scope", type=str, default="all", choices=("all", "value_head"))
+    parser.add_argument("--gradient_checkpointing", action="store_true")
     parser.add_argument("--dtype", type=str, default="bf16", choices=("bf16", "fp16", "fp32"))
     parser.add_argument("--seed", type=int, default=42)
 
@@ -436,6 +438,82 @@ def wandb_log(wandb_run, metrics: dict[str, Any], *, step: int) -> None:
 def wandb_finish(wandb_run) -> None:
     if wandb_run is not None:
         wandb_run.finish()
+
+
+def _module_by_dotted_name(model: torch.nn.Module, name: str):
+    module = model
+    for part in name.split("."):
+        module = getattr(module, part, None)
+        if module is None:
+            return None
+    return module
+
+
+def find_value_head_parameter_names(model: torch.nn.Module) -> set[str]:
+    value_head_names = ("score", "classifier", "v_head", "v_head.summary", "prompt_prior_head")
+    parameter_names: set[str] = set()
+    for module_name in value_head_names:
+        module = _module_by_dotted_name(model, module_name)
+        if module is None:
+            continue
+        for parameter_name, _ in module.named_parameters(prefix=module_name, recurse=True):
+            parameter_names.add(parameter_name)
+    return parameter_names
+
+
+def configure_trainable_parameters(model: torch.nn.Module, trainable_scope: str) -> dict[str, Any]:
+    if trainable_scope == "all":
+        for parameter in model.parameters():
+            parameter.requires_grad_(True)
+    elif trainable_scope == "value_head":
+        value_head_parameter_names = find_value_head_parameter_names(model)
+        if not value_head_parameter_names:
+            raise ValueError(
+                "--trainable_scope value_head was requested, but no value-head parameters were found "
+                "under score/classifier/v_head."
+            )
+        for name, parameter in model.named_parameters():
+            parameter.requires_grad_(name in value_head_parameter_names)
+    else:
+        raise ValueError(f"Unsupported trainable_scope: {trainable_scope}")
+
+    trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    trainable_parameter_count = sum(parameter.numel() for parameter in trainable_parameters)
+    total_parameter_count = sum(parameter.numel() for parameter in model.parameters())
+    if not trainable_parameters:
+        raise ValueError(f"No trainable parameters found for trainable_scope={trainable_scope}")
+    return {
+        "trainable_parameter_count": int(trainable_parameter_count),
+        "total_parameter_count": int(total_parameter_count),
+        "trainable_parameter_fraction": float(trainable_parameter_count / max(1, total_parameter_count)),
+    }
+
+
+def enable_gradient_checkpointing_if_requested(model: torch.nn.Module, enabled: bool) -> bool:
+    if not enabled:
+        return False
+    gradient_checkpointing_enable = getattr(model, "gradient_checkpointing_enable", None)
+    if not callable(gradient_checkpointing_enable):
+        raise ValueError("--gradient_checkpointing was set, but this model does not support gradient_checkpointing_enable().")
+    gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    config = getattr(model, "config", None)
+    if config is not None:
+        setattr(config, "use_cache", False)
+    return True
+
+
+def log_cuda_memory(label: str, device: torch.device) -> None:
+    if device.type != "cuda" or not torch.cuda.is_available():
+        return
+    device_index = device.index if device.index is not None else torch.cuda.current_device()
+    allocated_gib = torch.cuda.memory_allocated(device_index) / 1024**3
+    reserved_gib = torch.cuda.memory_reserved(device_index) / 1024**3
+    total_gib = torch.cuda.get_device_properties(device_index).total_memory / 1024**3
+    print(
+        f"CUDA memory {label}: allocated={allocated_gib:.2f}GiB "
+        f"reserved={reserved_gib:.2f}GiB total={total_gib:.2f}GiB",
+        flush=True,
+    )
 
 
 def collate_candidates(examples: Sequence[CandidateExample], *, pad_token_id: int) -> dict[str, Any]:
@@ -912,7 +990,17 @@ def main() -> None:
     )
     if type(critic).__name__ == "PRMCriticAdapter":
         raise TypeError("Training PRM critic adapters is not supported by this script; use a value-head critic checkpoint.")
+    gradient_checkpointing_enabled = enable_gradient_checkpointing_if_requested(critic, bool(args.gradient_checkpointing))
+    trainable_info = configure_trainable_parameters(critic, args.trainable_scope)
+    print(
+        "Trainable parameters: "
+        f"{trainable_info['trainable_parameter_count']:,} / {trainable_info['total_parameter_count']:,} "
+        f"({100.0 * trainable_info['trainable_parameter_fraction']:.4f}%) "
+        f"scope={args.trainable_scope} gradient_checkpointing={gradient_checkpointing_enabled}",
+        flush=True,
+    )
     critic.train()
+    log_cuda_memory("after_model_load", device)
 
     train_dataset = SearchInducedCriticDataset(
         args.train_data_path,
@@ -963,6 +1051,8 @@ def main() -> None:
             "train_missing_prompt_text_rows": train_dataset.num_missing_prompt_text,
             "eval_missing_token_id_rows": eval_dataset.num_missing_token_ids,
             "eval_missing_prompt_text_rows": eval_dataset.num_missing_prompt_text,
+            "gradient_checkpointing_enabled": gradient_checkpointing_enabled,
+            **trainable_info,
         }
     )
     save_json(output_dir / "config.json", config_payload)
@@ -973,7 +1063,11 @@ def main() -> None:
         wandb_run.define_metric("eval/step")
         wandb_run.define_metric("eval/*", step_metric="eval/step")
 
-    optimizer = AdamW(critic.parameters(), lr=float(args.lr), weight_decay=float(args.weight_decay))
+    optimizer = AdamW(
+        (parameter for parameter in critic.parameters() if parameter.requires_grad),
+        lr=float(args.lr),
+        weight_decay=float(args.weight_decay),
+    )
     global_step = 0
     micro_step = 0
     gradient_accumulated_batches = 0

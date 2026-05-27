@@ -31,6 +31,7 @@ export HF_HOME
 export TIKTOKEN_ENCODINGS_BASE
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # -----------------------------
 # Run identity
@@ -66,13 +67,15 @@ MERGED_ROOT="${RUN_DIR}/merged_hf"
 LOSS_TYPE="hybrid"              # mse, bce, pairwise, hybrid
 RANK_LOSS_WEIGHT=0.1
 BATCH_SAMPLING_MODE="mixed"     # uniform, prompt_balanced, rankable_prioritized, mixed
-BATCH_SIZE=64
+BATCH_SIZE=32
 EVAL_BATCH_SIZE=32
-GRAD_ACCUM_STEPS=4
+GRAD_ACCUM_STEPS=1
 NUM_TRAIN_EPOCHS=2
 LR="1e-5"
 WEIGHT_DECAY="0.0"
-MAX_SEQ_LENGTH=4096
+MAX_SEQ_LENGTH=2048
+TRAINABLE_SCOPE="all"   # all, value_head. Full finetune of this critic OOMs on one GH200.
+GRADIENT_CHECKPOINTING=1        # set 1 if TRAINABLE_SCOPE="all" and memory is tight.
 DTYPE="bf16"
 SEED=42
 
@@ -246,6 +249,7 @@ CMD=(
   --lr "$LR"
   --weight_decay "$WEIGHT_DECAY"
   --max_seq_length "$MAX_SEQ_LENGTH"
+  --trainable_scope "$TRAINABLE_SCOPE"
   --eval_every_steps "$EVAL_EVERY_STEPS"
   --save_every_steps "$SAVE_EVERY_STEPS"
   --dtype "$DTYPE"
@@ -265,6 +269,7 @@ CMD=(
 [[ "$TRUST_REMOTE_CODE" != "0" ]] && CMD+=(--trust_remote_code)
 [[ "$SKIP_MERGE" != "0" ]] && CMD+=(--skip_merge)
 [[ "$NO_PLOTS" != "0" ]] && CMD+=(--no_plots)
+[[ "$GRADIENT_CHECKPOINTING" != "0" ]] && CMD+=(--gradient_checkpointing)
 
 if [[ "$USE_WANDB" != "0" ]]; then
   CMD+=(
