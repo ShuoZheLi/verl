@@ -87,6 +87,12 @@ MAX_EVAL_EXAMPLES=""            # set for fast debug eval, e.g. 1024
 MAX_TRAIN_STEPS=""              # set for debug, e.g. 2
 NUM_WORKERS=0
 DEVICE="cuda:0"
+# Vista gh nodes already expose the allocated GPU to the task; requesting --gres=gpu:1
+# can be invalid on this partition. Leave empty unless your cluster requires it.
+SRUN_GPU_ARGS=()
+# Examples for other clusters:
+# SRUN_GPU_ARGS=(--gres=gpu:1)
+# SRUN_GPU_ARGS=(--gpus-per-task=1)
 TRUST_REMOTE_CODE=1
 SKIP_MERGE=0
 NO_PLOTS=0
@@ -290,7 +296,7 @@ printf 'Command:' | tee "${LOG_DIR}/train_command.log"
 printf ' %q' "${CMD[@]}" | tee -a "${LOG_DIR}/train_command.log"
 printf '\n' | tee -a "${LOG_DIR}/train_command.log"
 
-srun --nodes=1 --ntasks=1 --gres=gpu:1 "${CMD[@]}" 2>&1 | tee "${LOG_DIR}/train.log"
+srun --nodes=1 --ntasks=1 "${SRUN_GPU_ARGS[@]}" "${CMD[@]}" 2>&1 | tee "${LOG_DIR}/train.log"
 
 echo "Search-induced critic training finished successfully."
 echo "Output: $OUTPUT_DIR"
