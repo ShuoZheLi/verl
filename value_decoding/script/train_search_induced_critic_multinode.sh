@@ -6,8 +6,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
 #SBATCH --time=10:00:00
-#SBATCH --output=slurm-%j_train_search_induced_critic_test.out
-#SBATCH --error=slurm-%j_train_search_induced_critic_test.err
+#SBATCH --output=slurm-%j_train_search_induced_critic_low_ent_128.out
+#SBATCH --error=slurm-%j_train_search_induced_critic_low_ent_128.err
 
 set -euo pipefail
 
