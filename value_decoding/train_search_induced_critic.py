@@ -535,10 +535,10 @@ def wandb_log(wandb_run, metrics: dict[str, Any], *, step: int | None = None, co
         if isinstance(value, (int, float, bool)) and value is not None and math.isfinite(float(value))
     }
     if clean_metrics:
-        # Do not pass W&B's global `step`: train and eval have separate custom
-        # step metrics (`train/step`, `eval/step`), and logging both at logical
-        # step 0 otherwise trips W&B's monotonic global-step constraint.
-        wandb_run.log(clean_metrics, commit=commit)
+        if step is None:
+            wandb_run.log(clean_metrics, commit=commit)
+        else:
+            wandb_run.log(clean_metrics, step=int(step), commit=commit)
 
 
 def wandb_finish(wandb_run) -> None:
@@ -1157,7 +1157,7 @@ def run_eval_and_log(
             output_dir / "main_results.csv",
             {"step": step, "train_loss": train_loss, **metrics},
         )
-        wandb_payload = {"eval/step": step, **{f"eval/{key}": value for key, value in metrics.items()}}
+        wandb_payload = {"global_step": step, "eval/step": step, **{f"eval/{key}": value for key, value in metrics.items()}}
         for key, value in (extra_fields or {}).items():
             wandb_payload[f"eval/{key}"] = value
         wandb_log(wandb_run, wandb_payload, step=step)
@@ -1288,13 +1288,16 @@ def main() -> None:
             save_json(output_dir / "config.json", config_payload)
             wandb_run = init_wandb(args, config_payload)
             if wandb_run is not None:
+                wandb_run.define_metric("global_step")
                 wandb_run.define_metric("train/step")
-                wandb_run.define_metric("train/*", step_metric="train/step")
                 wandb_run.define_metric("eval/step")
-                wandb_run.define_metric("eval/*", step_metric="eval/step")
+                wandb_run.define_metric("train/*", step_metric="global_step")
+                wandb_run.define_metric("eval/*", step_metric="global_step")
+                wandb_run.define_metric("run/*", step_metric="global_step")
                 wandb_log(
                     wandb_run,
                     {
+                        "global_step": 0,
                         "run/initialized": 1,
                         "run/world_size": distributed.world_size,
                         "run/effective_batch_size": int(args.batch_size) * int(args.grad_accum_steps) * distributed.world_size,
@@ -1388,6 +1391,7 @@ def main() -> None:
                     wandb_log(
                         wandb_run,
                         {
+                            "global_step": global_step,
                             "train/step": global_step,
                             "train/loss": last_train_log["loss"],
                             "train/loss_mse": last_train_log["loss_mse"],
@@ -1454,6 +1458,7 @@ def main() -> None:
                     wandb_log(
                         wandb_run,
                         {
+                            "global_step": global_step,
                             "train/step": global_step,
                             "train/flushed_epoch_remainder": True,
                             "train/epoch": epoch,
@@ -1486,6 +1491,7 @@ def main() -> None:
             wandb_log(
                 wandb_run,
                 {
+                    "global_step": global_step,
                     "eval/step": global_step,
                     "eval/final": True,
                     "eval/final_checkpoint_step": global_step,
