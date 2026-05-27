@@ -2,12 +2,12 @@
 #SBATCH --job-name=collect_search_data
 #SBATCH --account=ECS26006
 #SBATCH --partition=gh
-#SBATCH --nodes=8
+#SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=12:15:00
-#SBATCH --output=slurm-%j_low_ent_600_induced_critic_data_7500.out
-#SBATCH --error=slurm-%j_low_ent_600_induced_critic_data_7500.err
+#SBATCH --time=4:00:00
+#SBATCH --output=slurm-%j_low_ent_600_induced_critic_data_500.out
+#SBATCH --error=slurm-%j_low_ent_600_induced_critic_data_500.err
 
 set -euo pipefail
 
@@ -49,7 +49,7 @@ RUN_ID="${RUN_NAME}_${SLURM_JOB_ID}"
 # Edit these for the actor/collector pair you want to collect from.
 ACTOR_CHECKPOINT_DIR="/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_600"
 COLLECTOR_CRITIC_CHECKPOINT_DIR="/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_600"
-DATASET_PATH="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/math7500.parquet"
+DATASET_PATH="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet"
 WORK_DIR="/work2/09576/shuozhe/verl"
 export PYTHONPATH="${WORK_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 
