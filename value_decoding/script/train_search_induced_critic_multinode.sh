@@ -5,7 +5,7 @@
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=10:00:00
+#SBATCH --time=10:20:00
 #SBATCH --output=slurm-%j_train_search_induced_critic_low_ent_128.out
 #SBATCH --error=slurm-%j_train_search_induced_critic_low_ent_128.err
 
@@ -84,7 +84,7 @@ POSITIVE_FRACTION=""            # empty uses trainer default for mixed mode
 RANKABLE_GROUP_FRACTION=0.5
 
 EVAL_EVERY_STEPS=100
-SAVE_EVERY_STEPS=100
+SAVE_EVERY_STEPS=500
 EVAL_AT_START=1
 MAX_EVAL_EXAMPLES=""        # empty for full eval; finite keeps rank-0 eval affordable
 MAX_TRAIN_STEPS=""              # set for debug, e.g. 2
