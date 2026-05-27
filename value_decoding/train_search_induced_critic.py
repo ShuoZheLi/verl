@@ -526,7 +526,7 @@ def init_wandb(args: argparse.Namespace, config: dict[str, Any]):
     return wandb.init(**init_kwargs)
 
 
-def wandb_log(wandb_run, metrics: dict[str, Any], *, step: int, commit: bool = True) -> None:
+def wandb_log(wandb_run, metrics: dict[str, Any], *, step: int | None = None, commit: bool = True) -> None:
     if wandb_run is None:
         return
     clean_metrics = {
@@ -535,7 +535,10 @@ def wandb_log(wandb_run, metrics: dict[str, Any], *, step: int, commit: bool = T
         if isinstance(value, (int, float, bool)) and value is not None and math.isfinite(float(value))
     }
     if clean_metrics:
-        wandb_run.log(clean_metrics, step=int(step), commit=commit)
+        # Do not pass W&B's global `step`: train and eval have separate custom
+        # step metrics (`train/step`, `eval/step`), and logging both at logical
+        # step 0 otherwise trips W&B's monotonic global-step constraint.
+        wandb_run.log(clean_metrics, commit=commit)
 
 
 def wandb_finish(wandb_run) -> None:
@@ -931,7 +934,6 @@ def compute_value_metrics(values: Sequence[float], rewards: Sequence[float], gro
     return metrics
 
 
-@torch.inference_mode()
 def evaluate_critic(critic, dataloader: DataLoader, *, device: torch.device, max_examples: int | None = None) -> dict[str, Any]:
     critic.eval()
     values: list[float] = []
@@ -943,7 +945,11 @@ def evaluate_critic(critic, dataloader: DataLoader, *, device: torch.device, max
 
     for batch in tqdm(dataloader, desc="eval", leave=False):
         batch = batch_to_device(batch, device)
-        batch_values = critic_last_token_values_trainable(critic, batch["input_ids"], batch["attention_mask"])
+        # Use no_grad rather than inference_mode. FSDP can fail on the next
+        # training forward after parameters were materialized under
+        # inference_mode, because its post-backward hook expects grad_fn access.
+        with torch.no_grad():
+            batch_values = critic_last_token_values_trainable(critic, batch["input_ids"], batch["attention_mask"])
         batch_values_list = batch_values.detach().cpu().float().tolist()
         batch_rewards = batch["target_reward"].detach().cpu().float().tolist()
         for value, reward, group_id, collector_value in zip(
