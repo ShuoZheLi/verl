@@ -483,6 +483,19 @@ def barrier(distributed: DistributedContext) -> None:
         dist.barrier()
 
 
+def assert_finite_tensor(name: str, tensor: torch.Tensor, *, step: int, distributed: DistributedContext) -> None:
+    tensor_detached = tensor.detach()
+    if torch.isfinite(tensor_detached).all().item():
+        return
+    finite_mask = torch.isfinite(tensor_detached)
+    finite_values = tensor_detached[finite_mask].float()
+    if finite_values.numel() > 0:
+        details = f"finite_min={finite_values.min().item():.6g} finite_max={finite_values.max().item():.6g}"
+    else:
+        details = "no finite values"
+    raise FloatingPointError(f"Non-finite {name} at step={step}, rank={distributed.rank}: {details}.")
+
+
 def reduce_loss_dict_for_logging(loss_dict: dict[str, Any], distributed: DistributedContext) -> dict[str, Any]:
     if not distributed.enabled:
         return loss_dict
@@ -680,22 +693,39 @@ def wrap_with_fsdp_if_needed(
     )
 
 
-def assert_finite_tensor(name: str, tensor: torch.Tensor, *, step: int, distributed: DistributedContext) -> None:
-    if torch.isfinite(tensor.detach()).all().item():
-        return
-    finite_mask = torch.isfinite(tensor.detach())
-    finite_values = tensor.detach()[finite_mask].float()
-    if finite_values.numel() > 0:
-        details = f"finite_min={finite_values.min().item():.6g} finite_max={finite_values.max().item():.6g}"
-    else:
-        details = "no finite values"
-    raise FloatingPointError(f"Non-finite {name} on rank {distributed.rank} at step {step}: {details}")
-
-
 def clip_grad_norm(model: torch.nn.Module, max_norm: float) -> torch.Tensor:
     if isinstance(model, FSDP):
         return model.clip_grad_norm_(max_norm)
-    return torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm, error_if_nonfinite=True)
+    return torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+
+
+def finite_grad_norm_value(grad_norm: torch.Tensor | float, *, device: torch.device) -> torch.Tensor:
+    if torch.is_tensor(grad_norm):
+        return grad_norm.detach().to(device=device, dtype=torch.float32)
+    return torch.tensor(float(grad_norm), device=device, dtype=torch.float32)
+
+
+def log_non_finite_grad_skip(
+    *,
+    output_dir: Path,
+    step: int,
+    epoch: int,
+    grad_norm: torch.Tensor,
+    distributed: DistributedContext,
+) -> None:
+    if not distributed.is_main_process:
+        return
+    append_jsonl(
+        output_dir / "train_log.jsonl",
+        {
+            "step": int(step),
+            "epoch": int(epoch),
+            "skipped_optimizer_step": True,
+            "reason": "non_finite_grad_norm",
+            "grad_norm": float(grad_norm.detach().cpu().item()),
+            "world_size": distributed.world_size,
+        },
+    )
 
 
 def collate_candidates(examples: Sequence[CandidateExample], *, pad_token_id: int) -> dict[str, Any]:
@@ -1383,7 +1413,18 @@ def main() -> None:
                     if parameter.grad is not None:
                         parameter.grad.div_(float(gradient_accumulated_batches))
                 grad_norm = clip_grad_norm(critic, 1.0)
-                assert_finite_tensor("gradient norm", torch.as_tensor(grad_norm, device=device), step=global_step + 1, distributed=distributed)
+                grad_norm_value = finite_grad_norm_value(grad_norm, device=device)
+                if not torch.isfinite(grad_norm_value).item():
+                    log_non_finite_grad_skip(
+                        output_dir=output_dir,
+                        step=global_step + 1,
+                        epoch=epoch,
+                        grad_norm=grad_norm_value,
+                        distributed=distributed,
+                    )
+                    optimizer.zero_grad(set_to_none=True)
+                    gradient_accumulated_batches = 0
+                    continue
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 gradient_accumulated_batches = 0
@@ -1464,7 +1505,19 @@ def main() -> None:
                     if parameter.grad is not None:
                         parameter.grad.div_(float(gradient_accumulated_batches))
                 grad_norm = clip_grad_norm(critic, 1.0)
-                assert_finite_tensor("gradient norm", torch.as_tensor(grad_norm, device=device), step=global_step + 1, distributed=distributed)
+                grad_norm_value = finite_grad_norm_value(grad_norm, device=device)
+                if not torch.isfinite(grad_norm_value).item():
+                    log_non_finite_grad_skip(
+                        output_dir=output_dir,
+                        step=global_step + 1,
+                        epoch=epoch,
+                        grad_norm=grad_norm_value,
+                        distributed=distributed,
+                    )
+                    optimizer.zero_grad(set_to_none=True)
+                    gradient_accumulated_batches = 0
+                    global_step += 1
+                    continue
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 gradient_accumulated_batches = 0
