@@ -705,6 +705,34 @@ def finite_grad_norm_value(grad_norm: torch.Tensor | float, *, device: torch.dev
     return torch.tensor(float(grad_norm), device=device, dtype=torch.float32)
 
 
+def summarize_non_finite_gradients(model: torch.nn.Module, *, max_items: int = 8) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for name, parameter in model.named_parameters():
+        grad = parameter.grad
+        if grad is None:
+            continue
+        grad_detached = grad.detach()
+        finite_mask = torch.isfinite(grad_detached)
+        if finite_mask.all().item():
+            continue
+        finite_values = grad_detached[finite_mask].float()
+        summaries.append(
+            {
+                "name": name,
+                "shape": list(grad_detached.shape),
+                "dtype": str(grad_detached.dtype),
+                "numel": int(grad_detached.numel()),
+                "num_nan": int(torch.isnan(grad_detached).sum().item()),
+                "num_posinf": int(torch.isposinf(grad_detached).sum().item()),
+                "num_neginf": int(torch.isneginf(grad_detached).sum().item()),
+                "finite_abs_max": None if finite_values.numel() == 0 else float(finite_values.abs().max().item()),
+            }
+        )
+        if len(summaries) >= int(max_items):
+            break
+    return summaries
+
+
 def log_non_finite_grad_skip(
     *,
     output_dir: Path,
@@ -712,20 +740,21 @@ def log_non_finite_grad_skip(
     epoch: int,
     grad_norm: torch.Tensor,
     distributed: DistributedContext,
+    model: torch.nn.Module | None = None,
 ) -> None:
     if not distributed.is_main_process:
         return
-    append_jsonl(
-        output_dir / "train_log.jsonl",
-        {
-            "step": int(step),
-            "epoch": int(epoch),
-            "skipped_optimizer_step": True,
-            "reason": "non_finite_grad_norm",
-            "grad_norm": float(grad_norm.detach().cpu().item()),
-            "world_size": distributed.world_size,
-        },
-    )
+    row: dict[str, Any] = {
+        "step": int(step),
+        "epoch": int(epoch),
+        "skipped_optimizer_step": True,
+        "reason": "non_finite_grad_norm",
+        "grad_norm": float(grad_norm.detach().cpu().item()),
+        "world_size": distributed.world_size,
+    }
+    if model is not None:
+        row["non_finite_gradients"] = summarize_non_finite_gradients(model)
+    append_jsonl(output_dir / "train_log.jsonl", row)
 
 
 def collate_candidates(examples: Sequence[CandidateExample], *, pad_token_id: int) -> dict[str, Any]:
@@ -1421,6 +1450,7 @@ def main() -> None:
                         epoch=epoch,
                         grad_norm=grad_norm_value,
                         distributed=distributed,
+                        model=critic,
                     )
                     optimizer.zero_grad(set_to_none=True)
                     gradient_accumulated_batches = 0
@@ -1515,6 +1545,7 @@ def main() -> None:
                         epoch=epoch,
                         grad_norm=grad_norm_value,
                         distributed=distributed,
+                        model=critic,
                     )
                     optimizer.zero_grad(set_to_none=True)
                     gradient_accumulated_batches = 0
