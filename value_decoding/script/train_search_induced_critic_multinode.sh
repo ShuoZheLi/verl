@@ -54,8 +54,9 @@ SCRATCH_ROOT="${SCRATCH}/value_decoding_runs"
 RUN_DIR="${SCRATCH_ROOT}/${RUN_ID}"
 OUTPUT_DIR="${RUN_DIR}/search_induced_critic_training"
 LOG_DIR="${RUN_DIR}/logs"
+CHECKPOINT_DIR="${OUTPUT_DIR}/checkpoints"
 
-mkdir -p "$OUTPUT_DIR" "$LOG_DIR" "$ARCHIVE_ROOT"
+mkdir -p "$OUTPUT_DIR" "$LOG_DIR" "$CHECKPOINT_DIR" "$ARCHIVE_ROOT"
 
 # Optional override directory for HF config/tokenizer metadata used during FSDP merge.
 CRITIC_HF_SOURCE_DIR=""
@@ -132,6 +133,8 @@ sync_to_work() {
   rsync -a \
     --exclude='merged_hf/' \
     --exclude='merged_hf/***' \
+    --exclude='search_induced_critic_training/checkpoints/' \
+    --exclude='search_induced_critic_training/checkpoints/***' \
     "$RUN_DIR"/ "$ARCHIVE_DIR"/ || true
   echo "Archived run to: $ARCHIVE_DIR"
 }
@@ -225,6 +228,7 @@ nvidia-smi || true
 
 echo "Run ID: $RUN_ID"
 echo "Output dir: $OUTPUT_DIR"
+echo "Checkpoint dir on SCRATCH: $CHECKPOINT_DIR"
 echo "Archive dir: $ARCHIVE_DIR"
 echo "Initial critic checkpoint: $INIT_CRITIC_CHECKPOINT_DIR"
 echo "Train data: $TRAIN_DATA_PATH"
@@ -319,4 +323,5 @@ srun --nodes="${SLURM_NNODES}" --ntasks="$NUM_TRAIN_TASKS" "${SRUN_GPU_ARGS[@]}"
 
 echo "Search-induced critic training finished successfully."
 echo "Output: $OUTPUT_DIR"
+echo "Checkpoints on SCRATCH: $CHECKPOINT_DIR"
 echo "Archive: $ARCHIVE_DIR"
