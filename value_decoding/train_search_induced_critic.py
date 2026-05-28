@@ -733,6 +733,21 @@ def summarize_non_finite_gradients(model: torch.nn.Module, *, max_items: int = 8
     return summaries
 
 
+def summarize_batch_for_debug(batch: dict[str, Any]) -> dict[str, Any]:
+    sequence_lengths = batch["attention_mask"].detach().sum(dim=1).cpu().tolist()
+    targets = batch["target_reward"].detach().cpu().float().tolist()
+    return {
+        "batch_size": int(len(sequence_lengths)),
+        "seq_len_min": int(min(sequence_lengths)) if sequence_lengths else 0,
+        "seq_len_max": int(max(sequence_lengths)) if sequence_lengths else 0,
+        "seq_len_mean": float(sum(sequence_lengths) / len(sequence_lengths)) if sequence_lengths else 0.0,
+        "target_min": float(min(targets)) if targets else None,
+        "target_max": float(max(targets)) if targets else None,
+        "target_mean": float(sum(targets) / len(targets)) if targets else None,
+        "candidate_group_id_sample": [str(group_id) for group_id in batch.get("candidate_group_id", [])[:8]],
+    }
+
+
 def log_non_finite_grad_skip(
     *,
     output_dir: Path,
@@ -741,6 +756,7 @@ def log_non_finite_grad_skip(
     grad_norm: torch.Tensor,
     distributed: DistributedContext,
     model: torch.nn.Module | None = None,
+    batch: dict[str, Any] | None = None,
 ) -> None:
     if not distributed.is_main_process:
         return
@@ -754,6 +770,8 @@ def log_non_finite_grad_skip(
     }
     if model is not None:
         row["non_finite_gradients"] = summarize_non_finite_gradients(model)
+    if batch is not None:
+        row["batch_debug"] = summarize_batch_for_debug(batch)
     append_jsonl(output_dir / "train_log.jsonl", row)
 
 
@@ -1452,6 +1470,7 @@ def main() -> None:
                         grad_norm=grad_norm_value,
                         distributed=distributed,
                         model=critic,
+                        batch=batch,
                     )
                     optimizer.zero_grad(set_to_none=True)
                     gradient_accumulated_batches = 0
@@ -1547,6 +1566,7 @@ def main() -> None:
                         grad_norm=grad_norm_value,
                         distributed=distributed,
                         model=critic,
+                        batch=batch,
                     )
                     optimizer.zero_grad(set_to_none=True)
                     gradient_accumulated_batches = 0
