@@ -1276,7 +1276,6 @@ def run_eval_and_log(
 
 def main() -> None:
     args = parse_args()
-    args.max_seq_length = 1024
     if args.batch_size <= 0:
         raise ValueError("--batch_size must be positive")
     if args.grad_accum_steps <= 0:
