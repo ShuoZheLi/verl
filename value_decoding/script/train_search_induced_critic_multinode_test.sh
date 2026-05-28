@@ -67,13 +67,13 @@ MERGED_ROOT="${RUN_DIR}/merged_hf"
 LOSS_TYPE="hybrid"              # mse, bce, pairwise, hybrid
 RANK_LOSS_WEIGHT=0.1
 BATCH_SAMPLING_MODE="mixed"     # uniform, prompt_balanced, rankable_prioritized, mixed
-BATCH_SIZE=64
+BATCH_SIZE=32
 EVAL_BATCH_SIZE=64
 GRAD_ACCUM_STEPS=1
 NUM_TRAIN_EPOCHS=4
 LR="1e-6"
 WEIGHT_DECAY="0.0"
-ADAM_EPS="1e-5"
+ADAM_EPS="1e-4"
 MAX_SEQ_LENGTH=2048
 TRAINABLE_SCOPE="all"   # all, value_head. Full finetune of this critic OOMs on one GH200.
 GRADIENT_CHECKPOINTING=1        # set 1 if TRAINABLE_SCOPE="all" and memory is tight.
