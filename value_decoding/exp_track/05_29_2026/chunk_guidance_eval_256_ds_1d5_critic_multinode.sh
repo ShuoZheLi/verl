@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=chunk_guidance_eval_7b_low_ent_trained_critic
 #SBATCH --account=ECS26006
-#SBATCH --partition=gh-dev
+#SBATCH --partition=gh
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=00:20:00
+#SBATCH --time=07:00:00
 #SBATCH --output=slurm-%j_chunk_guidance_eval_7b_low_ent_trained_critic.out
 #SBATCH --error=slurm-%j_chunk_guidance_eval_7b_low_ent_trained_critic.err
 
