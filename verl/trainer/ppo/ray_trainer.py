@@ -424,6 +424,33 @@ def compute_advantage(
                 config.pf_ppo.get("reweight_method"),
                 config.pf_ppo.get("weight_pow"),
             )
+    elif adv_estimator == AdvantageEstimator.TOKEN_SUCCESS_BCE:
+        if "values" not in data.batch:
+            raise ValueError(
+                f"algorithm.adv_estimator={adv_estimator.value} requires critic values. "
+                "Ensure the critic worker is enabled and values were computed before advantage calculation."
+            )
+        advantages, returns = core_algos.compute_token_success_bce_advantage_return(
+            token_level_rewards=data.batch["token_level_rewards"],
+            values=data.batch["values"],
+            response_mask=data.batch["response_mask"],
+            gamma=gamma,
+            lam=actor_lam,
+            config=config,
+        )
+        data.batch["advantages"] = advantages
+        data.batch["returns"] = returns
+        data.batch["rollout_returns"] = core_algos.compute_outcome_rollout_returns(
+            token_level_rewards=data.batch["token_level_rewards"],
+            response_mask=data.batch["response_mask"],
+            gamma=gamma,
+        )
+        if config.get("use_pf_ppo", False) and valid_sample_mask.any():
+            data = core_algos.compute_pf_ppo_reweight_data(
+                data,
+                config.pf_ppo.get("reweight_method"),
+                config.pf_ppo.get("weight_pow"),
+            )
     elif adv_estimator in (
         AdvantageEstimator.PROMPT_RESIDUAL_BASELINE,
         AdvantageEstimator.PROMPT_RESIDUAL_BASELINE_RAMP,
@@ -1241,6 +1268,8 @@ class RayPPOTrainer:
                 critic_cfg.value_loss_mode = "prompt_baseline_regression"
             elif self.config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_BCE:
                 critic_cfg.value_loss_mode = "prompt_baseline_bce"
+            elif self.config.algorithm.adv_estimator == AdvantageEstimator.TOKEN_SUCCESS_BCE:
+                critic_cfg.value_loss_mode = "token_success_bce"
             elif self.config.algorithm.adv_estimator in (
                 AdvantageEstimator.PROMPT_RESIDUAL_BASELINE,
                 AdvantageEstimator.PROMPT_RESIDUAL_BASELINE_RAMP,
@@ -1645,7 +1674,10 @@ class RayPPOTrainer:
             values = DataProto.from_tensordict(values)
         else:
             values = self.critic_wg.compute_values(batch)
-        if self.config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_BCE:
+        if self.config.algorithm.adv_estimator in (
+            AdvantageEstimator.PROMPT_BASELINE_BCE,
+            AdvantageEstimator.TOKEN_SUCCESS_BCE,
+        ):
             response_mask = batch.batch.get("response_mask")
             if response_mask is None:
                 response_mask = compute_response_mask(batch)

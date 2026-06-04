@@ -27,6 +27,7 @@ def need_critic(config: DictConfig) -> bool:
         AdvantageEstimator.PROMPT_BASELINE,
         AdvantageEstimator.PROMPT_BASELINE_REGRESSION,
         AdvantageEstimator.PROMPT_BASELINE_BCE,
+        AdvantageEstimator.TOKEN_SUCCESS_BCE,
     ]:
         return True
     elif config.algorithm.adv_estimator in [

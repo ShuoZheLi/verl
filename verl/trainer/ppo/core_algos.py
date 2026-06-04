@@ -114,6 +114,7 @@ class AdvantageEstimator(str, Enum):
     REVERSE_DECAY_GAE = "reverse_decay_gae"
     PROMPT_BASELINE = "prompt_baseline"
     PROMPT_BASELINE_BCE = "prompt_baseline_bce"
+    TOKEN_SUCCESS_BCE = "token_success_bce"
     PROMPT_BASELINE_REGRESSION = "prompt_baseline_regression"
     PROMPT_RESIDUAL_BASELINE = "prompt_residual_baseline"
     PROMPT_RESIDUAL_BASELINE_RAMP = "prompt_residual_baseline_ramp"
@@ -508,6 +509,47 @@ def compute_prompt_baseline_advantage_return(
 
         prompt_baseline = values[:, :1]
         advantages = (returns - prompt_baseline) * response_mask
+        advantages = verl_F.masked_whiten(advantages, response_mask)
+        advantages = advantages * response_mask
+
+    return advantages, returns
+
+
+def compute_token_success_bce_advantage_return(
+    token_level_rewards: torch.Tensor,
+    values: torch.Tensor,
+    response_mask: torch.Tensor,
+    gamma: float,
+    config: Optional[AlgoConfig] = None,
+    **kwargs,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compute reward-to-go advantages using a prefix-conditioned success-probability baseline."""
+    del config
+    lam = kwargs.get("lam", 1.0)
+    if lam != 1.0:
+        raise ValueError("token_success_bce requires lam=1.0 because it uses reward-to-go minus token-wise baselines.")
+    if values is None:
+        raise ValueError("token_success_bce requires critic values so it can read token-wise success baselines.")
+    if values.shape != token_level_rewards.shape:
+        raise ValueError(
+            "token_success_bce requires values and token_level_rewards to have identical shapes, "
+            f"got {values.shape=} and {token_level_rewards.shape=}."
+        )
+
+    with torch.no_grad():
+        returns = torch.zeros_like(token_level_rewards)
+        running_return = torch.zeros(
+            token_level_rewards.size(0),
+            dtype=token_level_rewards.dtype,
+            device=token_level_rewards.device,
+        )
+
+        for t in reversed(range(token_level_rewards.shape[1])):
+            running_return = token_level_rewards[:, t] + gamma * running_return
+            returns[:, t] = running_return
+            running_return = running_return * response_mask[:, t]
+
+        advantages = (returns - values) * response_mask
         advantages = verl_F.masked_whiten(advantages, response_mask)
         advantages = advantages * response_mask
 
@@ -2482,6 +2524,64 @@ def compute_prompt_residual_regression_value_loss(
         "critic/residual_loss": residual_loss,
     }
     return vf_loss, vf_clipfrac, combined_vpreds, metrics
+
+
+def compute_token_success_bce_value_loss(
+    vpred_logits: torch.Tensor,
+    returns: torch.Tensor,
+    values: torch.Tensor,
+    response_mask: torch.Tensor,
+    cliprange_value: float,
+    loss_agg_mode: str = "token-mean",
+):
+    """Train every response-token critic output as a prefix-conditioned Bernoulli success probability."""
+    eps = 1e-6
+    vpred_logits = vpred_logits.float()
+    response_mask = response_mask.to(dtype=torch.bool)
+    token_old_probs = values.float()
+    if vpred_logits.shape != values.shape or vpred_logits.shape != returns.shape or vpred_logits.shape != response_mask.shape:
+        raise ValueError(
+            "token_success_bce expects vpred_logits, values, returns, and response_mask to have identical shapes, "
+            f"got {tuple(vpred_logits.shape)}, {tuple(values.shape)}, {tuple(returns.shape)}, "
+            f"and {tuple(response_mask.shape)}."
+        )
+    token_targets = returns[:, :1].float().expand_as(vpred_logits)
+
+    valid_targets = token_targets[response_mask]
+    if valid_targets.numel() > 0 and (torch.any(valid_targets < -eps) or torch.any(valid_targets > 1.0 + eps)):
+        raise ValueError(
+            "token_success_bce requires trajectory-level targets in [0, 1]. "
+            f"Got target range [{valid_targets.min().item():.6f}, {valid_targets.max().item():.6f}]."
+        )
+    valid_old_probs = token_old_probs[response_mask]
+    if valid_old_probs.numel() > 0 and (torch.any(valid_old_probs < -eps) or torch.any(valid_old_probs > 1.0 + eps)):
+        raise ValueError(
+            "token_success_bce expects stored critic values to already be success probabilities in [0, 1]. "
+            f"Got value range [{valid_old_probs.min().item():.6f}, {valid_old_probs.max().item():.6f}]."
+        )
+
+    token_targets = token_targets.clamp(0.0, 1.0)
+    token_old_probs = token_old_probs.clamp(eps, 1.0 - eps)
+    token_probs = torch.sigmoid(vpred_logits)
+    token_probs_safe = token_probs.clamp(eps, 1.0 - eps)
+    token_probs_clipped = verl_F.clip_by_value(
+        token_probs_safe,
+        token_old_probs - cliprange_value,
+        token_old_probs + cliprange_value,
+    ).clamp(eps, 1.0 - eps)
+
+    vf_losses1 = torch_F.binary_cross_entropy_with_logits(vpred_logits, token_targets, reduction="none")
+    vf_losses2 = torch_F.binary_cross_entropy(token_probs_clipped, token_targets, reduction="none")
+    clipped_vf_losses = torch.max(vf_losses1, vf_losses2)
+
+    vf_loss = agg_loss(loss_mat=clipped_vf_losses, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
+    vf_clipfrac = verl_F.masked_mean(torch.gt(vf_losses2, vf_losses1).float(), response_mask)
+    vpreds = token_probs * response_mask.to(token_probs.dtype)
+    metrics = {
+        "critic/token_success_prob_mean": verl_F.masked_mean(token_probs, response_mask),
+        "critic/token_success_target_mean": verl_F.masked_mean(token_targets, response_mask),
+    }
+    return vf_loss, vf_clipfrac, vpreds, metrics
 
 
 def compute_prompt_baseline_bce_value_loss(

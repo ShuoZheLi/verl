@@ -30,6 +30,8 @@ from verl.trainer.ppo.core_algos import (
     compute_prompt_baseline_advantage_return,
     compute_prompt_baseline_regression_value_loss,
     compute_prompt_residual_advantage_return,
+    compute_token_success_bce_advantage_return,
+    compute_token_success_bce_value_loss,
     compute_prompt_residual_regression_value_loss,
     compute_reverse_decay_gae_advantage_return,
     compute_grpo_vectorized_outcome_advantage,
@@ -703,6 +705,36 @@ def test_compute_advantage_prompt_baseline_bce_matches_prompt_baseline_core_algo
     torch.testing.assert_close(output.batch["advantages"], expected_advantages)
 
 
+def test_compute_advantage_token_success_bce_uses_token_wise_baseline():
+    data = DataProto.from_single_dict(
+        {
+            "token_level_rewards": torch.tensor([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=torch.float32),
+            "response_mask": torch.tensor([[1, 1, 0], [1, 1, 1]], dtype=torch.float32),
+            "values": torch.tensor([[0.2, 0.8, 0.0], [0.6, 0.4, 0.1]], dtype=torch.float32),
+        }
+    )
+
+    output = compute_advantage(
+        data,
+        adv_estimator=AdvantageEstimator.TOKEN_SUCCESS_BCE,
+        gamma=1.0,
+        lam=1.0,
+        config=AlgoConfig(adv_estimator="token_success_bce"),
+    )
+
+    expected_advantages, expected_returns = compute_token_success_bce_advantage_return(
+        token_level_rewards=data.batch["token_level_rewards"],
+        values=data.batch["values"],
+        response_mask=data.batch["response_mask"],
+        gamma=1.0,
+        lam=1.0,
+    )
+
+    torch.testing.assert_close(output.batch["advantages"], expected_advantages)
+    torch.testing.assert_close(output.batch["returns"], expected_returns)
+    torch.testing.assert_close(output.batch["rollout_returns"], torch.tensor([1.0, 1.0]))
+
+
 def test_compute_advantage_prompt_baseline_regression_matches_prompt_baseline_core_algo():
     data = DataProto.from_single_dict(
         {
@@ -849,6 +881,45 @@ def test_prompt_baseline_bce_value_loss_uses_prompt_end_logit_only():
     torch.testing.assert_close(metrics_b["critic/prompt_success_prob_mean"], torch.tensor(0.55))
     torch.testing.assert_close(vf_clipfrac_a, torch.tensor(0.0))
     torch.testing.assert_close(vf_clipfrac_b, torch.tensor(0.0))
+
+
+def test_token_success_bce_value_loss_uses_every_valid_response_token():
+    vpred_logits_a = torch.logit(torch.tensor([[0.8, 0.1, 0.7], [0.3, 0.4, 0.9]], dtype=torch.float32))
+    vpred_logits_b = torch.logit(torch.tensor([[0.8, 0.9, 0.2], [0.3, 0.6, 0.1]], dtype=torch.float32))
+    old_values = torch.full((2, 3), 0.5, dtype=torch.float32)
+    returns = torch.tensor([[1.0, 1.0, 0.0], [0.0, 0.0, 0.0]], dtype=torch.float32)
+    response_mask = torch.tensor([[1, 1, 0], [1, 1, 1]], dtype=torch.float32)
+
+    vf_loss_a, vf_clipfrac_a, vpreds_a, metrics_a = compute_token_success_bce_value_loss(
+        vpred_logits=vpred_logits_a,
+        returns=returns,
+        values=old_values,
+        response_mask=response_mask,
+        cliprange_value=10.0,
+    )
+    vf_loss_b, _, vpreds_b, metrics_b = compute_token_success_bce_value_loss(
+        vpred_logits=vpred_logits_b,
+        returns=returns,
+        values=old_values,
+        response_mask=response_mask,
+        cliprange_value=10.0,
+    )
+
+    expected_probs = torch.tensor([[0.8, 0.1, 0.7], [0.3, 0.4, 0.9]], dtype=torch.float32)
+    expected_targets = torch.tensor([[1.0, 1.0, 1.0], [0.0, 0.0, 0.0]], dtype=torch.float32)
+    expected_loss = torch.nn.functional.binary_cross_entropy(
+        expected_probs[response_mask.bool()],
+        expected_targets[response_mask.bool()],
+        reduction="mean",
+    )
+
+    torch.testing.assert_close(vf_loss_a, expected_loss)
+    assert not torch.isclose(vf_loss_a, vf_loss_b)
+    torch.testing.assert_close(vpreds_a, expected_probs * response_mask)
+    torch.testing.assert_close(vpreds_b, torch.tensor([[0.8, 0.9, 0.0], [0.3, 0.6, 0.1]]))
+    torch.testing.assert_close(metrics_a["critic/token_success_prob_mean"], torch.tensor(0.5))
+    torch.testing.assert_close(metrics_b["critic/token_success_prob_mean"], torch.tensor(0.54))
+    assert 0.0 <= vf_clipfrac_a.item() <= 1.0
 
 
 def test_prompt_baseline_regression_value_loss_uses_prompt_end_value_only():

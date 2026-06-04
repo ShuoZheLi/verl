@@ -9,13 +9,13 @@ set -eo pipefail
 
 # --- Checkpoints --------------------------------------------------------------
 ACTOR_CHECKPOINT_DIR="/data/shuozhe/verl/train_log/job_05b_vh_init_e5_metamath/global_step_800"
-CRITIC_CHECKPOINT_DIR="/data/shuozhe/verl/train_log/job_policy_gs800_dsk_1d5b_critic/global_step_750"
+CRITIC_CHECKPOINT_DIR="/data/shuozhe/verl/exp_track/05_29_2026/outputs/search_induced_critic_mc_training_local_4gpu/search_induced_critic_mc_training_local_4gpu_20260529_035915/search_induced_critic_mc_training/checkpoints/step_030840"
 ACTOR_HF_SOURCE_DIR=""
 CRITIC_HF_SOURCE_DIR=""
 
 # --- Data ---------------------------------------------------------------------
 DATASET_PATH="/data/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet"
-OUTPUT_DIR="/data/shuozhe/verl/value_decoding/output/chunk_guidance_eval_512_1024_ds_1d5_critic"
+OUTPUT_DIR="/data/shuozhe/verl/exp_track/05_31_2026/outputs/chunk_guidance_eval_256_mc_trained_critic"
 PROMPT_KEY="prompt"
 RESPONSE_KEY=""            # Leave empty if unused
 START_INDEX=0
@@ -46,7 +46,7 @@ ACTOR_TOP_P=1.0
 ACTOR_TOP_K=0
 
 # --- Chunk Grid ---------------------------------------------------------------
-CHUNK_SIZES="128"
+CHUNK_SIZES="256"
 NUM_CHUNK_CANDIDATES_VALUES="8"
 BETAS="0"
 VALUE_REDUCERS="end"       # Add "mean" for the ablation.

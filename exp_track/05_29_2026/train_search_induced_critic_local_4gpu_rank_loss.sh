@@ -25,7 +25,7 @@ mkdir -p "$HF_HOME" "$TIKTOKEN_ENCODINGS_BASE"
 # -----------------------------
 # Run identity and paths
 # -----------------------------
-RUN_NAME="${RUN_NAME:-search_induced_critic_training_local_4gpu}"
+RUN_NAME="${RUN_NAME:-search_induced_critic_training_rank_loss_1}"
 RUN_ID="${RUN_ID:-${RUN_NAME}_$(date +%Y%m%d_%H%M%S)}"
 
 INIT_CRITIC_CHECKPOINT_DIR="${INIT_CRITIC_CHECKPOINT_DIR:-/data/shuozhe/verl/train_log/job_05b_vh_init_e5_metamath/global_step_800}"
@@ -64,7 +64,7 @@ CRITIC_HF_SOURCE_DIR="${CRITIC_HF_SOURCE_DIR:-}"
 # Training config
 # -----------------------------
 LOSS_TYPE="${LOSS_TYPE:-hybrid}"              # mse, bce, pairwise, hybrid
-RANK_LOSS_WEIGHT="${RANK_LOSS_WEIGHT:-0.1}"
+RANK_LOSS_WEIGHT="${RANK_LOSS_WEIGHT:-1}"
 BATCH_SAMPLING_MODE="${BATCH_SAMPLING_MODE:-mixed}"     # uniform, prompt_balanced, rankable_prioritized, mixed
 BATCH_SIZE="${BATCH_SIZE:-32}"                # per GPU/rank; effective batch = BATCH_SIZE * GRAD_ACCUM_STEPS * NUM_LOCAL_GPUS
 EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-64}"

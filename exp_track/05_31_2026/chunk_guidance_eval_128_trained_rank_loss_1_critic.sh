@@ -9,13 +9,13 @@ set -eo pipefail
 
 # --- Checkpoints --------------------------------------------------------------
 ACTOR_CHECKPOINT_DIR="/data/shuozhe/verl/train_log/job_05b_vh_init_e5_metamath/global_step_800"
-CRITIC_CHECKPOINT_DIR="/data/shuozhe/verl/train_log/job_policy_gs800_dsk_1d5b_critic/global_step_750"
+CRITIC_CHECKPOINT_DIR="/data/shuozhe/verl/exp_track/05_29_2026/outputs/search_induced_critic_training_rank_loss_1/search_induced_critic_training_rank_loss_1_20260529_030323/search_induced_critic_training/checkpoints/step_018500"
 ACTOR_HF_SOURCE_DIR=""
 CRITIC_HF_SOURCE_DIR=""
 
 # --- Data ---------------------------------------------------------------------
 DATASET_PATH="/data/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet"
-OUTPUT_DIR="/data/shuozhe/verl/value_decoding/output/chunk_guidance_eval_512_1024_ds_1d5_critic"
+OUTPUT_DIR="/data/shuozhe/verl/exp_track/05_31_2026/outputs/chunk_guidance_eval_128_trained_rank_loss_1_critic"
 PROMPT_KEY="prompt"
 RESPONSE_KEY=""            # Leave empty if unused
 START_INDEX=0

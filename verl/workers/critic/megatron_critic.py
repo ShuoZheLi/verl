@@ -316,6 +316,20 @@ class MegatronPPOCritic(BasePPOCritic):
                     cliprange_value=cliprange_value,
                     loss_agg_mode=self.config.loss_agg_mode,
                 )
+            elif self.config.value_loss_mode == "token_success_bce":
+                if self.value_spec.is_categorical():
+                    raise ValueError("critic.value_loss_mode=token_success_bce requires critic.value_head_type=scalar.")
+                values = data["values"]
+                returns = data["returns"]
+                vpreds = None
+                vf_loss, vf_clipfrac, vpreds, categorical_metrics = core_algos.compute_token_success_bce_value_loss(
+                    vpred_logits=vpreds_or_logits,
+                    values=values,
+                    returns=returns,
+                    response_mask=response_mask,
+                    cliprange_value=cliprange_value,
+                    loss_agg_mode=self.config.loss_agg_mode,
+                )
             elif self.value_spec.is_categorical():
                 values = data["values"]
                 returns = data["returns"]

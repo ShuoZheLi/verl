@@ -255,6 +255,20 @@ def compute_advantage(
             lam=actor_lam,
             config=config,
         )
+    elif adv_estimator == AdvantageEstimator.TOKEN_SUCCESS_BCE:
+        if "values" not in data.batch:
+            raise ValueError(
+                f"algorithm.adv_estimator={adv_estimator.value} requires critic values. "
+                "Ensure the critic worker is enabled and values were computed before advantage calculation."
+            )
+        advantages, returns = core_algos.compute_token_success_bce_advantage_return(
+            token_level_rewards=data.batch["token_level_rewards"],
+            values=data.batch["values"],
+            response_mask=data.batch["response_mask"],
+            gamma=gamma,
+            lam=actor_lam,
+            config=config,
+        )
     elif adv_estimator == AdvantageEstimator.ZERO_CRITIC:
         if actor_lam != 1.0 or critic_lam != 1.0:
             raise ValueError(
@@ -816,6 +830,8 @@ class RayPPOTrainer:
                 critic_cfg.value_loss_mode = "prompt_baseline_regression"
             elif self.config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_BCE:
                 critic_cfg.value_loss_mode = "prompt_baseline_bce"
+            elif self.config.algorithm.adv_estimator == AdvantageEstimator.TOKEN_SUCCESS_BCE:
+                critic_cfg.value_loss_mode = "token_success_bce"
             critic_cls = RayClassWithInitArgs(cls=self.role_worker_mapping[Role.Critic], config=critic_cfg)
             self.resource_pool_to_cls[resource_pool]["critic"] = critic_cls
 
@@ -1411,7 +1427,10 @@ class RayPPOTrainer:
                     if self.use_critic:
                         with marked_timer("values", timing_raw, color="cyan"):
                             values_meta = self.critic_wg.compute_values(batch_meta)
-                            if self.config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_BCE:
+                            if self.config.algorithm.adv_estimator in (
+                                AdvantageEstimator.PROMPT_BASELINE_BCE,
+                                AdvantageEstimator.TOKEN_SUCCESS_BCE,
+                            ):
                                 value_transform_meta = batch_meta.union(values_meta).select_fields(["values", "response_mask"])
                                 value_transform_td = self.tq_client.get_data(value_transform_meta)
                                 values_td = TensorDict(
@@ -1492,6 +1511,7 @@ class RayPPOTrainer:
                             AdvantageEstimator.PROMPT_BASELINE,
                             AdvantageEstimator.PROMPT_BASELINE_REGRESSION,
                             AdvantageEstimator.PROMPT_BASELINE_BCE,
+                            AdvantageEstimator.TOKEN_SUCCESS_BCE,
                         ):
                             compute_advantage_fields.append("values")
                         elif self.config.algorithm.adv_estimator == AdvantageEstimator.GRPO:

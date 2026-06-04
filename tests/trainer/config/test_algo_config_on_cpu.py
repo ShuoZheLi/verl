@@ -215,6 +215,16 @@ class TestAlgoConfig(unittest.TestCase):
 
         self.assertTrue(need_critic(config))
 
+    def test_token_success_bce_enables_critic_by_default(self):
+        config = OmegaConf.create(
+            {
+                "algorithm": {"adv_estimator": "token_success_bce"},
+                "critic": {"enable": None},
+            }
+        )
+
+        self.assertTrue(need_critic(config))
+
     def test_chunk_boundary_critic_enables_critic_by_default(self):
         config = OmegaConf.create(
             {
@@ -436,6 +446,40 @@ class TestAlgoConfig(unittest.TestCase):
                 "trainer": {"n_gpus_per_node": 1, "nnodes": 1},
                 "algorithm": {
                     "adv_estimator": "prompt_baseline_bce",
+                    "lam": 1.0,
+                    "gamma": 1.0,
+                    "use_kl_in_reward": True,
+                },
+                "critic": {"value_head_type": "scalar"},
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "does not support algorithm.use_kl_in_reward=True"):
+            validate_config(config, use_reference_policy=False, use_critic=True)
+
+    def test_token_success_bce_validate_config_requires_gamma_one(self):
+        config = OmegaConf.create(
+            {
+                "trainer": {"n_gpus_per_node": 1, "nnodes": 1},
+                "algorithm": {
+                    "adv_estimator": "token_success_bce",
+                    "lam": 1.0,
+                    "gamma": 0.9,
+                    "use_kl_in_reward": False,
+                },
+                "critic": {"value_head_type": "scalar"},
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "algorithm.gamma=1.0"):
+            validate_config(config, use_reference_policy=False, use_critic=True)
+
+    def test_token_success_bce_validate_config_rejects_kl_in_reward(self):
+        config = OmegaConf.create(
+            {
+                "trainer": {"n_gpus_per_node": 1, "nnodes": 1},
+                "algorithm": {
+                    "adv_estimator": "token_success_bce",
                     "lam": 1.0,
                     "gamma": 1.0,
                     "use_kl_in_reward": True,

@@ -1,9 +1,9 @@
 #!/bin/bash
 set -eo pipefail
 
-# Local 4-GPU launcher for search-induced critic training.
+# Local 4-GPU launcher for search-induced MC state-value critic training.
 # Override most knobs by exporting the variable before running this script, e.g.:
-#   MAX_TRAIN_STEPS=2 MAX_EVAL_EXAMPLES=128 USE_WANDB=0 bash value_decoding/script/train_search_induced_critic_local_4gpu.sh
+#   MAX_TRAIN_STEPS=2 MAX_EVAL_EXAMPLES=128 USE_WANDB=0 bash exp_track/05_29_2026/train_search_induced_critic_mc_local_4gpu.sh
 
 # -----------------------------
 # Environment setup
@@ -25,7 +25,7 @@ mkdir -p "$HF_HOME" "$TIKTOKEN_ENCODINGS_BASE"
 # -----------------------------
 # Run identity and paths
 # -----------------------------
-RUN_NAME="${RUN_NAME:-search_induced_critic_training_local_4gpu}"
+RUN_NAME="${RUN_NAME:-search_induced_critic_mc_training_local_4gpu}"
 RUN_ID="${RUN_ID:-${RUN_NAME}_$(date +%Y%m%d_%H%M%S)}"
 
 INIT_CRITIC_CHECKPOINT_DIR="${INIT_CRITIC_CHECKPOINT_DIR:-/data/shuozhe/verl/train_log/job_05b_vh_init_e5_metamath/global_step_800}"
@@ -35,7 +35,7 @@ EVAL_DATA_PATH="${EVAL_DATA_PATH:-/data/shuozhe/verl/value_decoding/local_runs/s
 OUTPUT_ARCHIVE_ROOT="${OUTPUT_ARCHIVE_ROOT:-${WORK_DIR}/exp_track/05_29_2026/outputs}"
 RUN_ROOT="${RUN_ROOT:-${WORK_DIR}/exp_track/05_29_2026/outputs/${RUN_NAME}}"
 RUN_DIR="${RUN_DIR:-${RUN_ROOT}/${RUN_ID}}"
-OUTPUT_DIR="${OUTPUT_DIR:-${RUN_DIR}/search_induced_critic_training}"
+OUTPUT_DIR="${OUTPUT_DIR:-${RUN_DIR}/search_induced_critic_mc_training}"
 LOG_DIR="${RUN_DIR}/logs"
 CHECKPOINT_DIR="${OUTPUT_DIR}/checkpoints"
 MERGED_ROOT="${MERGED_ROOT:-${RUN_DIR}/merged_hf}"
@@ -63,8 +63,7 @@ CRITIC_HF_SOURCE_DIR="${CRITIC_HF_SOURCE_DIR:-}"
 # -----------------------------
 # Training config
 # -----------------------------
-LOSS_TYPE="${LOSS_TYPE:-hybrid}"              # mse, bce, pairwise, hybrid
-RANK_LOSS_WEIGHT="${RANK_LOSS_WEIGHT:-0.1}"
+LOSS_TYPE="${LOSS_TYPE:-mse}"                 # mc trainer supports: mse, bce
 BATCH_SAMPLING_MODE="${BATCH_SAMPLING_MODE:-mixed}"     # uniform, prompt_balanced, rankable_prioritized, mixed
 BATCH_SIZE="${BATCH_SIZE:-32}"                # per GPU/rank; effective batch = BATCH_SIZE * GRAD_ACCUM_STEPS * NUM_LOCAL_GPUS
 EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-64}"
@@ -116,9 +115,9 @@ USE_WANDB="${USE_WANDB:-1}"
 WANDB_PROJECT="${WANDB_PROJECT:-value-decoding-train}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
 WANDB_RUN_NAME="${WANDB_RUN_NAME:-$RUN_ID}"
-WANDB_GROUP="${WANDB_GROUP:-search_induced_critic_local}"
+WANDB_GROUP="${WANDB_GROUP:-search_induced_critic_mc_local}"
 WANDB_MODE="${WANDB_MODE:-online}"       # online, offline, disabled
-WANDB_TAGS=("search_induced" "critic_training" "local_4gpu" "$LOSS_TYPE")
+WANDB_TAGS=("search_induced" "critic_mc_training" "state_value" "local_4gpu" "$LOSS_TYPE")
 
 # Optional expensive end-to-end chunk-guidance eval.
 RUN_END_TO_END_CHUNK_EVAL="${RUN_END_TO_END_CHUNK_EVAL:-0}"
@@ -132,7 +131,7 @@ CHUNK_EVAL_GENERATION_BACKEND="${CHUNK_EVAL_GENERATION_BACKEND:-vllm}"
 # -----------------------------
 # Helpers
 # -----------------------------
-SCRIPT_PATH="${WORK_DIR}/value_decoding/script/$(basename "${BASH_SOURCE[0]}")"
+SCRIPT_PATH="${WORK_DIR}/exp_track/05_29_2026/$(basename "${BASH_SOURCE[0]}")"
 
 sync_to_archive() {
   echo "Syncing run directory to archive..."
@@ -142,8 +141,8 @@ sync_to_archive() {
     --exclude='merged_hf/***' \
     --exclude='cache/' \
     --exclude='cache/***' \
-    --exclude='search_induced_critic_training/checkpoints/' \
-    --exclude='search_induced_critic_training/checkpoints/***' \
+    --exclude='search_induced_critic_mc_training/checkpoints/' \
+    --exclude='search_induced_critic_mc_training/checkpoints/***' \
     "$RUN_DIR"/ "$ARCHIVE_DIR"/ || true
   echo "Archived run to: $ARCHIVE_DIR"
 }
@@ -211,8 +210,9 @@ with path.open("r", encoding="utf-8") as handle:
         if not line.strip():
             continue
         row = json.loads(line)
-        if "mc_reward" not in row:
-            raise SystemExit(f"Missing mc_reward in {path}")
+        missing = [key for key in ("mc_reward", "prompt_text", "prefix_text_before_chunk") if key not in row]
+        if missing:
+            raise SystemExit(f"Missing {', '.join(missing)} in {path}")
         num_rows += 1
         num_rankable += int(bool(row.get("group_has_mixed_rewards", False)))
 print(f"{path}: rows={num_rows}, rows_marked_rankable={num_rankable}")
@@ -244,6 +244,10 @@ if [[ "$NUM_LOCAL_GPUS" -le 0 ]]; then
   echo "NUM_LOCAL_GPUS must be positive, got: $NUM_LOCAL_GPUS" >&2
   exit 1
 fi
+if [[ "$LOSS_TYPE" != "mse" && "$LOSS_TYPE" != "bce" ]]; then
+  echo "MC trainer supports only LOSS_TYPE=mse or LOSS_TYPE=bce, got: $LOSS_TYPE" >&2
+  exit 1
+fi
 if [[ "$DISTRIBUTED_BACKEND" == "fsdp" && "$TRAINABLE_SCOPE" != "all" ]]; then
   echo "DISTRIBUTED_BACKEND=fsdp requires TRAINABLE_SCOPE=all for this trainer." >&2
   exit 1
@@ -260,13 +264,12 @@ validate_jsonl "$EVAL_DATA_PATH"
 archive_submitted_script
 
 CMD=(
-  value_decoding/train_search_induced_critic.py
+  value_decoding/train_search_induced_critic_mc.py
   --init_critic_checkpoint_dir "$INIT_CRITIC_CHECKPOINT_DIR"
   --train_data_path "$TRAIN_DATA_PATH"
   --eval_data_path "$EVAL_DATA_PATH"
   --output_dir "$OUTPUT_DIR"
   --loss_type "$LOSS_TYPE"
-  --rank_loss_weight "$RANK_LOSS_WEIGHT"
   --batch_sampling_mode "$BATCH_SAMPLING_MODE"
   --batch_size "$BATCH_SIZE"
   --eval_batch_size "$EVAL_BATCH_SIZE"
@@ -342,7 +345,7 @@ fi
 
 "${LAUNCH_CMD[@]}" "${CMD[@]}" 2>&1 | tee "${LOG_DIR}/train.log"
 
-echo "Search-induced critic training finished successfully."
+echo "Search-induced MC critic training finished successfully."
 echo "Output: $OUTPUT_DIR"
 echo "Checkpoints: $CHECKPOINT_DIR"
 echo "Archive: $ARCHIVE_DIR"

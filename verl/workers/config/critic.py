@@ -71,7 +71,8 @@ class CriticConfig(BaseConfig):
         value_target_scale_max (float): Raw scalar maximum for affine scaling mode.
         value_target_out_of_range (str): Behavior when scaled targets are outside support.
         value_loss_mode (str): Critic objective variant, e.g. "ppo_regression",
-            "prompt_baseline_regression", "prompt_baseline_bce", or "prompt_residual_regression".
+            "prompt_baseline_regression", "prompt_baseline_bce", "token_success_bce",
+            or "prompt_residual_regression".
         prompt_residual_prompt_loss_weight (float): Weight on the prompt-prior regression term when
             value_loss_mode="prompt_residual_regression".
         prompt_residual_residual_loss_weight (float): Weight on the residual regression term when
@@ -169,6 +170,7 @@ class CriticConfig(BaseConfig):
             "ppo_regression",
             "prompt_baseline_regression",
             "prompt_baseline_bce",
+            "token_success_bce",
             "prompt_residual_regression",
             "chunk_boundary_bce",
             "chunk_boundary_mse",
@@ -176,7 +178,7 @@ class CriticConfig(BaseConfig):
             raise ValueError(
                 "critic.value_loss_mode must be one of "
                 "['ppo_regression', 'prompt_baseline_regression', 'prompt_baseline_bce', "
-                "'prompt_residual_regression', 'chunk_boundary_bce', 'chunk_boundary_mse'], "
+                "'token_success_bce', 'prompt_residual_regression', 'chunk_boundary_bce', 'chunk_boundary_mse'], "
                 f"got {self.value_loss_mode!r}."
             )
         if self.value_loss_mode in {"chunk_boundary_bce", "chunk_boundary_mse"} and self.value_head_type != "scalar":

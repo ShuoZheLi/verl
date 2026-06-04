@@ -612,7 +612,7 @@ class AlgoConfig(BaseConfig):
         critic_lam (Optional[float]): Optional critic-side lambda override used when computing
             value-learning returns. If None, falls back to lam.
         adv_estimator (str): Advantage estimator type: "gae", "reverse_decay_gae",
-            "prompt_baseline", "prompt_baseline_regression", "prompt_baseline_bce",
+            "prompt_baseline", "prompt_baseline_regression", "prompt_baseline_bce", "token_success_bce",
             "prompt_residual_baseline", "prompt_residual_baseline_ramp", "zero_critic",
             "grpo", "reinforce_plus_plus", etc.
         adv_mode (str): Actor-side advantage mode. "token" keeps the existing estimator output,

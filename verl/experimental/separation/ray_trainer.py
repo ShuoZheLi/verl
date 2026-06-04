@@ -146,6 +146,8 @@ class SeparateRayPPOTrainer(RayPPOTrainer):
                 critic_cfg.value_loss_mode = "prompt_baseline_regression"
             elif self.config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_BCE:
                 critic_cfg.value_loss_mode = "prompt_baseline_bce"
+            elif self.config.algorithm.adv_estimator == AdvantageEstimator.TOKEN_SUCCESS_BCE:
+                critic_cfg.value_loss_mode = "token_success_bce"
 
             if self.use_legacy_worker_impl == "disable":
                 # convert critic_cfg into TrainingWorkerConfig

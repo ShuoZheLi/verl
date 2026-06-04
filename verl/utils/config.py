@@ -176,25 +176,25 @@ def validate_config(
                 "algorithm.adv_estimator=prompt_baseline_regression requires critic.value_head_type=scalar "
                 "because the prompt-only regression loss is currently implemented for scalar heads."
             )
-    if config.algorithm.adv_estimator == AdvantageEstimator.PROMPT_BASELINE_BCE:
+    if config.algorithm.adv_estimator in (AdvantageEstimator.PROMPT_BASELINE_BCE, AdvantageEstimator.TOKEN_SUCCESS_BCE):
         if actor_lam != 1.0 or critic_lam != 1.0:
             raise ValueError(
-                "algorithm.adv_estimator=prompt_baseline_bce requires effective actor and critic lambdas = 1.0 "
-                "because it reuses the prompt-baseline reward-to-go estimator."
+                f"algorithm.adv_estimator={config.algorithm.adv_estimator} requires effective actor and critic "
+                "lambdas = 1.0 because it uses reward-to-go minus a success-probability baseline."
             )
         if config.algorithm.gamma != 1.0:
             raise ValueError(
-                "algorithm.adv_estimator=prompt_baseline_bce requires algorithm.gamma=1.0 "
+                f"algorithm.adv_estimator={config.algorithm.adv_estimator} requires algorithm.gamma=1.0 "
                 "so the critic target matches an undiscounted success probability."
             )
         if config.algorithm.use_kl_in_reward:
             raise ValueError(
-                "algorithm.adv_estimator=prompt_baseline_bce does not support algorithm.use_kl_in_reward=True "
-                "because the critic target must stay in [0, 1]."
+                f"algorithm.adv_estimator={config.algorithm.adv_estimator} does not support "
+                "algorithm.use_kl_in_reward=True because the critic target must stay in [0, 1]."
             )
         if config.critic.value_head_type != "scalar":
             raise ValueError(
-                "algorithm.adv_estimator=prompt_baseline_bce requires critic.value_head_type=scalar "
+                f"algorithm.adv_estimator={config.algorithm.adv_estimator} requires critic.value_head_type=scalar "
                 "because it interprets the critic head as a single Bernoulli logit."
             )
     if config.algorithm.adv_estimator in (
