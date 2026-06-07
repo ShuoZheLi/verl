@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=train_simc_critic
-#SBATCH --account=ECS26006
+#SBATCH --job-name=mc_critic_train
+#SBATCH --account=ASC26008
 #SBATCH --partition=gh
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=10:20:00
-#SBATCH --output=slurm-%j_train_search_induced_critic_low_ent_128.out
-#SBATCH --error=slurm-%j_train_search_induced_critic_low_ent_128.err
+#SBATCH --time=06:00:00
+#SBATCH --output=slurm-%j_train_mc_critic_low_ent_128.out
+#SBATCH --error=slurm-%j_train_mc_critic_low_ent_128.err
 
 set -euo pipefail
 
@@ -17,8 +17,9 @@ set -euo pipefail
 module reset
 module load nvidia/25.9
 
-VENV="/work/09576/shuozhe/verl_setup_tacc/.venv"
+VENV="/work/10587/npg493/vista/verl/.venv"
 source "${VENV}/bin/activate"
+source "/work/10587/npg493/vista/verl/env_var.sh"
 
 UV_CACHE_DIR="${SCRATCH}/.cache/uv"
 HF_HOME="${SCRATCH}/.cache/huggingface"
@@ -43,9 +44,9 @@ RUN_ID="${RUN_NAME}_${SLURM_JOB_ID}"
 # Paths: edit these for your run
 # -----------------------------
 INIT_CRITIC_CHECKPOINT_DIR="/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_600"
-TRAIN_DATA_PATH="/work2/09576/shuozhe/verl/value_decoding/output_archive/search_induced_critic_data_722759/search_induced_critic_data/search_induced_candidates.jsonl"
-EVAL_DATA_PATH="/work2/09576/shuozhe/verl/value_decoding/output_archive/search_induced_critic_data_723857/search_induced_critic_data/search_induced_candidates.jsonl"
-WORK_DIR="/work2/09576/shuozhe/verl"
+TRAIN_DATA_PATH="/work/10587/npg493/vista/shuozhe_data/search_induced_critic_data/search_induced_candidates.jsonl"
+EVAL_DATA_PATH="/work/10587/npg493/vista/shuozhe_data/test_critic_data/search_induced_critic_data/search_induced_candidates.jsonl"
+WORK_DIR="/work/10587/npg493/vista/verl"
 export PYTHONPATH="${WORK_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 
 ARCHIVE_ROOT="${WORK_DIR}/value_decoding/output_archive"
@@ -65,14 +66,14 @@ MERGED_ROOT="${RUN_DIR}/merged_hf"
 # -----------------------------
 # Training config
 # -----------------------------
-LOSS_TYPE="hybrid"              # mse, bce, pairwise, hybrid
-RANK_LOSS_WEIGHT=0.1
+LOSS_TYPE="mse"              # mse, bce, pairwise, hybrid
+#RANK_LOSS_WEIGHT=0.1
 BATCH_SAMPLING_MODE="mixed"     # uniform, prompt_balanced, rankable_prioritized, mixed
 BATCH_SIZE=32
 EVAL_BATCH_SIZE=64
 GRAD_ACCUM_STEPS=1
 NUM_TRAIN_EPOCHS=4
-LR="5e-7"
+LR="1e-7"
 WEIGHT_DECAY="0.0"
 ADAM_EPS="1e-5"
 MAX_SEQ_LENGTH=1024
@@ -241,13 +242,12 @@ validate_jsonl "$EVAL_DATA_PATH"
 archive_submitted_script
 
 CMD=(
-  python3 value_decoding/train_search_induced_critic.py
+  python3 value_decoding/train_critic_mc_rewards.py
   --init_critic_checkpoint_dir "$INIT_CRITIC_CHECKPOINT_DIR"
   --train_data_path "$TRAIN_DATA_PATH"
   --eval_data_path "$EVAL_DATA_PATH"
   --output_dir "$OUTPUT_DIR"
   --loss_type "$LOSS_TYPE"
-  --rank_loss_weight "$RANK_LOSS_WEIGHT"
   --batch_sampling_mode "$BATCH_SAMPLING_MODE"
   --batch_size "$BATCH_SIZE"
   --eval_batch_size "$EVAL_BATCH_SIZE"
