@@ -1,0 +1,329 @@
+Activated environment
+Python: /work/10587/npg493/vista/verl/.venv/bin/python3
+Python 3.12.12
+Sat May 30 15:49:35 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 590.48.01              Driver Version: 590.48.01      CUDA Version: 13.1     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GH200 120GB             On  |   00000009:01:00.0 Off |                    0 |
+| N/A   29C    P0             86W /  900W |       1MiB /  97871MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+Run ID: search_induced_critic_training_729677
+Output dir: /scratch/10587/npg493/value_decoding_runs/search_induced_critic_training_729677/search_induced_critic_training
+Archive dir: /work/10587/npg493/vista/verl/value_decoding/output_archive/search_induced_critic_training_729677
+Initial critic checkpoint: /scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_600
+Train data: /work/10587/npg493/vista/shuozhe_data/search_induced_critic_data/search_induced_candidates.jsonl
+Eval data: /work/10587/npg493/vista/shuozhe_data/test_critic_data/search_induced_critic_data/search_induced_candidates.jsonl
+critic: detected raw FSDP checkpoint at /scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_600/critic
+/work/10587/npg493/vista/shuozhe_data/search_induced_critic_data/search_induced_candidates.jsonl: rows=311720, rows_marked_rankable=60480
+/work/10587/npg493/vista/shuozhe_data/test_critic_data/search_induced_critic_data/search_induced_candidates.jsonl: rows=20416, rows_marked_rankable=3320
+Saved launcher script snapshot to: /scratch/10587/npg493/value_decoding_runs/search_induced_critic_training_729677/search_induced_critic_training/submitted_script/slurm_script
+Distributed launch: MASTER_ADDR=c642-061 MASTER_PORT=39177 WORLD_SIZE=4 TASKS=4
+Command: python3 value_decoding/train_critic_mc_rewards.py --init_critic_checkpoint_dir /scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_600 --train_data_path /work/10587/npg493/vista/shuozhe_data/search_induced_critic_data/search_induced_candidates.jsonl --eval_data_path /work/10587/npg493/vista/shuozhe_data/test_critic_data/search_induced_critic_data/search_induced_candidates.jsonl --output_dir /scratch/10587/npg493/value_decoding_runs/search_induced_critic_training_729677/search_induced_critic_training --loss_type mse --rank_loss_weight 0.1 --batch_sampling_mode mixed --batch_size 32 --eval_batch_size 64 --grad_accum_steps 1 --num_train_epochs 4 --lr 1e-7 --weight_decay 0.0 --adam_eps 1e-5 --max_seq_length 1024 --trainable_scope all --eval_every_steps 100 --save_every_steps 100 --dtype bf16 --seed 42 --max_examples_per_prompt_per_batch 4 --rankable_group_fraction 0.5 --device cuda:0 --merged_root /scratch/10587/npg493/value_decoding_runs/search_induced_critic_training_729677/merged_hf --num_workers 0 --distributed_backend fsdp --eval_at_start --trust_remote_code --gradient_checkpointing --use_wandb --wandb_project value-decoding-train --wandb_run_name search_induced_critic_training_729677 --wandb_group search_induced_critic --wandb_mode online --wandb_tags search_induced critic_training mse
+/work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+usage: train_critic_mc_rewards.py [-h] --init_critic_checkpoint_dir
+                                  INIT_CRITIC_CHECKPOINT_DIR --train_data_path
+                                  TRAIN_DATA_PATH --eval_data_path
+                                  EVAL_DATA_PATH --output_dir OUTPUT_DIR
+                                  [--loss_type {mse,bce}]
+                                  [--batch_size BATCH_SIZE]
+                                  [--eval_batch_size EVAL_BATCH_SIZE]
+                                  [--grad_accum_steps GRAD_ACCUM_STEPS]
+                                  [--num_train_epochs NUM_TRAIN_EPOCHS]
+                                  [--max_train_steps MAX_TRAIN_STEPS]
+                                  [--lr LR] [--weight_decay WEIGHT_DECAY]
+                                  [--adam_eps ADAM_EPS]
+                                  [--max_seq_length MAX_SEQ_LENGTH]
+                                  [--trainable_scope {all,value_head}]
+                                  [--gradient_checkpointing]
+                                  [--dtype {bf16,fp16,fp32}] [--seed SEED]
+                                  [--batch_sampling_mode {uniform,prompt_balanced,rankable_prioritized,mixed}]
+                                  [--max_examples_per_prompt_per_batch MAX_EXAMPLES_PER_PROMPT_PER_BATCH]
+                                  [--positive_fraction POSITIVE_FRACTION]
+                                  [--rankable_group_fraction RANKABLE_GROUP_FRACTION]
+                                  [--eval_every_steps EVAL_EVERY_STEPS]
+                                  [--save_every_steps SAVE_EVERY_STEPS]
+                                  [--eval_at_start]
+                                  [--run_end_to_end_chunk_eval]
+                                  [--chunk_eval_script_path CHUNK_EVAL_SCRIPT_PATH]
+                                  [--chunk_eval_actor_checkpoint_dir CHUNK_EVAL_ACTOR_CHECKPOINT_DIR]
+                                  [--chunk_eval_dataset_path CHUNK_EVAL_DATASET_PATH]
+                                  [--chunk_eval_max_examples CHUNK_EVAL_MAX_EXAMPLES]
+                                  [--chunk_eval_num_seeds CHUNK_EVAL_NUM_SEEDS]
+                                  [--chunk_eval_generation_backend {torch,vllm}]
+                                  [--device DEVICE]
+                                  [--distributed_backend {none,fsdp}]
+                                  [--fsdp_cpu_offload] [--trust_remote_code]
+                                  [--skip_merge]
+                                  [--critic_hf_source_dir CRITIC_HF_SOURCE_DIR]
+                                  [--merged_root MERGED_ROOT]
+                                  [--num_workers NUM_WORKERS]
+                                  [--max_eval_examples MAX_EVAL_EXAMPLES]
+                                  [--no_plots] [--use_wandb]
+                                  [--wandb_project WANDB_PROJECT]
+                                  [--wandb_entity WANDB_ENTITY]
+                                  [--wandb_run_name WANDB_RUN_NAME]
+                                  [--wandb_group WANDB_GROUP]
+                                  [--wandb_tags [WANDB_TAGS ...]]
+                                  [--wandb_mode {online,offline,disabled}]
+train_critic_mc_rewards.py: error: unrecognized arguments: --rank_loss_weight 0.1
+I0530 15:50:39.225000 2430210 .venv/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py:563] TorchDynamo attempted to trace the following frames: [
+I0530 15:50:39.225000 2430210 .venv/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py:563] 
+I0530 15:50:39.225000 2430210 .venv/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py:563] ]
+I0530 15:50:39.229000 2430210 .venv/lib/python3.12/site-packages/torch/_dynamo/utils.py:845] TorchDynamo compilation metrics:
+I0530 15:50:39.229000 2430210 .venv/lib/python3.12/site-packages/torch/_dynamo/utils.py:845] Function    Runtimes (s)
+I0530 15:50:39.229000 2430210 .venv/lib/python3.12/site-packages/torch/_dynamo/utils.py:845] ----------  --------------
+V0530 15:50:39.229000 2430210 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats constrain_symbol_range: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:39.230000 2430210 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats guard_or_defer_runtime_assert: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:39.230000 2430210 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _inner_evaluate_expr: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:39.231000 2430210 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _simplify_floor_div: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:39.231000 2430210 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _maybe_guard_rel: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:39.231000 2430210 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _find: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:39.232000 2430210 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats has_hint: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:39.232000 2430210 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats size_hint: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:39.232000 2430210 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats simplify: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:39.233000 2430210 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _update_divisible: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:39.233000 2430210 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats replace: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:39.233000 2430210 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _maybe_evaluate_static: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:39.233000 2430210 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats get_implications: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:39.234000 2430210 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats get_axioms: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:39.234000 2430210 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _maybe_evaluate_static_worker: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:39.234000 2430210 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats safe_expand: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:39.235000 2430210 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats uninteresting_files: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+[W530 15:50:39.748817567 AllocatorConfig.cpp:28] Warning: PYTORCH_CUDA_ALLOC_CONF is deprecated, use PYTORCH_ALLOC_CONF instead (function operator())
+srun: error: c642-061: task 0: Exited with exit code 2
+/work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+/work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+/work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+usage: train_critic_mc_rewards.py [-h] --init_critic_checkpoint_dir
+                                  INIT_CRITIC_CHECKPOINT_DIR --train_data_path
+                                  TRAIN_DATA_PATH --eval_data_path
+                                  EVAL_DATA_PATH --output_dir OUTPUT_DIR
+                                  [--loss_type {mse,bce}]
+                                  [--batch_size BATCH_SIZE]
+                                  [--eval_batch_size EVAL_BATCH_SIZE]
+                                  [--grad_accum_steps GRAD_ACCUM_STEPS]
+                                  [--num_train_epochs NUM_TRAIN_EPOCHS]
+                                  [--max_train_steps MAX_TRAIN_STEPS]
+                                  [--lr LR] [--weight_decay WEIGHT_DECAY]
+                                  [--adam_eps ADAM_EPS]
+                                  [--max_seq_length MAX_SEQ_LENGTH]
+                                  [--trainable_scope {all,value_head}]
+                                  [--gradient_checkpointing]
+                                  [--dtype {bf16,fp16,fp32}] [--seed SEED]
+                                  [--batch_sampling_mode {uniform,prompt_balanced,rankable_prioritized,mixed}]
+                                  [--max_examples_per_prompt_per_batch MAX_EXAMPLES_PER_PROMPT_PER_BATCH]
+                                  [--positive_fraction POSITIVE_FRACTION]
+                                  [--rankable_group_fraction RANKABLE_GROUP_FRACTION]
+                                  [--eval_every_steps EVAL_EVERY_STEPS]
+                                  [--save_every_steps SAVE_EVERY_STEPS]
+                                  [--eval_at_start]
+                                  [--run_end_to_end_chunk_eval]
+                                  [--chunk_eval_script_path CHUNK_EVAL_SCRIPT_PATH]
+                                  [--chunk_eval_actor_checkpoint_dir CHUNK_EVAL_ACTOR_CHECKPOINT_DIR]
+                                  [--chunk_eval_dataset_path CHUNK_EVAL_DATASET_PATH]
+                                  [--chunk_eval_max_examples CHUNK_EVAL_MAX_EXAMPLES]
+                                  [--chunk_eval_num_seeds CHUNK_EVAL_NUM_SEEDS]
+                                  [--chunk_eval_generation_backend {torch,vllm}]
+                                  [--device DEVICE]
+                                  [--distributed_backend {none,fsdp}]
+                                  [--fsdp_cpu_offload] [--trust_remote_code]
+                                  [--skip_merge]
+                                  [--critic_hf_source_dir CRITIC_HF_SOURCE_DIR]
+                                  [--merged_root MERGED_ROOT]
+                                  [--num_workers NUM_WORKERS]
+                                  [--max_eval_examples MAX_EVAL_EXAMPLES]
+                                  [--no_plots] [--use_wandb]
+                                  [--wandb_project WANDB_PROJECT]
+                                  [--wandb_entity WANDB_ENTITY]
+                                  [--wandb_run_name WANDB_RUN_NAME]
+                                  [--wandb_group WANDB_GROUP]
+                                  [--wandb_tags [WANDB_TAGS ...]]
+                                  [--wandb_mode {online,offline,disabled}]
+train_critic_mc_rewards.py: error: unrecognized arguments: --rank_loss_weight 0.1
+usage: train_critic_mc_rewards.py [-h] --init_critic_checkpoint_dir
+                                  INIT_CRITIC_CHECKPOINT_DIR --train_data_path
+                                  TRAIN_DATA_PATH --eval_data_path
+                                  EVAL_DATA_PATH --output_dir OUTPUT_DIR
+                                  [--loss_type {mse,bce}]
+                                  [--batch_size BATCH_SIZE]
+                                  [--eval_batch_size EVAL_BATCH_SIZE]
+                                  [--grad_accum_steps GRAD_ACCUM_STEPS]
+                                  [--num_train_epochs NUM_TRAIN_EPOCHS]
+                                  [--max_train_steps MAX_TRAIN_STEPS]
+                                  [--lr LR] [--weight_decay WEIGHT_DECAY]
+                                  [--adam_eps ADAM_EPS]
+                                  [--max_seq_length MAX_SEQ_LENGTH]
+                                  [--trainable_scope {all,value_head}]
+                                  [--gradient_checkpointing]
+                                  [--dtype {bf16,fp16,fp32}] [--seed SEED]
+                                  [--batch_sampling_mode {uniform,prompt_balanced,rankable_prioritized,mixed}]
+                                  [--max_examples_per_prompt_per_batch MAX_EXAMPLES_PER_PROMPT_PER_BATCH]
+                                  [--positive_fraction POSITIVE_FRACTION]
+                                  [--rankable_group_fraction RANKABLE_GROUP_FRACTION]
+                                  [--eval_every_steps EVAL_EVERY_STEPS]
+                                  [--save_every_steps SAVE_EVERY_STEPS]
+                                  [--eval_at_start]
+                                  [--run_end_to_end_chunk_eval]
+                                  [--chunk_eval_script_path CHUNK_EVAL_SCRIPT_PATH]
+                                  [--chunk_eval_actor_checkpoint_dir CHUNK_EVAL_ACTOR_CHECKPOINT_DIR]
+                                  [--chunk_eval_dataset_path CHUNK_EVAL_DATASET_PATH]
+                                  [--chunk_eval_max_examples CHUNK_EVAL_MAX_EXAMPLES]
+                                  [--chunk_eval_num_seeds CHUNK_EVAL_NUM_SEEDS]
+                                  [--chunk_eval_generation_backend {torch,vllm}]
+                                  [--device DEVICE]
+                                  [--distributed_backend {none,fsdp}]
+                                  [--fsdp_cpu_offload] [--trust_remote_code]
+                                  [--skip_merge]
+                                  [--critic_hf_source_dir CRITIC_HF_SOURCE_DIR]
+                                  [--merged_root MERGED_ROOT]
+                                  [--num_workers NUM_WORKERS]
+                                  [--max_eval_examples MAX_EVAL_EXAMPLES]
+                                  [--no_plots] [--use_wandb]
+                                  [--wandb_project WANDB_PROJECT]
+                                  [--wandb_entity WANDB_ENTITY]
+                                  [--wandb_run_name WANDB_RUN_NAME]
+                                  [--wandb_group WANDB_GROUP]
+                                  [--wandb_tags [WANDB_TAGS ...]]
+                                  [--wandb_mode {online,offline,disabled}]
+train_critic_mc_rewards.py: error: unrecognized arguments: --rank_loss_weight 0.1
+I0530 15:50:58.348000 1278178 .venv/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py:563] TorchDynamo attempted to trace the following frames: [
+I0530 15:50:58.348000 1278178 .venv/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py:563] 
+I0530 15:50:58.348000 1278178 .venv/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py:563] ]
+usage: train_critic_mc_rewards.py [-h] --init_critic_checkpoint_dir
+                                  INIT_CRITIC_CHECKPOINT_DIR --train_data_path
+                                  TRAIN_DATA_PATH --eval_data_path
+                                  EVAL_DATA_PATH --output_dir OUTPUT_DIR
+                                  [--loss_type {mse,bce}]
+                                  [--batch_size BATCH_SIZE]
+                                  [--eval_batch_size EVAL_BATCH_SIZE]
+                                  [--grad_accum_steps GRAD_ACCUM_STEPS]
+                                  [--num_train_epochs NUM_TRAIN_EPOCHS]
+                                  [--max_train_steps MAX_TRAIN_STEPS]
+                                  [--lr LR] [--weight_decay WEIGHT_DECAY]
+                                  [--adam_eps ADAM_EPS]
+                                  [--max_seq_length MAX_SEQ_LENGTH]
+                                  [--trainable_scope {all,value_head}]
+                                  [--gradient_checkpointing]
+                                  [--dtype {bf16,fp16,fp32}] [--seed SEED]
+                                  [--batch_sampling_mode {uniform,prompt_balanced,rankable_prioritized,mixed}]
+                                  [--max_examples_per_prompt_per_batch MAX_EXAMPLES_PER_PROMPT_PER_BATCH]
+                                  [--positive_fraction POSITIVE_FRACTION]
+                                  [--rankable_group_fraction RANKABLE_GROUP_FRACTION]
+                                  [--eval_every_steps EVAL_EVERY_STEPS]
+                                  [--save_every_steps SAVE_EVERY_STEPS]
+                                  [--eval_at_start]
+                                  [--run_end_to_end_chunk_eval]
+                                  [--chunk_eval_script_path CHUNK_EVAL_SCRIPT_PATH]
+                                  [--chunk_eval_actor_checkpoint_dir CHUNK_EVAL_ACTOR_CHECKPOINT_DIR]
+                                  [--chunk_eval_dataset_path CHUNK_EVAL_DATASET_PATH]
+                                  [--chunk_eval_max_examples CHUNK_EVAL_MAX_EXAMPLES]
+                                  [--chunk_eval_num_seeds CHUNK_EVAL_NUM_SEEDS]
+                                  [--chunk_eval_generation_backend {torch,vllm}]
+                                  [--device DEVICE]
+                                  [--distributed_backend {none,fsdp}]
+                                  [--fsdp_cpu_offload] [--trust_remote_code]
+                                  [--skip_merge]
+                                  [--critic_hf_source_dir CRITIC_HF_SOURCE_DIR]
+                                  [--merged_root MERGED_ROOT]
+                                  [--num_workers NUM_WORKERS]
+                                  [--max_eval_examples MAX_EVAL_EXAMPLES]
+                                  [--no_plots] [--use_wandb]
+                                  [--wandb_project WANDB_PROJECT]
+                                  [--wandb_entity WANDB_ENTITY]
+                                  [--wandb_run_name WANDB_RUN_NAME]
+                                  [--wandb_group WANDB_GROUP]
+                                  [--wandb_tags [WANDB_TAGS ...]]
+                                  [--wandb_mode {online,offline,disabled}]
+train_critic_mc_rewards.py: error: unrecognized arguments: --rank_loss_weight 0.1
+I0530 15:50:58.354000 1278178 .venv/lib/python3.12/site-packages/torch/_dynamo/utils.py:845] TorchDynamo compilation metrics:
+I0530 15:50:58.354000 1278178 .venv/lib/python3.12/site-packages/torch/_dynamo/utils.py:845] Function    Runtimes (s)
+I0530 15:50:58.354000 1278178 .venv/lib/python3.12/site-packages/torch/_dynamo/utils.py:845] ----------  --------------
+V0530 15:50:58.354000 1278178 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats constrain_symbol_range: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.354000 1278178 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats guard_or_defer_runtime_assert: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:58.355000 1278178 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _inner_evaluate_expr: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:58.355000 1278178 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _simplify_floor_div: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.355000 1278178 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _maybe_guard_rel: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:58.355000 1278178 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _find: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.356000 1278178 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats has_hint: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:58.356000 1278178 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats size_hint: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:58.356000 1278178 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats simplify: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.356000 1278178 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _update_divisible: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.357000 1278178 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats replace: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.357000 1278178 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _maybe_evaluate_static: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.357000 1278178 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats get_implications: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.357000 1278178 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats get_axioms: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.358000 1278178 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _maybe_evaluate_static_worker: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.358000 1278178 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats safe_expand: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:58.358000 1278178 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats uninteresting_files: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+I0530 15:50:58.366000 2130325 .venv/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py:563] TorchDynamo attempted to trace the following frames: [
+I0530 15:50:58.366000 2130325 .venv/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py:563] 
+I0530 15:50:58.366000 2130325 .venv/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py:563] ]
+I0530 15:50:58.371000 2130325 .venv/lib/python3.12/site-packages/torch/_dynamo/utils.py:845] TorchDynamo compilation metrics:
+I0530 15:50:58.371000 2130325 .venv/lib/python3.12/site-packages/torch/_dynamo/utils.py:845] Function    Runtimes (s)
+I0530 15:50:58.371000 2130325 .venv/lib/python3.12/site-packages/torch/_dynamo/utils.py:845] ----------  --------------
+V0530 15:50:58.372000 2130325 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats constrain_symbol_range: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.372000 2130325 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats guard_or_defer_runtime_assert: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:58.372000 2130325 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _inner_evaluate_expr: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:58.373000 2130325 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _simplify_floor_div: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.373000 2130325 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _maybe_guard_rel: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:58.373000 2130325 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _find: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.373000 2130325 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats has_hint: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:58.374000 2130325 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats size_hint: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:58.374000 2130325 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats simplify: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.374000 2130325 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _update_divisible: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.374000 2130325 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats replace: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.375000 2130325 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _maybe_evaluate_static: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.375000 2130325 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats get_implications: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.375000 2130325 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats get_axioms: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.375000 2130325 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _maybe_evaluate_static_worker: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.376000 2130325 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats safe_expand: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:58.376000 2130325 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats uninteresting_files: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+I0530 15:50:58.417000 2538987 .venv/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py:563] TorchDynamo attempted to trace the following frames: [
+I0530 15:50:58.417000 2538987 .venv/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py:563] 
+I0530 15:50:58.417000 2538987 .venv/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py:563] ]
+I0530 15:50:58.423000 2538987 .venv/lib/python3.12/site-packages/torch/_dynamo/utils.py:845] TorchDynamo compilation metrics:
+I0530 15:50:58.423000 2538987 .venv/lib/python3.12/site-packages/torch/_dynamo/utils.py:845] Function    Runtimes (s)
+I0530 15:50:58.423000 2538987 .venv/lib/python3.12/site-packages/torch/_dynamo/utils.py:845] ----------  --------------
+V0530 15:50:58.424000 2538987 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats constrain_symbol_range: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.424000 2538987 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats guard_or_defer_runtime_assert: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:58.424000 2538987 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _inner_evaluate_expr: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:58.425000 2538987 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _simplify_floor_div: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.425000 2538987 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _maybe_guard_rel: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:58.425000 2538987 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _find: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.426000 2538987 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats has_hint: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:58.426000 2538987 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats size_hint: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:58.426000 2538987 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats simplify: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.426000 2538987 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _update_divisible: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.427000 2538987 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats replace: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.427000 2538987 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _maybe_evaluate_static: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.427000 2538987 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats get_implications: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.427000 2538987 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats get_axioms: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.428000 2538987 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats _maybe_evaluate_static_worker: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+V0530 15:50:58.428000 2538987 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats safe_expand: CacheInfo(hits=0, misses=0, maxsize=256, currsize=0)
+V0530 15:50:58.428000 2538987 .venv/lib/python3.12/site-packages/torch/fx/experimental/symbolic_shapes.py:185] lru_cache_stats uninteresting_files: CacheInfo(hits=0, misses=0, maxsize=None, currsize=0)
+[W530 15:50:59.986714805 AllocatorConfig.cpp:28] Warning: PYTORCH_CUDA_ALLOC_CONF is deprecated, use PYTORCH_ALLOC_CONF instead (function operator())
+[W530 15:50:59.463599296 AllocatorConfig.cpp:28] Warning: PYTORCH_CUDA_ALLOC_CONF is deprecated, use PYTORCH_ALLOC_CONF instead (function operator())
+[W530 15:50:59.125849302 AllocatorConfig.cpp:28] Warning: PYTORCH_CUDA_ALLOC_CONF is deprecated, use PYTORCH_ALLOC_CONF instead (function operator())
+srun: error: c642-062: task 1: Exited with exit code 2
+srun: error: c642-072: task 3: Exited with exit code 2
+srun: error: c642-071: task 2: Exited with exit code 2
+Syncing run directory back to WORK...
+Archived run to: /work/10587/npg493/vista/verl/value_decoding/output_archive/search_induced_critic_training_729677
