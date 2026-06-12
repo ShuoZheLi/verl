@@ -34,7 +34,7 @@ BATCH_SIZE=1
 
 # --- Critic readout -----------------------------------------------------------
 # Recommended: pre_eos. Also useful: tail_mean_8 tail_mean_16.
-VALUE_POSITIONS="pre_eos tail_mean_8 tail_mean_16"
+VALUE_POSITIONS="pre_eos"
 
 # --- Runtime ------------------------------------------------------------------
 DTYPE="bf16"
