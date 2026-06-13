@@ -6,8 +6,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
 #SBATCH --time=10:00:00
-#SBATCH --output=slurm-%j.out
-#SBATCH --error=slurm-%j.err
+#SBATCH --output=slurm-%j_eval_trajectory_value_baseline_critic_multinode_1d5b_actor.out
+#SBATCH --error=slurm-%j_eval_trajectory_value_baseline_critic_multinode_1d5b_actor.err
 
 set -euo pipefail
 
