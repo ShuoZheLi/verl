@@ -27,13 +27,9 @@ try:
 except ImportError:
     ray = None
 
-try:
-    from vllm import LLM, SamplingParams
-    from vllm.inputs.data import TokensPrompt
-except ImportError:
-    LLM = None
-    SamplingParams = None
-    TokensPrompt = None
+LLM = None
+SamplingParams = None
+TokensPrompt = None
 
 from value_decoding.checkpointing import (
     ensure_merged_component_checkpoint,
@@ -69,6 +65,22 @@ STANDARD_TAIL_SUMMARY_LENGTHS = (2, 4, 8, 16)
 DEFAULT_COMPARISON_BOOTSTRAP_SAMPLES = 1_000
 RAY_NODE_RESOURCE_FRACTION = 1e-3
 RAY_PROGRESS_POLL_INTERVAL_SEC = 0.2
+EOS_END_VALUE_MODES = ("as_is", "ppo_pre_eos")
+
+
+def _require_vllm():
+    global LLM, SamplingParams, TokensPrompt
+    if LLM is not None and SamplingParams is not None and TokensPrompt is not None:
+        return LLM, SamplingParams, TokensPrompt
+    try:
+        from vllm import LLM as imported_llm, SamplingParams as imported_sampling_params
+        from vllm.inputs.data import TokensPrompt as imported_tokens_prompt
+    except ImportError as exc:
+        raise ImportError("vLLM is required when --generation_backend=vllm, but it is not installed.") from exc
+    LLM = imported_llm
+    SamplingParams = imported_sampling_params
+    TokensPrompt = imported_tokens_prompt
+    return LLM, SamplingParams, TokensPrompt
 
 
 def _make_main_module_importable() -> None:
@@ -336,6 +348,17 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--eos_end_value_mode",
+        type=str,
+        default="ppo_pre_eos",
+        choices=list(EOS_END_VALUE_MODES),
+        help=(
+            "How to score critic end values for chunks whose final emitted token is EOS. "
+            "Use 'as_is' for critics trained to score completed prefixes at their last token. "
+            "Use 'ppo_pre_eos' for PPO value-head critics whose terminal/EOS-token value is not a trained bootstrap."
+        ),
+    )
+    parser.add_argument(
         "--comparison_value_reducer",
         type=str,
         default=None,
@@ -551,6 +574,28 @@ def reduce_chunk_values(chunk_values: Sequence[float], reducer: ParsedValueReduc
             raise ValueError("tail_exp reducer is missing tail_length or alpha.")
         return reduce_tail_exp(chunk_values, reducer_spec.tail_length, reducer_spec.alpha)
     raise ValueError(f"Unsupported reducer kind: {reducer_spec.kind}")
+
+
+def resolve_candidate_end_value(
+    *,
+    chunk_values: torch.Tensor,
+    explicit_eos_at_end: bool,
+    eos_end_value_mode: str,
+    prefix_pre_eos_value: torch.Tensor | None = None,
+) -> float:
+    if eos_end_value_mode not in EOS_END_VALUE_MODES:
+        raise ValueError(f"Unsupported eos_end_value_mode: {eos_end_value_mode}")
+    if chunk_values.numel() <= 0:
+        raise ValueError("chunk_values must contain at least one value.")
+    if eos_end_value_mode == "as_is" or not explicit_eos_at_end:
+        return float(chunk_values[-1].item())
+    if chunk_values.numel() > 1:
+        return float(chunk_values[-2].item())
+    if prefix_pre_eos_value is None:
+        raise ValueError(
+            "eos_end_value_mode='ppo_pre_eos' requires prefix_pre_eos_value for single-token EOS chunks."
+        )
+    return float(prefix_pre_eos_value.item())
 
 
 def _standard_tail_mean_summary(chunk_values: Sequence[float]) -> dict[int, float]:
@@ -834,6 +879,7 @@ def sample_actor_chunk(
     top_k: int,
     seed: int,
     eos_token_ids: tuple[int, ...],
+    eos_end_value_mode: str,
     use_actor_cache: bool,
     candidate_index: int,
 ) -> ChunkCandidate:
@@ -895,7 +941,21 @@ def sample_actor_chunk(
         if chunk_values.numel() != len(chunk_token_ids):
             raise RuntimeError("Chunk value extraction length mismatch.")
         chunk_values_tuple = tuple(float(value) for value in chunk_values.tolist())
-        end_value: float | None = float(chunk_values[-1].item())
+        explicit_eos_at_end = bool(chunk_token_ids and chunk_token_ids[-1] in eos_token_ids)
+        prefix_pre_eos_value = None
+        if eos_end_value_mode == "ppo_pre_eos" and explicit_eos_at_end and callable(continuation_values):
+            raise ValueError(
+                "eos_end_value_mode='ppo_pre_eos' is only valid for PPO-style full-sequence value-head critics, "
+                "but this critic exposes continuation_values(). Use --eos_end_value_mode=as_is."
+            )
+        if eos_end_value_mode == "ppo_pre_eos" and explicit_eos_at_end and chunk_values.numel() == 1:
+            prefix_pre_eos_value = values[prefix_length - 1]
+        end_value: float | None = resolve_candidate_end_value(
+            chunk_values=chunk_values,
+            explicit_eos_at_end=explicit_eos_at_end,
+            eos_end_value_mode=eos_end_value_mode,
+            prefix_pre_eos_value=prefix_pre_eos_value,
+        )
         mean_value: float | None = float(chunk_values.mean().item())
     else:
         chunk_values_tuple = ()
@@ -959,17 +1019,17 @@ def sample_vllm_chunk(
     top_k: int,
     seed: int,
     eos_token_ids: tuple[int, ...],
+    eos_end_value_mode: str,
     candidate_index: int,
 ) -> ChunkCandidate:
-    if SamplingParams is None or TokensPrompt is None:
-        raise ImportError("vLLM is required when --generation_backend=vllm, but it is not installed.")
+    _, sampling_params_cls, tokens_prompt_cls = _require_vllm()
     if max_chunk_len <= 0:
         raise ValueError(f"max_chunk_len must be > 0, got {max_chunk_len}")
     if sampling_mode not in {ActorSamplingMode.SAMPLE.value, ActorSamplingMode.GREEDY.value}:
         raise ValueError(f"Unsupported actor_sampling_mode for vLLM backend: {sampling_mode}")
 
     prompt_token_ids = [int(token_id) for token_id in prefix_ids[0].tolist()]
-    sampling_params = SamplingParams(
+    sampling_params = sampling_params_cls(
         n=1,
         temperature=0.0 if sampling_mode == ActorSamplingMode.GREEDY.value else float(temperature),
         top_p=float(top_p),
@@ -980,7 +1040,7 @@ def sample_vllm_chunk(
         skip_special_tokens=True,
     )
     request_outputs = llm.generate(
-        prompts=[TokensPrompt(prompt_token_ids=prompt_token_ids)],
+        prompts=[tokens_prompt_cls(prompt_token_ids=prompt_token_ids)],
         sampling_params=sampling_params,
         use_tqdm=False,
     )
@@ -1016,7 +1076,21 @@ def sample_vllm_chunk(
         if chunk_values.numel() != len(chunk_token_ids):
             raise RuntimeError("Chunk value extraction length mismatch.")
         chunk_values_tuple = tuple(float(value) for value in chunk_values.tolist())
-        end_value: float | None = float(chunk_values[-1].item())
+        explicit_eos_at_end = bool(chunk_token_ids and chunk_token_ids[-1] in eos_token_ids)
+        prefix_pre_eos_value = None
+        if eos_end_value_mode == "ppo_pre_eos" and explicit_eos_at_end and callable(continuation_values):
+            raise ValueError(
+                "eos_end_value_mode='ppo_pre_eos' is only valid for PPO-style full-sequence value-head critics, "
+                "but this critic exposes continuation_values(). Use --eos_end_value_mode=as_is."
+            )
+        if eos_end_value_mode == "ppo_pre_eos" and explicit_eos_at_end and chunk_values.numel() == 1:
+            prefix_pre_eos_value = values[prefix_length - 1]
+        end_value: float | None = resolve_candidate_end_value(
+            chunk_values=chunk_values,
+            explicit_eos_at_end=explicit_eos_at_end,
+            eos_end_value_mode=eos_end_value_mode,
+            prefix_pre_eos_value=prefix_pre_eos_value,
+        )
         mean_value: float | None = float(chunk_values.mean().item())
     else:
         chunk_values_tuple = ()
@@ -1152,6 +1226,7 @@ def run_chunk_guided_response(
     critic_device: torch.device | None,
     max_new_tokens: int,
     eos_token_ids: tuple[int, ...],
+    eos_end_value_mode: str,
     normalization_eps: float,
     seed: int,
     use_actor_cache: bool,
@@ -1226,6 +1301,7 @@ def run_chunk_guided_response(
                     top_k=spec.actor_top_k,
                     seed=candidate_seed,
                     eos_token_ids=eos_token_ids,
+                    eos_end_value_mode=eos_end_value_mode,
                     candidate_index=candidate_index,
                 )
             else:
@@ -1243,6 +1319,7 @@ def run_chunk_guided_response(
                     top_k=spec.actor_top_k,
                     seed=candidate_seed,
                     eos_token_ids=eos_token_ids,
+                    eos_end_value_mode=eos_end_value_mode,
                     use_actor_cache=use_actor_cache,
                     candidate_index=candidate_index,
                 )
@@ -1635,6 +1712,7 @@ def process_example_for_spec(
     max_prompt_length: int,
     max_new_tokens: int,
     eos_token_ids: tuple[int, ...],
+    eos_end_value_mode: str,
     normalization_eps: float,
     seed: int,
     use_actor_cache: bool,
@@ -1673,6 +1751,7 @@ def process_example_for_spec(
         critic_device=critic_device,
         max_new_tokens=max_new_tokens,
         eos_token_ids=eos_token_ids,
+        eos_end_value_mode=eos_end_value_mode,
         normalization_eps=normalization_eps,
         seed=seed,
         use_actor_cache=use_actor_cache,
@@ -1694,8 +1773,7 @@ def _validate_vllm_configuration(
             "Disable actor-only/actor+critic/uncertainty configs or use --generation_backend=torch. Invalid configs: "
             + ", ".join(invalid_specs)
         )
-    if LLM is None or SamplingParams is None or TokensPrompt is None:
-        raise ImportError("vLLM is required when --generation_backend=vllm, but it is not installed.")
+    _require_vllm()
     if ray_address is None and len(worker_pairs) > 1:
         raise ValueError(
             "--generation_backend=vllm does not support multiple local worker pairs in one process. "
@@ -1872,6 +1950,7 @@ def _start_local_worker_processes(
     max_prompt_length: int,
     max_new_tokens: int,
     eos_token_ids: tuple[int, ...],
+    eos_end_value_mode: str,
     normalization_eps: float,
     use_actor_cache: bool,
     debug_full_chunk_candidates: bool,
@@ -1898,6 +1977,7 @@ def _start_local_worker_processes(
                 "max_prompt_length": max_prompt_length,
                 "max_new_tokens": max_new_tokens,
                 "eos_token_ids": eos_token_ids,
+                "eos_end_value_mode": eos_end_value_mode,
                 "normalization_eps": normalization_eps,
                 "use_actor_cache": use_actor_cache,
                 "debug_full_chunk_candidates": debug_full_chunk_candidates,
@@ -2058,6 +2138,7 @@ def _ray_node_entry_remote(**kwargs) -> dict[str, Any]:
         max_prompt_length=kwargs["max_prompt_length"],
         max_new_tokens=kwargs["max_new_tokens"],
         eos_token_ids=kwargs["eos_token_ids"],
+        eos_end_value_mode=kwargs["eos_end_value_mode"],
         normalization_eps=kwargs["normalization_eps"],
         use_actor_cache=kwargs["use_actor_cache"],
         debug_full_chunk_candidates=kwargs["debug_full_chunk_candidates"],
@@ -2119,6 +2200,7 @@ def _worker_entry(
     max_prompt_length: int,
     max_new_tokens: int,
     eos_token_ids: tuple[int, ...],
+    eos_end_value_mode: str,
     normalization_eps: float,
     use_actor_cache: bool,
     debug_full_chunk_candidates: bool,
@@ -2168,8 +2250,7 @@ def _worker_entry(
                 else None
             )
         elif generation_backend == "vllm":
-            if LLM is None:
-                raise ImportError("vLLM is required when --generation_backend=vllm, but it is not installed.")
+            llm_cls, _, _ = _require_vllm()
             if actor_device.type != "cuda":
                 raise ValueError("--generation_backend=vllm requires CUDA actor devices.")
             # Load the critic before vLLM so vLLM's memory budget leaves room for value estimation.
@@ -2183,7 +2264,7 @@ def _worker_entry(
                 if critic_hf_dir is not None and critic_device is not None
                 else None
             )
-            vllm_llm = LLM(
+            vllm_llm = llm_cls(
                 model=str(actor_hf_dir),
                 tokenizer=str(actor_hf_dir),
                 dtype=_resolve_vllm_dtype_name(dtype_name),
@@ -2236,6 +2317,7 @@ def _worker_entry(
                         max_prompt_length=max_prompt_length,
                         max_new_tokens=max_new_tokens,
                         eos_token_ids=eos_token_ids,
+                        eos_end_value_mode=eos_end_value_mode,
                         normalization_eps=normalization_eps,
                         seed=seed,
                         use_actor_cache=use_actor_cache,
@@ -2321,6 +2403,7 @@ def run_multi_worker(
     max_prompt_length: int,
     max_new_tokens: int,
     eos_token_ids: tuple[int, ...],
+    eos_end_value_mode: str,
     normalization_eps: float,
     use_actor_cache: bool,
     debug_full_chunk_candidates: bool,
@@ -2348,6 +2431,7 @@ def run_multi_worker(
         max_prompt_length=max_prompt_length,
         max_new_tokens=max_new_tokens,
         eos_token_ids=eos_token_ids,
+        eos_end_value_mode=eos_end_value_mode,
         normalization_eps=normalization_eps,
         use_actor_cache=use_actor_cache,
         debug_full_chunk_candidates=debug_full_chunk_candidates,
@@ -2466,6 +2550,7 @@ def run_ray_multi_worker(
     max_prompt_length: int,
     max_new_tokens: int,
     eos_token_ids: tuple[int, ...],
+    eos_end_value_mode: str,
     normalization_eps: float,
     use_actor_cache: bool,
     debug_full_chunk_candidates: bool,
@@ -2521,6 +2606,7 @@ def run_ray_multi_worker(
             max_prompt_length=max_prompt_length,
             max_new_tokens=max_new_tokens,
             eos_token_ids=eos_token_ids,
+            eos_end_value_mode=eos_end_value_mode,
             normalization_eps=normalization_eps,
             use_actor_cache=use_actor_cache,
             debug_full_chunk_candidates=debug_full_chunk_candidates,
@@ -3137,6 +3223,7 @@ def _write_output_readme(
         f"- Candidate counts: `{args.num_chunk_candidates_values}`",
         f"- Betas: `{args.betas}`",
         f"- Value reducers: `{args.value_reducers}`",
+        f"- EOS end-value mode: `{args.eos_end_value_mode}`",
         f"- Explicit comparison reducer override: `{args.comparison_value_reducer}`",
         f"- Auto comparison tail h override: `{args.comparison_tail_h}`",
         f"- Auto comparison tail-exp alpha: `{args.comparison_tail_exp_alpha}`",
@@ -3309,6 +3396,7 @@ def main() -> int:
             max_prompt_length=args.max_prompt_length,
             max_new_tokens=args.max_new_tokens,
             eos_token_ids=eos_token_ids,
+            eos_end_value_mode=args.eos_end_value_mode,
             normalization_eps=args.normalization_eps,
             use_actor_cache=not args.disable_actor_cache,
             debug_full_chunk_candidates=args.debug_full_chunk_candidates,
@@ -3346,6 +3434,7 @@ def main() -> int:
             max_prompt_length=args.max_prompt_length,
             max_new_tokens=args.max_new_tokens,
             eos_token_ids=eos_token_ids,
+            eos_end_value_mode=args.eos_end_value_mode,
             normalization_eps=args.normalization_eps,
             use_actor_cache=not args.disable_actor_cache,
             debug_full_chunk_candidates=args.debug_full_chunk_candidates,
@@ -3406,7 +3495,8 @@ def main() -> int:
                 if critic_hf_dir is not None and critic_device is not None
                 else None
             )
-            vllm_llm = LLM(
+            llm_cls, _, _ = _require_vllm()
+            vllm_llm = llm_cls(
                 model=str(actor_hf_dir),
                 tokenizer=str(actor_hf_dir),
                 dtype=_resolve_vllm_dtype_name(args.dtype),
@@ -3445,6 +3535,7 @@ def main() -> int:
                         max_prompt_length=args.max_prompt_length,
                         max_new_tokens=args.max_new_tokens,
                         eos_token_ids=eos_token_ids,
+                        eos_end_value_mode=args.eos_end_value_mode,
                         normalization_eps=args.normalization_eps,
                         seed=args.seed,
                         use_actor_cache=not args.disable_actor_cache,

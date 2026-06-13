@@ -50,6 +50,7 @@ CHUNK_SIZES="128"
 NUM_CHUNK_CANDIDATES_VALUES="8"
 BETAS="0"
 VALUE_REDUCERS="end"       # Add "mean" for the ablation.
+EOS_END_VALUE_MODE="ppo_pre_eos"
 INCLUDE_CRITIC_ONLY=1      # 1 = add optional critic-only chunk rerank configs
 INCLUDE_UNCERTAINTY_ONLY=0 # 1 = add actor-uncertainty chunk rerank configs
 ONLY_CRITIC_ONLY=1         # 1 = run only critic-only chunk rerank configs
@@ -164,6 +165,7 @@ run_one_seed() {
     --num_chunk_candidates_values "${NUM_CHUNK_CANDIDATES_VALUES_ARR[@]}"
     --betas                      "${BETAS_ARR[@]}"
     --value_reducers             "${VALUE_REDUCERS_ARR[@]}"
+    --eos_end_value_mode         "${EOS_END_VALUE_MODE}"
   )
 
   [[ -n "${RESPONSE_KEY}" ]] && CMD+=(--response_key "${RESPONSE_KEY}")
