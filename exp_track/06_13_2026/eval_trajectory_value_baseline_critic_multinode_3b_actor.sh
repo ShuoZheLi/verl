@@ -43,7 +43,7 @@ python -V
 # =============================================================================
 
 # --- Checkpoints --------------------------------------------------------------
-CHECKPOINT_ROOT="/work2/09576/shuozhe/verl/train_log_archive/7b_testset_752951/train_log"
+CHECKPOINT_ROOT="/scratch/09576/shuozhe/verl_runs/7b_testset_752951/train_log/"
 ACTOR_CHECKPOINT_DIR="${CHECKPOINT_ROOT}/global_step_100"
 CRITIC_CHECKPOINT_DIRS=""
 for step in $(seq 100 100 1000); do
