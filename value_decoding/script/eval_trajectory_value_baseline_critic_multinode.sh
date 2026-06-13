@@ -32,8 +32,8 @@ export UV_CACHE_DIR HF_HOME TIKTOKEN_ENCODINGS_BASE
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=true
 export VLLM_USE_V1=1
-export TORCH_LOGS=""
 export TORCHDYNAMO_VERBOSE=0
+export PYTHONWARNINGS="ignore::FutureWarning"
 
 echo "Activated environment"
 echo "Python: $(which python)"
@@ -189,6 +189,8 @@ run_shard_command() {
     --critic_checkpoint_dir "${CRITIC_CHECKPOINT_DIRS_ARR[@]}"
     --dataset_path "${DATASET_PATH}"
     --output_dir "${output_dir_for_shard}"
+    --actor_merged_root "${output_dir_for_shard}/merged_hf_actor"
+    --critic_merged_root "${output_dir_for_shard}/merged_hf_critics"
     --prompt_key "${PROMPT_KEY}"
     --response_key "${RESPONSE_KEY}"
     --start_index "${START_INDEX}"

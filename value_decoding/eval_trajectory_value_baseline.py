@@ -13,6 +13,7 @@ import numpy as np
 import torch
 
 from value_decoding.checkpointing import (
+    ensure_merged_component_checkpoint,
     load_actor_model,
     load_critic_model,
     load_tokenizer,
@@ -217,6 +218,9 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Always write critic/value-position outputs under <critic_label>/<value_position>; useful for shard aggregation.",
     )
+    parser.add_argument("--actor_merged_root", type=str, default=None, help="Optional directory for merged actor HF checkpoint.")
+    parser.add_argument("--critic_merged_root", type=str, default=None, help="Optional directory for merged critic HF checkpoints.")
+    parser.add_argument("--skip_merge", action="store_true", help="Require checkpoints to already be complete HF checkpoints.")
     parser.add_argument(
         "--aggregate_input_dirs",
         nargs="*",
@@ -937,8 +941,25 @@ def main() -> None:
         print(json.dumps(summary, indent=2, sort_keys=True))
         return
 
-    actor_dir = Path(args.actor_checkpoint_dir).expanduser().resolve()
-    critic_dirs = [Path(path).expanduser().resolve() for path in args.critic_checkpoint_dir]
+    raw_actor_dir = Path(args.actor_checkpoint_dir).expanduser().resolve()
+    raw_critic_dirs = [Path(path).expanduser().resolve() for path in args.critic_checkpoint_dir]
+    actor_dir = ensure_merged_component_checkpoint(
+        raw_actor_dir,
+        component="actor",
+        merged_root=Path(args.actor_merged_root).expanduser().resolve() if args.actor_merged_root else None,
+        skip_merge=bool(args.skip_merge),
+    )
+    critic_dirs = [
+        ensure_merged_component_checkpoint(
+            raw_critic_dir,
+            component="critic",
+            merged_root=(Path(args.critic_merged_root).expanduser().resolve() / f"critic_{index:03d}")
+            if args.critic_merged_root
+            else None,
+            skip_merge=bool(args.skip_merge),
+        )
+        for index, raw_critic_dir in enumerate(raw_critic_dirs)
+    ]
     dataset_path = Path(args.dataset_path).expanduser().resolve()
     response_key = args.response_key if args.response_key else None
     dtype = resolve_dtype(args.dtype)
@@ -1004,7 +1025,9 @@ def main() -> None:
     base_config.update(
         {
             "actor_checkpoint_dir": str(actor_dir),
+            "raw_actor_checkpoint_dir": str(raw_actor_dir),
             "critic_checkpoint_dirs": [str(path) for path in critic_dirs],
+            "raw_critic_checkpoint_dirs": [str(path) for path in raw_critic_dirs],
             "dataset_path": str(dataset_path),
             "output_dir": str(output_dir),
             "num_loaded_examples": len(examples),
