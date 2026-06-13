@@ -11,6 +11,32 @@
 
 set -euo pipefail
 
+# -----------------------------
+# Cluster environment setup
+# -----------------------------
+module reset
+module load nvidia/25.9
+
+VENV="/work/09576/shuozhe/verl_setup_tacc/.venv"
+source "${VENV}/bin/activate"
+
+WORK_DIR="/work2/09576/shuozhe/verl"
+export PYTHONPATH="${WORK_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
+
+UV_CACHE_DIR="${SCRATCH}/.cache/uv"
+HF_HOME="${SCRATCH}/.cache/huggingface"
+TIKTOKEN_ENCODINGS_BASE="${SCRATCH}/data/embeddings"
+mkdir -p "${UV_CACHE_DIR}" "${HF_HOME}" "${TIKTOKEN_ENCODINGS_BASE}"
+export UV_CACHE_DIR HF_HOME TIKTOKEN_ENCODINGS_BASE
+
+export PYTHONUNBUFFERED=1
+export TOKENIZERS_PARALLELISM=true
+export VLLM_USE_V1=1
+
+echo "Activated environment"
+echo "Python: $(which python)"
+python -V
+
 # =============================================================================
 # TRAJECTORY VALUE BASELINE EVAL - SLURM MULTINODE
 # Runs one independent shard per node/GPU slot, then aggregates global metrics.
@@ -26,7 +52,7 @@ done
 CRITIC_CHECKPOINT_DIRS="${CRITIC_CHECKPOINT_DIRS# }"
 
 # --- Data ---------------------------------------------------------------------
-DATASET_PATH="/data/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet"
+DATASET_PATH="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet"
 ARCHIVE_DIR="/work2/09576/shuozhe/verl/value_decoding/output/trajectory_value_baseline_7b_testset_752951/${SLURM_JOB_ID:-manual}"
 PROMPT_KEY="prompt"
 RESPONSE_KEY="ground_truth"
@@ -60,13 +86,22 @@ SEED=42
 GPUS_PER_NODE="${SLURM_GPUS_ON_NODE:-4}"
 SHARDS_PER_NODE="${GPUS_PER_NODE}"
 
-source /data/shuozhe/miniconda3/etc/profile.d/conda.sh
-conda activate verl
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+REPO_DIR="${WORK_DIR}"
 LOG_DIR="${ARCHIVE_DIR}/logs"
 mkdir -p "${ARCHIVE_DIR}" "${LOG_DIR}"
+
+
+describe_path() {
+  local label="$1"
+  local path="$2"
+  echo "$label: $path"
+  if [[ -d "$path" || -f "$path" ]]; then
+    ls -ld "$path"
+  else
+    echo "  local path not found"
+  fi
+}
 
 validate_component_checkpoint() {
   local checkpoint_dir="$1"
@@ -103,6 +138,11 @@ raise SystemExit(f"{component}: unsupported checkpoint layout at {component_dir}
 PY
 }
 
+
+echo "Checking cluster paths..."
+describe_path "WORK_DIR" "${WORK_DIR}"
+describe_path "DATASET_PATH" "${DATASET_PATH}"
+describe_path "ACTOR_CHECKPOINT_DIR" "${ACTOR_CHECKPOINT_DIR}"
 validate_component_checkpoint "${ACTOR_CHECKPOINT_DIR}" actor
 read -r -a CRITIC_CHECKPOINT_DIRS_ARR <<< "${CRITIC_CHECKPOINT_DIRS}"
 if [[ ${#CRITIC_CHECKPOINT_DIRS_ARR[@]} -eq 0 ]]; then
@@ -202,7 +242,7 @@ for ((node_rank = 0; node_rank < NUM_NODES; node_rank++)); do
     shard_command="$(run_shard_command "${shard_id}" "${local_rank}" "${shard_dir}")"
     echo "Launching shard ${shard_id}/${TOTAL_SHARDS} on ${node_name} cuda:${local_rank}"
     srun --nodes=1 --ntasks=1 -w "${node_name}" --cpus-per-task=$((SLURM_CPUS_PER_TASK / SHARDS_PER_NODE)) \
-      bash -lc "export CUDA_VISIBLE_DEVICES=${local_rank}; source /data/shuozhe/miniconda3/etc/profile.d/conda.sh && conda activate verl && cd '${REPO_DIR}' && ${shard_command}" \
+      bash -lc "export CUDA_VISIBLE_DEVICES=${local_rank}; source '${VENV}/bin/activate' && cd '${REPO_DIR}' && ${shard_command}" \
       > "${shard_log}" 2>&1 &
   done
 done
