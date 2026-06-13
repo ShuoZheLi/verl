@@ -31,7 +31,7 @@ export UV_CACHE_DIR HF_HOME TIKTOKEN_ENCODINGS_BASE
 
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=true
-export VLLM_USE_V1=1
+export VLLM_USE_V1=0
 unset TORCH_LOGS
 unset TORCH_LOGS_OUT
 export TORCHDYNAMO_VERBOSE=0
@@ -72,7 +72,7 @@ GENERATION_BACKEND="vllm"  # vllm accelerates actor generation; use "torch" to d
 VLLM_GPU_MEMORY_UTILIZATION=0.45
 VLLM_TENSOR_PARALLEL_SIZE=1
 VLLM_MAX_NUM_SEQS=""
-VLLM_ENFORCE_EAGER=1
+VLLM_ENFORCE_EAGER=0
 
 # --- Critic readout -----------------------------------------------------------
 VALUE_POSITIONS="pre_eos"
