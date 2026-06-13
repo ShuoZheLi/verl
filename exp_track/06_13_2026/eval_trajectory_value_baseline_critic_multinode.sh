@@ -2,10 +2,10 @@
 #SBATCH --job-name=ppo_metamath_multinode
 #SBATCH --account=ECS26006
 #SBATCH --partition=gh
-#SBATCH --nodes=8
+#SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=03:00:00
+#SBATCH --time=10:00:00
 #SBATCH --output=slurm-%j.out
 #SBATCH --error=slurm-%j.err
 
@@ -17,12 +17,17 @@ set -euo pipefail
 # =============================================================================
 
 # --- Checkpoints --------------------------------------------------------------
-ACTOR_CHECKPOINT_DIR="/data/shuozhe/verl/train_log/job_05b_vh_init_e5_metamath/global_step_800"
-CRITIC_CHECKPOINT_DIRS="/data/shuozhe/verl/train_log/job_05b_vh_init_e5_metamath/global_step_800"
+CHECKPOINT_ROOT="/work2/09576/shuozhe/verl/train_log_archive/7b_testset_752950/train_log"
+ACTOR_CHECKPOINT_DIR="${CHECKPOINT_ROOT}/global_step_100"
+CRITIC_CHECKPOINT_DIRS=""
+for step in $(seq 100 100 1000); do
+  CRITIC_CHECKPOINT_DIRS+=" ${CHECKPOINT_ROOT}/global_step_${step}"
+done
+CRITIC_CHECKPOINT_DIRS="${CRITIC_CHECKPOINT_DIRS# }"
 
 # --- Data ---------------------------------------------------------------------
 DATASET_PATH="/data/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet"
-ARCHIVE_DIR="/data/shuozhe/verl/value_decoding/output/trajectory_value_baseline_1d5_critic_multinode/${SLURM_JOB_ID:-manual}"
+ARCHIVE_DIR="/work2/09576/shuozhe/verl/value_decoding/output/trajectory_value_baseline_7b_testset_752950/${SLURM_JOB_ID:-manual}"
 PROMPT_KEY="prompt"
 RESPONSE_KEY="ground_truth"
 START_INDEX=0

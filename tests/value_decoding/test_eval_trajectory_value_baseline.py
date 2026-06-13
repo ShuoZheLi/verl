@@ -117,3 +117,122 @@ def test_aggregate_output_dirs_recomputes_global_rbar(tmp_path):
     rows = (output_dir / "trajectory_values.jsonl").read_text(encoding="utf-8").strip().splitlines()
     assert len(rows) == 2
     assert '"r_bar": 0.5' in rows[0]
+
+
+def test_vllm_output_token_ids_supports_known_attribute_names():
+    from value_decoding.eval_trajectory_value_baseline import vllm_output_token_ids
+
+    class OutputWithTokenIds:
+        token_ids = (1, 2, 3)
+
+    class OutputWithOutputTokenIds:
+        token_ids = None
+        output_token_ids = [4, 5]
+
+    assert vllm_output_token_ids(OutputWithTokenIds()) == [1, 2, 3]
+    assert vllm_output_token_ids(OutputWithOutputTokenIds()) == [4, 5]
+
+
+def test_maybe_append_vllm_stop_eos_when_stop_token_omitted():
+    from value_decoding.eval_trajectory_value_baseline import maybe_append_vllm_stop_eos
+
+    class Tokenizer:
+        eos_token_id = 99
+
+    class Output:
+        finish_reason = "stop"
+        stop_reason = 99
+
+    assert maybe_append_vllm_stop_eos([1, 2], Output(), Tokenizer()) == [1, 2, 99]
+    assert maybe_append_vllm_stop_eos([1, 2, 99], Output(), Tokenizer()) == [1, 2, 99]
+
+
+def test_critic_label_from_path_is_unique():
+    from pathlib import Path
+    from value_decoding.eval_trajectory_value_baseline import critic_label_from_path
+
+    used = set()
+    first = critic_label_from_path(Path('/tmp/run/global_step_100'), used)
+    second = critic_label_from_path(Path('/tmp/run/global_step_100'), used)
+    assert first == 'run__global_step_100'
+    assert second == 'run__global_step_100_1'
+
+
+def test_aggregate_preserves_single_critic_metadata(tmp_path):
+    import json
+    from value_decoding.eval_trajectory_value_baseline import aggregate_output_dirs
+
+    shard = tmp_path / 'shard'
+    run_dir = shard / 'critic_a' / 'pre_eos'
+    run_dir.mkdir(parents=True)
+    row = {
+        'trajectory_id': 0,
+        'prompt_id': 0,
+        'reward': 1.0,
+        'critic_value': 0.75,
+        'critic_label': 'critic_a',
+        'critic_checkpoint_dir': '/ckpt/a',
+    }
+    (run_dir / 'trajectory_values.jsonl').write_text(json.dumps(row) + '\n', encoding='utf-8')
+    out = tmp_path / 'agg'
+    summary = aggregate_output_dirs([run_dir], out, value_position='pre_eos')
+    assert summary['critic_label'] == 'critic_a'
+    assert summary['critic_checkpoint_dir'] == '/ckpt/a'
+
+
+def test_evaluate_critic_position_writes_correct_losses_and_summary(tmp_path, monkeypatch):
+    import json
+    from pathlib import Path
+    import torch
+    import value_decoding.eval_trajectory_value_baseline as ev
+
+    class Tokenizer:
+        eos_token_id = 99
+
+        def __call__(self, text, **kwargs):
+            return {"input_ids": [10, 11, 12]}
+
+    class Critic:
+        pass
+
+    def fake_sequence_values(critic, input_ids, attention_mask=None):
+        # prompt length is 3; response length is 2, so VERL-aligned response
+        # values are raw[2:4] = [0.25, 0.8]. pre_eos on response [7, EOS]
+        # should select 0.8, not raw EOS/post position 123.0.
+        return torch.tensor([[0.0, 0.1, 0.25, 0.8, 123.0]], dtype=torch.float32)
+
+    monkeypatch.setattr(ev, "critic_sequence_values", fake_sequence_values)
+    trajectories = [
+        ev.TrajectoryRecord(
+            trajectory_id=0,
+            prompt_id=0,
+            prompt="prompt",
+            response="answer",
+            response_token_ids=[7, 99],
+            reward=1.0,
+            data_source="math",
+            ground_truth="answer",
+        )
+    ]
+    summary = ev.evaluate_critic_position(
+        critic=Critic(),
+        critic_dir=Path("/critic/a"),
+        critic_label="critic_a",
+        tokenizer=Tokenizer(),
+        trajectories=trajectories,
+        r_bar=1.0,
+        eos_token_ids={99},
+        value_position="pre_eos",
+        output_dir=tmp_path,
+        device=torch.device("cpu"),
+        max_prompt_length=None,
+        config={"test": True},
+    )
+    assert summary["critic_label"] == "critic_a"
+    assert summary["critic_checkpoint_dir"] == "/critic/a"
+    assert math.isclose(summary["critic_mse"], (0.8 - 1.0) ** 2, rel_tol=1e-6, abs_tol=1e-8)
+    row = json.loads((tmp_path / "trajectory_values.jsonl").read_text(encoding="utf-8").strip())
+    assert math.isclose(row["critic_value"], 0.8, rel_tol=1e-6, abs_tol=1e-8)
+    assert math.isclose(row["critic_loss"], (0.8 - 1.0) ** 2, rel_tol=1e-6, abs_tol=1e-8)
+    assert row["constant_loss"] == 0.0
+    assert row["selected_full_index"] == 3

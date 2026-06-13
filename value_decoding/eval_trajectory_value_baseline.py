@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import math
 import random
@@ -22,6 +23,50 @@ from value_decoding.checkpointing import (
 from value_decoding.data import ExampleRecord, load_examples
 from verl.utils.reward_score import default_compute_score
 from value_decoding.decoding import critic_sequence_values
+
+LLM = None
+SamplingParams = None
+TokensPrompt = None
+
+
+def ensure_vllm_imported() -> None:
+    global LLM, SamplingParams, TokensPrompt
+    if LLM is not None and SamplingParams is not None:
+        return
+    try:
+        from vllm import LLM as imported_llm
+        from vllm import SamplingParams as imported_sampling_params
+    except ImportError as exc:
+        raise ImportError(
+            "--generation_backend=vllm requires vLLM in the active environment. "
+            "Use --generation_backend=torch if vLLM is unavailable."
+        ) from exc
+    try:
+        from vllm.inputs.data import TokensPrompt as imported_tokens_prompt
+    except Exception:
+        imported_tokens_prompt = None
+    LLM = imported_llm
+    SamplingParams = imported_sampling_params
+    TokensPrompt = imported_tokens_prompt
+
+
+def resolve_vllm_dtype(dtype_name: str) -> str:
+    return {"bf16": "bfloat16", "fp16": "float16", "fp32": "float32"}[dtype_name]
+
+
+def vllm_output_token_ids(output: Any) -> list[int]:
+    token_ids = getattr(output, "token_ids", None)
+    if token_ids is None:
+        token_ids = getattr(output, "output_token_ids", None)
+    if token_ids is None:
+        return []
+    return [int(token_id) for token_id in token_ids]
+
+
+def make_vllm_prompt(prompt_token_ids: list[int]) -> Any:
+    if TokensPrompt is not None:
+        return TokensPrompt(prompt_token_ids=prompt_token_ids)
+    return {"prompt_token_ids": prompt_token_ids}
 
 @dataclass(frozen=True)
 class TrajectoryRecord:
@@ -88,8 +133,22 @@ def aggregate_output_dirs(input_dirs: list[Path], output_dir: Path, *, value_pos
             normalized_rows.append(normalized)
             handle.write(json.dumps(normalized, ensure_ascii=False, default=_json_default) + "\n")
     summary = summarize(normalized_rows, value_position=value_position)
+    critic_labels = sorted({str(row.get("critic_label")) for row in normalized_rows if row.get("critic_label") is not None})
+    critic_dirs = sorted({str(row.get("critic_checkpoint_dir")) for row in normalized_rows if row.get("critic_checkpoint_dir") is not None})
+    if len(critic_labels) == 1:
+        summary["critic_label"] = critic_labels[0]
+    if len(critic_dirs) == 1:
+        summary["critic_checkpoint_dir"] = critic_dirs[0]
     write_json(output_dir / "summary_metrics.json", summary)
-    write_json(output_dir / "config.json", {"aggregate_input_dirs": [str(path) for path in input_dirs], "value_position": value_position})
+    write_json(
+        output_dir / "config.json",
+        {
+            "aggregate_input_dirs": [str(path) for path in input_dirs],
+            "value_position": value_position,
+            "critic_labels": critic_labels,
+            "critic_checkpoint_dirs": critic_dirs,
+        },
+    )
     return summary
 
 def parse_args() -> argparse.Namespace:
@@ -97,7 +156,7 @@ def parse_args() -> argparse.Namespace:
         description="Compare a trained trajectory critic against the constant policy-accuracy baseline."
     )
     parser.add_argument("--actor_checkpoint_dir", type=str, required=True, help="Actor HF checkpoint directory.")
-    parser.add_argument("--critic_checkpoint_dir", type=str, required=True, help="Critic HF checkpoint directory.")
+    parser.add_argument("--critic_checkpoint_dir", type=str, nargs="+", required=True, help="One or more critic HF checkpoint directories.")
     parser.add_argument("--dataset_path", type=str, required=True, help="Evaluation parquet dataset path.")
     parser.add_argument("--output_dir", type=str, required=True, help="Directory for config/rows/summary outputs.")
     parser.add_argument("--max_examples", type=int, default=500, help="Maximum prompts to evaluate; negative means all.")
@@ -110,8 +169,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--value_position",
         choices=["pre_eos", "last_response", "tail_mean_4", "tail_mean_8", "tail_mean_16", "prompt_only"],
-        default="pre_eos",
-        help="Scalar critic readout position.",
+        nargs="+",
+        default=["pre_eos"],
+        help="One or more scalar critic readout positions.",
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed for generation and shuffling.")
     parser.add_argument("--response_bank_path", type=str, default=None, help="Optional existing response bank JSONL.")
@@ -134,9 +194,29 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="Use 0/1 math-DAPO rewards, matching ppo_freeze_actor_train_critic.sh by default.",
     )
-    parser.add_argument("--batch_size", type=int, default=1, help="Generation batch size for actor generation.")
+    parser.add_argument("--batch_size", type=int, default=1, help="Generation batch size for actor/vLLM generation.")
+    parser.add_argument(
+        "--generation_backend",
+        choices=["torch", "vllm"],
+        default="torch",
+        help="Actor generation backend. vLLM accelerates trajectory generation; critic scoring remains torch.",
+    )
+    parser.add_argument("--vllm_gpu_memory_utilization", type=float, default=0.8, help="vLLM GPU memory utilization.")
+    parser.add_argument("--vllm_tensor_parallel_size", type=int, default=1, help="vLLM tensor parallel size per evaluator process.")
+    parser.add_argument("--vllm_max_num_seqs", type=int, default=None, help="Optional vLLM max_num_seqs.")
+    parser.add_argument(
+        "--vllm_enforce_eager",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Pass enforce_eager to vLLM. Defaults true for robustness; use --no-vllm_enforce_eager for throughput.",
+    )
     parser.add_argument("--num_shards", type=int, default=1, help="Number of dataset/trajectory shards for distributed evaluation.")
     parser.add_argument("--shard_id", type=int, default=0, help="Shard id in [0, num_shards).")
+    parser.add_argument(
+        "--always_write_run_subdirs",
+        action="store_true",
+        help="Always write critic/value-position outputs under <critic_label>/<value_position>; useful for shard aggregation.",
+    )
     parser.add_argument(
         "--aggregate_input_dirs",
         nargs="*",
@@ -292,7 +372,34 @@ def _sampling_kwargs(args: argparse.Namespace, tokenizer) -> dict[str, Any]:
     return kwargs
 
 
-def generate_trajectories(
+def _make_trajectory_record(
+    *,
+    trajectory_id: int,
+    example: ExampleRecord,
+    response: str,
+    response_token_ids: list[int],
+    math_dapo_binary_reward: bool,
+) -> TrajectoryRecord:
+    reward = float(
+        score_trajectory_response(
+            example,
+            response,
+            math_dapo_binary_reward=math_dapo_binary_reward,
+        )
+    )
+    return TrajectoryRecord(
+        trajectory_id=trajectory_id,
+        prompt_id=int(example.example_id),
+        prompt=example.prompt_text,
+        response=response,
+        response_token_ids=response_token_ids,
+        reward=reward,
+        data_source=example.data_source,
+        ground_truth=example.ground_truth,
+    )
+
+
+def generate_trajectories_with_torch(
     *,
     examples: list[ExampleRecord],
     actor,
@@ -330,27 +437,150 @@ def generate_trajectories(
             if tokenizer.pad_token_id is not None:
                 response_token_ids = [token_id for token_id in response_token_ids if token_id != int(tokenizer.pad_token_id)]
             response = tokenizer.decode(response_token_ids, skip_special_tokens=True)
-            reward = float(
-                score_trajectory_response(
-                    example,
-                    response,
-                    math_dapo_binary_reward=bool(args.math_dapo_binary_reward),
-                )
-            )
             trajectories.append(
-                TrajectoryRecord(
+                _make_trajectory_record(
                     trajectory_id=len(trajectories),
-                    prompt_id=int(example.example_id),
-                    prompt=example.prompt_text,
+                    example=example,
                     response=response,
                     response_token_ids=response_token_ids,
-                    reward=reward,
-                    data_source=example.data_source,
-                    ground_truth=example.ground_truth,
+                    math_dapo_binary_reward=bool(args.math_dapo_binary_reward),
                 )
             )
     return trajectories
 
+
+def build_vllm_engine(args: argparse.Namespace, actor_dir: Path) -> Any:
+    ensure_vllm_imported()
+    tensor_parallel_size = int(args.vllm_tensor_parallel_size)
+    if tensor_parallel_size <= 0:
+        raise ValueError("--vllm_tensor_parallel_size must be positive.")
+    if not (0.0 < float(args.vllm_gpu_memory_utilization) <= 1.0):
+        raise ValueError("--vllm_gpu_memory_utilization must be in (0, 1].")
+    kwargs: dict[str, Any] = {
+        "model": str(actor_dir),
+        "tokenizer": str(actor_dir),
+        "dtype": resolve_vllm_dtype(args.dtype),
+        "trust_remote_code": bool(args.trust_remote_code),
+        "tensor_parallel_size": tensor_parallel_size,
+        "gpu_memory_utilization": float(args.vllm_gpu_memory_utilization),
+        "enforce_eager": bool(args.vllm_enforce_eager),
+        "max_model_len": int(args.max_prompt_length) + int(args.max_new_tokens),
+    }
+    if args.vllm_max_num_seqs is not None:
+        kwargs["max_num_seqs"] = int(args.vllm_max_num_seqs)
+    return LLM(**kwargs)
+
+
+
+def maybe_append_vllm_stop_eos(response_token_ids: list[int], output: Any, tokenizer) -> list[int]:
+    """Append EOS when vLLM stopped on EOS but omitted the stop token from token_ids.
+
+    HF ``generate`` usually returns EOS in the generated ids. vLLM may stop because of
+    ``stop_token_ids`` without including that stop token in ``output.token_ids``. For
+    the ``pre_eos`` readout, we need the critic input to include EOS when EOS was the
+    actual termination action, so the response-aligned EOS position maps to the raw
+    value at the last non-EOS token (the state immediately before EOS).
+    """
+    eos_token_id = tokenizer.eos_token_id
+    if eos_token_id is None:
+        return response_token_ids
+    eos_token_id = int(eos_token_id)
+    if response_token_ids and response_token_ids[-1] == eos_token_id:
+        return response_token_ids
+
+    finish_reason = getattr(output, "finish_reason", None)
+    stop_reason = getattr(output, "stop_reason", None)
+    stopped_on_eos = stop_reason == eos_token_id
+    if isinstance(stop_reason, str):
+        try:
+            stopped_on_eos = int(stop_reason) == eos_token_id
+        except ValueError:
+            stopped_on_eos = False
+    if finish_reason in {"stop", "eos"}:
+        stopped_on_eos = True
+
+    if stopped_on_eos:
+        return [*response_token_ids, eos_token_id]
+    return response_token_ids
+
+
+def cleanup_vllm_engine(llm: Any) -> None:
+    """Best-effort vLLM cleanup before loading the torch critic in the same process."""
+    del llm
+    try:
+        from vllm.distributed.parallel_state import destroy_model_parallel
+
+        destroy_model_parallel()
+    except Exception:
+        pass
+    try:
+        from vllm.distributed.parallel_state import destroy_distributed_environment
+
+        destroy_distributed_environment()
+    except Exception:
+        pass
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def make_vllm_sampling_params(args: argparse.Namespace, tokenizer) -> Any:
+    ensure_vllm_imported()
+    stop_token_ids = [] if tokenizer.eos_token_id is None else [int(tokenizer.eos_token_id)]
+    temperature = float(args.temperature)
+    return SamplingParams(
+        n=max(1, int(args.num_samples_per_prompt)),
+        temperature=temperature,
+        top_p=float(args.top_p),
+        top_k=0 if int(args.top_k) <= 0 else int(args.top_k),
+        max_tokens=int(args.max_new_tokens),
+        seed=int(args.seed),
+        stop_token_ids=stop_token_ids,
+        skip_special_tokens=True,
+    )
+
+
+def generate_trajectories_with_vllm(
+    *,
+    examples: list[ExampleRecord],
+    llm: Any,
+    tokenizer,
+    args: argparse.Namespace,
+) -> list[TrajectoryRecord]:
+    trajectories: list[TrajectoryRecord] = []
+    batch_size = max(1, int(args.batch_size))
+    sampling_params = make_vllm_sampling_params(args, tokenizer)
+
+    for batch_start in range(0, len(examples), batch_size):
+        batch = examples[batch_start : batch_start + batch_size]
+        prompts: list[Any] = []
+        for example in batch:
+            prompt_token_ids = tokenizer(
+                example.prompt_text,
+                truncation=True,
+                max_length=int(args.max_prompt_length),
+                return_attention_mask=False,
+                return_token_type_ids=False,
+            )["input_ids"]
+            prompts.append(make_vllm_prompt([int(token_id) for token_id in prompt_token_ids]))
+
+        request_outputs = llm.generate(prompts=prompts, sampling_params=sampling_params, use_tqdm=False)
+        for example, request_output in zip(batch, request_outputs, strict=True):
+            for output in request_output.outputs:
+                response_token_ids = maybe_append_vllm_stop_eos(vllm_output_token_ids(output), output, tokenizer)
+                response = getattr(output, "text", None)
+                if response is None:
+                    response = tokenizer.decode(response_token_ids, skip_special_tokens=True)
+                trajectories.append(
+                    _make_trajectory_record(
+                        trajectory_id=len(trajectories),
+                        example=example,
+                        response=response,
+                        response_token_ids=response_token_ids,
+                        math_dapo_binary_reward=bool(args.math_dapo_binary_reward),
+                    )
+                )
+    return trajectories
 
 def _first_eos_index(token_ids: list[int], eos_token_ids: set[int]) -> int | None:
     for index, token_id in enumerate(token_ids):
@@ -554,21 +784,161 @@ def write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=_json_default) + "\n", encoding="utf-8")
 
 
+
+def safe_path_name(value: str) -> str:
+    safe = value.rstrip("/").replace("/", "__")
+    safe = safe.replace(" ", "_").replace(":", "_")
+    return safe or "root"
+
+
+def critic_label_from_path(path: Path, used_labels: set[str]) -> str:
+    parts = [part for part in path.parts if part]
+    if len(parts) >= 2 and parts[-1] in {"critic", "actor"}:
+        base = "__".join(parts[-3:]) if len(parts) >= 3 else "__".join(parts[-2:])
+    elif len(parts) >= 2:
+        base = "__".join(parts[-2:])
+    else:
+        base = path.name or "critic"
+    label = safe_path_name(base)
+    if label not in used_labels:
+        used_labels.add(label)
+        return label
+    index = 1
+    while f"{label}_{index}" in used_labels:
+        index += 1
+    unique = f"{label}_{index}"
+    used_labels.add(unique)
+    return unique
+
+
+def write_trajectory_bank(output_dir: Path, trajectories: list[TrajectoryRecord], *, r_bar: float) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    rows_path = output_dir / "trajectory_bank.jsonl"
+    with rows_path.open("w", encoding="utf-8") as handle:
+        for trajectory in trajectories:
+            row = {
+                "trajectory_id": int(trajectory.trajectory_id),
+                "prompt_id": int(trajectory.prompt_id),
+                "prompt": trajectory.prompt,
+                "response": trajectory.response,
+                "response_token_ids": trajectory.response_token_ids,
+                "reward": float(trajectory.reward),
+                "r_bar": r_bar,
+                "constant_loss": float((r_bar - float(trajectory.reward)) ** 2),
+                "response_length": len(trajectory.response_token_ids),
+                "data_source": trajectory.data_source,
+                "ground_truth": trajectory.ground_truth,
+            }
+            handle.write(json.dumps(row, ensure_ascii=False, default=_json_default) + "\n")
+
+
+def evaluate_critic_position(
+    *,
+    critic,
+    critic_dir: Path,
+    critic_label: str,
+    tokenizer,
+    trajectories: list[TrajectoryRecord],
+    r_bar: float,
+    eos_token_ids: set[int],
+    value_position: str,
+    output_dir: Path,
+    device: torch.device,
+    max_prompt_length: int | None,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, Any]] = []
+    rows_path = output_dir / "trajectory_values.jsonl"
+    with rows_path.open("w", encoding="utf-8") as handle:
+        for trajectory in trajectories:
+            readout = compute_critic_readout(
+                critic=critic,
+                tokenizer=tokenizer,
+                trajectory=trajectory,
+                eos_token_ids=eos_token_ids,
+                value_position=value_position,
+                device=device,
+                max_prompt_length=max_prompt_length,
+            )
+            constant_loss = float((r_bar - float(trajectory.reward)) ** 2)
+            critic_loss = float((readout.value - float(trajectory.reward)) ** 2)
+            row = {
+                "trajectory_id": int(trajectory.trajectory_id),
+                "prompt_id": int(trajectory.prompt_id),
+                "prompt": trajectory.prompt,
+                "response": trajectory.response,
+                "response_token_ids": trajectory.response_token_ids,
+                "reward": float(trajectory.reward),
+                "r_bar": r_bar,
+                "constant_loss": constant_loss,
+                "critic_value": float(readout.value),
+                "critic_loss": critic_loss,
+                "critic_checkpoint_dir": str(critic_dir),
+                "critic_label": critic_label,
+                "value_position": value_position,
+                "response_length": int(readout.response_length),
+                "ended_with_eos": bool(readout.ended_with_eos),
+                "selected_response_index": readout.selected_response_index,
+                "selected_full_index": readout.selected_full_index,
+                "data_source": trajectory.data_source,
+                "ground_truth": trajectory.ground_truth,
+            }
+            rows.append(row)
+            handle.write(json.dumps(row, ensure_ascii=False, default=_json_default) + "\n")
+            handle.flush()
+
+    summary = summarize(rows, value_position=value_position)
+    summary.update({"critic_checkpoint_dir": str(critic_dir), "critic_label": critic_label})
+    run_config = dict(config)
+    run_config.update(
+        {
+            "critic_checkpoint_dir": str(critic_dir),
+            "critic_label": critic_label,
+            "value_position": value_position,
+            "output_dir": str(output_dir),
+        }
+    )
+    write_json(output_dir / "config.json", run_config)
+    write_json(output_dir / "summary_metrics.json", summary)
+    return summary
+
+
+def write_comparison_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> None:
+    if not summaries:
+        return
+    payload = {
+        "num_runs": len(summaries),
+        "runs": summaries,
+        "best_by_critic_mse": min(summaries, key=lambda item: float(item["critic_mse"])),
+        "best_by_relative_mse_improvement": max(
+            summaries,
+            key=lambda item: float("-inf") if item.get("relative_mse_improvement") is None else float(item["relative_mse_improvement"]),
+        ),
+    }
+    write_json(output_dir / "comparison_summary.json", payload)
+
+
 def main() -> None:
     args = parse_args()
     set_seed(int(args.seed))
     output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    value_positions = list(args.value_position)
+    if not value_positions:
+        raise ValueError("At least one --value_position must be provided.")
+    primary_value_position = value_positions[0]
+
     aggregate_input_dirs = args.aggregate_input_dirs
     if aggregate_input_dirs:
         input_dirs = [Path(path).expanduser().resolve() for path in aggregate_input_dirs]
-        summary = aggregate_output_dirs(input_dirs, output_dir, value_position=args.value_position)
+        summary = aggregate_output_dirs(input_dirs, output_dir, value_position=primary_value_position)
         print(json.dumps(summary, indent=2, sort_keys=True))
         return
 
     actor_dir = Path(args.actor_checkpoint_dir).expanduser().resolve()
-    critic_dir = Path(args.critic_checkpoint_dir).expanduser().resolve()
+    critic_dirs = [Path(path).expanduser().resolve() for path in args.critic_checkpoint_dir]
     dataset_path = Path(args.dataset_path).expanduser().resolve()
     response_key = args.response_key if args.response_key else None
     dtype = resolve_dtype(args.dtype)
@@ -598,19 +968,28 @@ def main() -> None:
             math_dapo_binary_reward=bool(args.math_dapo_binary_reward),
         )
     else:
-        actor = load_actor_model(actor_dir, dtype=dtype, device=actor_device, trust_remote_code=args.trust_remote_code)
-        trajectories = generate_trajectories(
-            examples=examples,
-            actor=actor,
-            tokenizer=tokenizer,
-            args=args,
-            device=actor_device,
-        )
-        del actor
-        if actor_device.type == "cuda":
-            torch.cuda.empty_cache()
+        if args.generation_backend == "vllm":
+            llm = build_vllm_engine(args, actor_dir)
+            trajectories = generate_trajectories_with_vllm(
+                examples=examples,
+                llm=llm,
+                tokenizer=tokenizer,
+                args=args,
+            )
+            cleanup_vllm_engine(llm)
+        else:
+            actor = load_actor_model(actor_dir, dtype=dtype, device=actor_device, trust_remote_code=args.trust_remote_code)
+            trajectories = generate_trajectories_with_torch(
+                examples=examples,
+                actor=actor,
+                tokenizer=tokenizer,
+                args=args,
+                device=actor_device,
+            )
+            del actor
+            if actor_device.type == "cuda":
+                torch.cuda.empty_cache()
 
-    critic = load_critic_model(critic_dir, dtype=dtype, device=critic_device, trust_remote_code=args.trust_remote_code)
     eos_token_ids = set(resolve_eos_token_ids(actor_dir, tokenizer))
     if tokenizer.eos_token_id is not None:
         eos_token_ids.add(int(tokenizer.eos_token_id))
@@ -619,61 +998,57 @@ def main() -> None:
     if rewards.size == 0:
         raise ValueError("No trajectories available for evaluation.")
     r_bar = float(np.mean(rewards))
+    write_trajectory_bank(output_dir, trajectories, r_bar=r_bar)
 
-    rows: list[dict[str, Any]] = []
-    rows_path = output_dir / "trajectory_values.jsonl"
-    with rows_path.open("w", encoding="utf-8") as handle:
-        for trajectory in trajectories:
-            readout = compute_critic_readout(
-                critic=critic,
-                tokenizer=tokenizer,
-                trajectory=trajectory,
-                eos_token_ids=eos_token_ids,
-                value_position=args.value_position,
-                device=critic_device,
-                max_prompt_length=int(args.max_prompt_length) if int(args.max_prompt_length) > 0 else None,
-            )
-            constant_loss = float((r_bar - float(trajectory.reward)) ** 2)
-            critic_loss = float((readout.value - float(trajectory.reward)) ** 2)
-            row = {
-                "trajectory_id": int(trajectory.trajectory_id),
-                "prompt_id": int(trajectory.prompt_id),
-                "prompt": trajectory.prompt,
-                "response": trajectory.response,
-                "response_token_ids": trajectory.response_token_ids,
-                "reward": float(trajectory.reward),
-                "r_bar": r_bar,
-                "constant_loss": constant_loss,
-                "critic_value": float(readout.value),
-                "critic_loss": critic_loss,
-                "value_position": args.value_position,
-                "response_length": int(readout.response_length),
-                "ended_with_eos": bool(readout.ended_with_eos),
-                "selected_response_index": readout.selected_response_index,
-                "selected_full_index": readout.selected_full_index,
-                "data_source": trajectory.data_source,
-                "ground_truth": trajectory.ground_truth,
-            }
-            rows.append(row)
-            handle.write(json.dumps(row, ensure_ascii=False, default=_json_default) + "\n")
-            handle.flush()
-
-    summary = summarize(rows, value_position=args.value_position)
-    config = vars(args).copy()
-    config.update(
+    base_config = vars(args).copy()
+    base_config.update(
         {
             "actor_checkpoint_dir": str(actor_dir),
-            "critic_checkpoint_dir": str(critic_dir),
+            "critic_checkpoint_dirs": [str(path) for path in critic_dirs],
             "dataset_path": str(dataset_path),
             "output_dir": str(output_dir),
             "num_loaded_examples": len(examples),
             "num_trajectories": len(trajectories),
+            "avg_policy_accuracy": r_bar,
             "eos_token_ids": sorted(eos_token_ids),
         }
     )
-    write_json(output_dir / "config.json", config)
-    write_json(output_dir / "summary_metrics.json", summary)
-    print(json.dumps(summary, indent=2, sort_keys=True))
+    write_json(output_dir / "config.json", base_config)
+
+    used_labels: set[str] = set()
+    critic_labels = [critic_label_from_path(path, used_labels) for path in critic_dirs]
+    multi_run = bool(args.always_write_run_subdirs) or len(critic_dirs) > 1 or len(value_positions) > 1
+    summaries: list[dict[str, Any]] = []
+
+    for critic_dir, critic_label in zip(critic_dirs, critic_labels, strict=True):
+        critic = load_critic_model(critic_dir, dtype=dtype, device=critic_device, trust_remote_code=args.trust_remote_code)
+        for value_position in value_positions:
+            run_output_dir = output_dir if not multi_run else output_dir / critic_label / value_position
+            summary = evaluate_critic_position(
+                critic=critic,
+                critic_dir=critic_dir,
+                critic_label=critic_label,
+                tokenizer=tokenizer,
+                trajectories=trajectories,
+                r_bar=r_bar,
+                eos_token_ids=eos_token_ids,
+                value_position=value_position,
+                output_dir=run_output_dir,
+                device=critic_device,
+                max_prompt_length=int(args.max_prompt_length) if int(args.max_prompt_length) > 0 else None,
+                config=base_config,
+            )
+            summaries.append(summary)
+            print(json.dumps(summary, indent=2, sort_keys=True))
+        del critic
+        gc.collect()
+        if critic_device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    if multi_run:
+        write_comparison_summary(output_dir, summaries)
+    else:
+        write_json(output_dir / "summary_metrics.json", summaries[0])
 
 
 if __name__ == "__main__":

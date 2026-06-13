@@ -9,7 +9,7 @@ set -euo pipefail
 
 # --- Checkpoints --------------------------------------------------------------
 ACTOR_CHECKPOINT_DIR="/data/shuozhe/verl/train_log/job_05b_vh_init_e5_metamath/global_step_800"
-CRITIC_CHECKPOINT_DIR="/data/shuozhe/verl/train_log/job_05b_vh_init_e5_metamath/global_step_800"
+CRITIC_CHECKPOINT_DIRS="/data/shuozhe/verl/train_log/job_05b_vh_init_e5_metamath/global_step_800"
 
 # --- Data ---------------------------------------------------------------------
 DATASET_PATH="/data/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet"
@@ -30,7 +30,12 @@ MAX_NEW_TOKENS=2048
 TEMPERATURE=1.0
 TOP_P=1.0
 TOP_K=0
-BATCH_SIZE=1
+BATCH_SIZE=128
+GENERATION_BACKEND="vllm"  # vllm accelerates actor generation; use "torch" to disable.
+VLLM_GPU_MEMORY_UTILIZATION=0.45
+VLLM_TENSOR_PARALLEL_SIZE=1
+VLLM_MAX_NUM_SEQS=""
+VLLM_ENFORCE_EAGER=1
 
 # --- Critic readout -----------------------------------------------------------
 # Recommended: pre_eos. Also useful: tail_mean_8 tail_mean_16.
@@ -86,7 +91,14 @@ PY
 }
 
 validate_component_checkpoint "${ACTOR_CHECKPOINT_DIR}" actor
-validate_component_checkpoint "${CRITIC_CHECKPOINT_DIR}" critic
+read -r -a CRITIC_CHECKPOINT_DIRS_ARR <<< "${CRITIC_CHECKPOINT_DIRS}"
+if [[ ${#CRITIC_CHECKPOINT_DIRS_ARR[@]} -eq 0 ]]; then
+  echo "CRITIC_CHECKPOINT_DIRS must contain at least one checkpoint." >&2
+  exit 1
+fi
+for critic_checkpoint_dir in "${CRITIC_CHECKPOINT_DIRS_ARR[@]}"; do
+  validate_component_checkpoint "${critic_checkpoint_dir}" critic
+done
 mkdir -p "${OUTPUT_DIR}"
 
 read -r -a VALUE_POSITIONS_ARR <<< "${VALUE_POSITIONS}"
@@ -95,17 +107,15 @@ if [[ ${#VALUE_POSITIONS_ARR[@]} -eq 0 ]]; then
   exit 1
 fi
 
-run_one_position() {
-  local value_position="$1"
-  local output_dir_for_position="$2"
-  local log_path="$3"
+run_eval() {
+  local log_path="${OUTPUT_DIR}/eval.log"
 
   CMD=(
     python -m value_decoding.eval_trajectory_value_baseline
     --actor_checkpoint_dir "${ACTOR_CHECKPOINT_DIR}"
-    --critic_checkpoint_dir "${CRITIC_CHECKPOINT_DIR}"
+    --critic_checkpoint_dir "${CRITIC_CHECKPOINT_DIRS_ARR[@]}"
     --dataset_path "${DATASET_PATH}"
-    --output_dir "${output_dir_for_position}"
+    --output_dir "${OUTPUT_DIR}"
     --prompt_key "${PROMPT_KEY}"
     --response_key "${RESPONSE_KEY}"
     --start_index "${START_INDEX}"
@@ -116,15 +126,21 @@ run_one_position() {
     --temperature "${TEMPERATURE}"
     --top_p "${TOP_P}"
     --top_k "${TOP_K}"
-    --value_position "${value_position}"
+    --value_position "${VALUE_POSITIONS_ARR[@]}"
     --seed "${SEED}"
     --dtype "${DTYPE}"
     --batch_size "${BATCH_SIZE}"
+    --generation_backend "${GENERATION_BACKEND}"
+    --vllm_gpu_memory_utilization "${VLLM_GPU_MEMORY_UTILIZATION}"
+    --vllm_tensor_parallel_size "${VLLM_TENSOR_PARALLEL_SIZE}"
   )
 
   [[ -n "${DEVICE}" ]] && CMD+=(--device "${DEVICE}")
   [[ -n "${CRITIC_DEVICE}" ]] && CMD+=(--critic_device "${CRITIC_DEVICE}")
   [[ -n "${RESPONSE_BANK_PATH}" ]] && CMD+=(--response_bank_path "${RESPONSE_BANK_PATH}")
+  [[ -n "${VLLM_MAX_NUM_SEQS}" ]] && CMD+=(--vllm_max_num_seqs "${VLLM_MAX_NUM_SEQS}")
+  [[ "${VLLM_ENFORCE_EAGER}" != "0" ]] && CMD+=(--vllm_enforce_eager)
+  [[ "${VLLM_ENFORCE_EAGER}" == "0" ]] && CMD+=(--no-vllm_enforce_eager)
   [[ "${SHUFFLE}" != "0" ]] && CMD+=(--shuffle)
   [[ "${TRUST_REMOTE_CODE}" != "0" ]] && CMD+=(--trust_remote_code)
   if [[ "${MATH_DAPO_BINARY_REWARD}" != "0" ]]; then
@@ -133,18 +149,13 @@ run_one_position() {
     CMD+=(--no-math_dapo_binary_reward)
   fi
 
-  mkdir -p "${output_dir_for_position}"
-  printf 'Running value_position=%s\n' "${value_position}"
+  printf 'Running trajectory baseline eval with %d critic(s) and %d value position(s)\n' \
+    "${#CRITIC_CHECKPOINT_DIRS_ARR[@]}" "${#VALUE_POSITIONS_ARR[@]}"
   printf ' %q' "${CMD[@]}"
   printf '\n'
   (cd "${REPO_DIR}" && "${CMD[@]}") 2>&1 | tee "${log_path}"
 }
 
-for value_position in "${VALUE_POSITIONS_ARR[@]}"; do
-  run_one_position \
-    "${value_position}" \
-    "${OUTPUT_DIR}/${value_position}" \
-    "${OUTPUT_DIR}/${value_position}.log"
-done
+run_eval
 
 echo "Trajectory value baseline eval finished. Outputs: ${OUTPUT_DIR}"
