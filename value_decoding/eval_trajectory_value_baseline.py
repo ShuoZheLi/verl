@@ -5,6 +5,7 @@ import gc
 import json
 import math
 import random
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -220,6 +221,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--actor_merged_root", type=str, default=None, help="Optional directory for merged actor HF checkpoint.")
     parser.add_argument("--critic_merged_root", type=str, default=None, help="Optional directory for merged critic HF checkpoints.")
+    parser.add_argument(
+        "--delete_merged_critics_after_load",
+        action="store_true",
+        help="Delete each merged critic checkpoint directory after loading it into memory to reduce temporary disk usage.",
+    )
     parser.add_argument("--skip_merge", action="store_true", help="Require checkpoints to already be complete HF checkpoints.")
     parser.add_argument(
         "--aggregate_input_dirs",
@@ -949,17 +955,7 @@ def main() -> None:
         merged_root=Path(args.actor_merged_root).expanduser().resolve() if args.actor_merged_root else None,
         skip_merge=bool(args.skip_merge),
     )
-    critic_dirs = [
-        ensure_merged_component_checkpoint(
-            raw_critic_dir,
-            component="critic",
-            merged_root=(Path(args.critic_merged_root).expanduser().resolve() / f"critic_{index:03d}")
-            if args.critic_merged_root
-            else None,
-            skip_merge=bool(args.skip_merge),
-        )
-        for index, raw_critic_dir in enumerate(raw_critic_dirs)
-    ]
+    critic_merged_root = Path(args.critic_merged_root).expanduser().resolve() if args.critic_merged_root else None
     dataset_path = Path(args.dataset_path).expanduser().resolve()
     response_key = args.response_key if args.response_key else None
     dtype = resolve_dtype(args.dtype)
@@ -1026,7 +1022,7 @@ def main() -> None:
         {
             "actor_checkpoint_dir": str(actor_dir),
             "raw_actor_checkpoint_dir": str(raw_actor_dir),
-            "critic_checkpoint_dirs": [str(path) for path in critic_dirs],
+            "critic_checkpoint_dirs": [str(path) for path in raw_critic_dirs],
             "raw_critic_checkpoint_dirs": [str(path) for path in raw_critic_dirs],
             "dataset_path": str(dataset_path),
             "output_dir": str(output_dir),
@@ -1039,11 +1035,17 @@ def main() -> None:
     write_json(output_dir / "config.json", base_config)
 
     used_labels: set[str] = set()
-    critic_labels = [critic_label_from_path(path, used_labels) for path in critic_dirs]
-    multi_run = bool(args.always_write_run_subdirs) or len(critic_dirs) > 1 or len(value_positions) > 1
+    critic_labels = [critic_label_from_path(path, used_labels) for path in raw_critic_dirs]
+    multi_run = bool(args.always_write_run_subdirs) or len(raw_critic_dirs) > 1 or len(value_positions) > 1
     summaries: list[dict[str, Any]] = []
 
-    for critic_dir, critic_label in zip(critic_dirs, critic_labels, strict=True):
+    for critic_index, (raw_critic_dir, critic_label) in enumerate(zip(raw_critic_dirs, critic_labels, strict=True)):
+        critic_dir = ensure_merged_component_checkpoint(
+            raw_critic_dir,
+            component="critic",
+            merged_root=(critic_merged_root / f"critic_{critic_index:03d}") if critic_merged_root else None,
+            skip_merge=bool(args.skip_merge),
+        )
         critic = load_critic_model(critic_dir, dtype=dtype, device=critic_device, trust_remote_code=args.trust_remote_code)
         for value_position in value_positions:
             run_output_dir = output_dir if not multi_run else output_dir / critic_label / value_position
@@ -1064,6 +1066,8 @@ def main() -> None:
             summaries.append(summary)
             print(json.dumps(summary, indent=2, sort_keys=True))
         del critic
+        if args.delete_merged_critics_after_load and critic_merged_root is not None and critic_dir.is_relative_to(critic_merged_root):
+            shutil.rmtree(critic_dir, ignore_errors=True)
         gc.collect()
         if critic_device.type == "cuda":
             torch.cuda.empty_cache()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -163,6 +164,8 @@ def resolve_hf_source_dir(
 
 
 def merge_fsdp_checkpoint(local_dir: Path, target_dir: Path, *, hf_model_config_path: Path | None = None) -> None:
+    if target_dir.exists() and not has_complete_hf_checkpoint(target_dir):
+        shutil.rmtree(target_dir)
     target_dir.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         sys.executable,

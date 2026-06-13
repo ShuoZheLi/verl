@@ -94,7 +94,16 @@ SHARDS_PER_NODE="${SHARDS_PER_NODE:-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${WORK_DIR}"
 LOG_DIR="${ARCHIVE_DIR}/logs"
-mkdir -p "${ARCHIVE_DIR}" "${LOG_DIR}"
+MERGE_TMP_ROOT="${SCRATCH}/verl_eval_merge_cache/${SLURM_JOB_ID:-manual}"
+mkdir -p "${ARCHIVE_DIR}" "${LOG_DIR}" "${MERGE_TMP_ROOT}"
+
+cleanup_merge_cache() {
+  if [[ -n "${MERGE_TMP_ROOT:-}" && -d "${MERGE_TMP_ROOT}" ]]; then
+    echo "Removing temporary merge cache: ${MERGE_TMP_ROOT}"
+    rm -rf "${MERGE_TMP_ROOT}" || true
+  fi
+}
+trap cleanup_merge_cache EXIT
 
 
 describe_path() {
@@ -194,8 +203,9 @@ run_shard_command() {
     --critic_checkpoint_dir "${CRITIC_CHECKPOINT_DIRS_ARR[@]}"
     --dataset_path "${DATASET_PATH}"
     --output_dir "${output_dir_for_shard}"
-    --actor_merged_root "${output_dir_for_shard}/merged_hf_actor"
-    --critic_merged_root "${output_dir_for_shard}/merged_hf_critics"
+    --actor_merged_root "${MERGE_TMP_ROOT}/shard_${shard_id}/actor"
+    --critic_merged_root "${MERGE_TMP_ROOT}/shard_${shard_id}/critics"
+    --delete_merged_critics_after_load
     --prompt_key "${PROMPT_KEY}"
     --response_key "${RESPONSE_KEY}"
     --start_index "${START_INDEX}"
@@ -268,7 +278,7 @@ for shard_index in "${!SHARD_PIDS[@]}"; do
   if ! wait "${SHARD_PIDS[$shard_index]}"; then
     shard_failures=$((shard_failures + 1))
     echo "Shard process failed; log: ${SHARD_LOGS[$shard_index]}" >&2
-    tail -n 80 "${SHARD_LOGS[$shard_index]}" >&2 || true
+    tail -n 40 "${SHARD_LOGS[$shard_index]}" >&2 || true
   fi
 done
 if [[ "${shard_failures}" -ne 0 ]]; then
@@ -284,7 +294,7 @@ for ((shard_id = 0; shard_id < TOTAL_SHARDS; shard_id++)); do
     shard_log="${LOG_DIR}/shard_${shard_id}.log"
     if [[ -f "${shard_log}" ]]; then
       echo "Last 120 lines from ${shard_log}:" >&2
-      tail -n 120 "${shard_log}" >&2 || true
+      tail -n 60 "${shard_log}" >&2 || true
     fi
     exit 1
   fi
