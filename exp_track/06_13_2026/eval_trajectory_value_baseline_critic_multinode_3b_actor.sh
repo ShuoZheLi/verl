@@ -32,6 +32,8 @@ export UV_CACHE_DIR HF_HOME TIKTOKEN_ENCODINGS_BASE
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=true
 export VLLM_USE_V1=1
+export TORCH_LOGS=""
+export TORCHDYNAMO_VERBOSE=0
 
 echo "Activated environment"
 echo "Python: $(which python)"
@@ -83,8 +85,11 @@ DTYPE="bf16"
 TRUST_REMOTE_CODE=0
 MATH_DAPO_BINARY_REWARD=1
 SEED=42
-GPUS_PER_NODE="${SLURM_GPUS_ON_NODE:-4}"
-SHARDS_PER_NODE="${GPUS_PER_NODE}"
+GPUS_PER_NODE="${SLURM_GPUS_ON_NODE:-1}"
+# Run one shard per node by default, matching the training scripts
+# that expose one GPU per Ray worker. Increase only if your Slurm
+# allocation actually provides multiple visible GPUs per node.
+SHARDS_PER_NODE="${SHARDS_PER_NODE:-1}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${WORK_DIR}"
@@ -232,6 +237,9 @@ position_dir="${ARCHIVE_DIR}/all_values"
 mkdir -p "${position_dir}"
 echo "Running shards for VALUE_POSITIONS=${VALUE_POSITIONS} and ${#CRITIC_CHECKPOINT_DIRS_ARR[@]} critic(s)"
 
+SHARD_PIDS=()
+SHARD_LOGS=()
+
 for ((node_rank = 0; node_rank < NUM_NODES; node_rank++)); do
   node_name="${NODES_ARRAY[$node_rank]}"
   for ((local_rank = 0; local_rank < SHARDS_PER_NODE; local_rank++)); do
@@ -241,19 +249,41 @@ for ((node_rank = 0; node_rank < NUM_NODES; node_rank++)); do
     mkdir -p "${shard_dir}"
     shard_command="$(run_shard_command "${shard_id}" "${local_rank}" "${shard_dir}")"
     echo "Launching shard ${shard_id}/${TOTAL_SHARDS} on ${node_name} cuda:${local_rank}"
-    srun --nodes=1 --ntasks=1 -w "${node_name}" --cpus-per-task=$((SLURM_CPUS_PER_TASK / SHARDS_PER_NODE)) \
+    SRUN_GPU_ARGS=()
+    if [[ -n "${SLURM_GPUS_ON_NODE:-}" ]]; then
+      SRUN_GPU_ARGS+=(--gres="gpu:1")
+    fi
+    srun --nodes=1 --ntasks=1 -w "${node_name}" --cpus-per-task=$((SLURM_CPUS_PER_TASK / SHARDS_PER_NODE)) "${SRUN_GPU_ARGS[@]}" \
       bash -lc "export CUDA_VISIBLE_DEVICES=${local_rank}; source '${VENV}/bin/activate' && cd '${REPO_DIR}' && ${shard_command}" \
       > "${shard_log}" 2>&1 &
+    SHARD_PIDS+=("$!")
+    SHARD_LOGS+=("${shard_log}")
   done
 done
 
-wait
+shard_failures=0
+for shard_index in "${!SHARD_PIDS[@]}"; do
+  if ! wait "${SHARD_PIDS[$shard_index]}"; then
+    shard_failures=$((shard_failures + 1))
+    echo "Shard process failed; log: ${SHARD_LOGS[$shard_index]}" >&2
+    tail -n 80 "${SHARD_LOGS[$shard_index]}" >&2 || true
+  fi
+done
+if [[ "${shard_failures}" -ne 0 ]]; then
+  echo "${shard_failures} shard process(es) failed. See ${LOG_DIR}." >&2
+  exit 1
+fi
 
 aggregate_inputs=()
 for ((shard_id = 0; shard_id < TOTAL_SHARDS; shard_id++)); do
   shard_dir="${position_dir}/shard_${shard_id}"
   if [[ ! -s "${shard_dir}/trajectory_bank.jsonl" ]]; then
     echo "Missing or empty shard trajectory bank: ${shard_dir}/trajectory_bank.jsonl" >&2
+    shard_log="${LOG_DIR}/shard_${shard_id}.log"
+    if [[ -f "${shard_log}" ]]; then
+      echo "Last 120 lines from ${shard_log}:" >&2
+      tail -n 120 "${shard_log}" >&2 || true
+    fi
     exit 1
   fi
   aggregate_inputs+=("${shard_dir}")
