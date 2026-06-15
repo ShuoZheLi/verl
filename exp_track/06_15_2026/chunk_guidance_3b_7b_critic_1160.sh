@@ -5,7 +5,7 @@
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=07:00:00
+#SBATCH --time=04:00:00
 #SBATCH --output=slurm-%j_chunk_guidance_3b_7b_critic_1160.out
 #SBATCH --error=slurm-%j_chunk_guidance_3b_7b_critic_1160.err
 
