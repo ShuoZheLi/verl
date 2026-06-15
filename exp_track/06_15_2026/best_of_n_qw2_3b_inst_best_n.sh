@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=best_of_n_Qwen2.5_7B_critic_1d5_k_8_gsm8k
+#SBATCH --job-name=qw2_3b_inst_best_n
 #SBATCH --account=ECS26006
 #SBATCH --partition=gh
 #SBATCH --nodes=8
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=7:00:00
-#SBATCH --output=slurm-%j.out
-#SBATCH --error=slurm-%j.err
+#SBATCH --time=4:00:00
+#SBATCH --output=slurm-%j_qw2_3b_inst_best_n.out
+#SBATCH --error=slurm-%j_qw2_3b_inst_best_n.err
 
 set -euo pipefail
 
@@ -40,15 +40,15 @@ python3 -V
 # -----------------------------
 # Run identity
 # -----------------------------
-RUN_NAME="best_of_n_Qwen2.5_7B_critic_1d5_k_8_gsm8k"
+RUN_NAME="best_of_n_Qwen2.5_3B_critic_1d5_k_8"
 RUN_ID="${RUN_NAME}_${SLURM_JOB_ID}"
 
 # -----------------------------
 # Paths
 # -----------------------------
-ACTOR_CHECKPOINT_DIR="/scratch/09576/shuozhe/verl_runs/7b_actor_1d5_dsk_critic_676393/train_log/global_step_950"
-CRITIC_CHECKPOINT_DIR="/scratch/09576/shuozhe/verl_runs/7b_actor_1d5_dsk_critic_676393/train_log/global_step_950"
-DATASET_PATH="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/gsm8k_test.parquet"
+ACTOR_CHECKPOINT_DIR="/scratch/09576/shuozhe/verl_runs/7b_testset_752951/train_log/global_step_1160"
+CRITIC_CHECKPOINT_DIR="/scratch/09576/shuozhe/verl_runs/7b_testset_752951/train_log/global_step_1160"
+DATASET_PATH="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet"
 WORK_DIR="/work2/09576/shuozhe/verl"
 export PYTHONPATH="${WORK_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 

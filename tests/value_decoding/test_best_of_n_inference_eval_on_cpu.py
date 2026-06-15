@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import pytest
 import torch
 
-from value_decoding.best_of_n_inference_eval import sample_vllm_actor_trajectory
+from value_decoding.best_of_n_inference_eval import critic_final_trajectory_value, sample_vllm_actor_trajectory
 from value_decoding.data import ExampleRecord
 
 
@@ -51,6 +51,15 @@ class _FakeTokenizer:
     def decode(self, token_ids, *, skip_special_tokens):
         del skip_special_tokens
         return "decoded:" + ",".join(str(token_id) for token_id in token_ids)
+
+
+class _DummyValueHeadCritic:
+    def sequence_values(self, *, input_ids: torch.Tensor, attention_mask=None):
+        del attention_mask
+        return input_ids.to(dtype=torch.float32)
+
+    def sequence_last_values(self, *, input_ids: torch.Tensor, attention_mask=None):
+        return self.sequence_values(input_ids=input_ids, attention_mask=attention_mask)[:, -1]
 
 
 def test_sample_vllm_actor_trajectory_preserves_tokens_and_logprobs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -106,3 +115,31 @@ def test_vllm_logprob_extraction_requires_sampled_token() -> None:
 
     with pytest.raises(RuntimeError, match="sampled token id 11"):
         module._vllm_token_logprob({10: _FakeLogprob(-0.25)}, 11)
+
+
+def test_critic_final_trajectory_value_uses_pre_eos_value_for_ppo_mode() -> None:
+    critic = _DummyValueHeadCritic()
+    input_ids = torch.tensor([[4, 7, 99]], dtype=torch.long)
+
+    value = critic_final_trajectory_value(
+        critic,
+        input_ids,
+        eos_token_ids=(99,),
+        eos_end_value_mode="ppo_pre_eos",
+    )
+
+    assert float(value.item()) == pytest.approx(7.0)
+
+
+def test_critic_final_trajectory_value_as_is_uses_eos_value() -> None:
+    critic = _DummyValueHeadCritic()
+    input_ids = torch.tensor([[4, 7, 99]], dtype=torch.long)
+
+    value = critic_final_trajectory_value(
+        critic,
+        input_ids,
+        eos_token_ids=(99,),
+        eos_end_value_mode="as_is",
+    )
+
+    assert float(value.item()) == pytest.approx(99.0)

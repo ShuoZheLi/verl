@@ -38,6 +38,7 @@ from value_decoding.decoding import (
     ActorSamplingMode,
     ActorStepper,
     critic_sequence_last_values,
+    critic_sequence_values,
     sample_token_from_actor,
     set_decode_seed,
 )
@@ -144,6 +145,7 @@ PRIMARY_PLOT_METHODS = (
 REFERENCE_CRITIC_VALUE_ABS_TOL = 1e-2
 RAY_NODE_RESOURCE_FRACTION = 1e-3
 RAY_PROGRESS_POLL_INTERVAL_SEC = 0.2
+EOS_END_VALUE_MODES = ("as_is", "ppo_pre_eos")
 
 
 def _require_vllm():
@@ -363,6 +365,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--actor_temperature", type=float, default=1.0)
     parser.add_argument("--actor_top_p", type=float, default=1.0)
     parser.add_argument("--actor_top_k", type=int, default=0)
+    parser.add_argument(
+        "--eos_end_value_mode",
+        type=str,
+        default="ppo_pre_eos",
+        choices=list(EOS_END_VALUE_MODES),
+        help=(
+            "How to score critic final trajectory values when the final generated token is EOS. "
+            "Use 'as_is' for critics trained to score completed prefixes at their last token. "
+            "Use 'ppo_pre_eos' for PPO value-head critics whose terminal/EOS-token value is not a trained bootstrap."
+        ),
+    )
     parser.add_argument(
         "--generation_backend",
         type=str,
@@ -856,6 +869,7 @@ def sample_actor_trajectory(
     actor_top_k: int,
     max_new_tokens: int,
     eos_token_ids: tuple[int, ...],
+    eos_end_value_mode: str,
     use_actor_cache: bool,
 ) -> SampledTrajectory:
     set_decode_seed(seed)
@@ -1046,6 +1060,37 @@ def _pad_sequence_batch(
     return input_ids, attention_mask
 
 
+def critic_final_trajectory_value(
+    critic,
+    input_ids: torch.Tensor,
+    *,
+    eos_token_ids: tuple[int, ...],
+    eos_end_value_mode: str,
+) -> torch.Tensor:
+    if eos_end_value_mode not in EOS_END_VALUE_MODES:
+        raise ValueError(f"Unsupported eos_end_value_mode: {eos_end_value_mode}")
+    if input_ids.ndim != 2 or input_ids.shape[0] != 1:
+        raise ValueError("critic_final_trajectory_value expects input_ids with shape [1, sequence_length].")
+    if input_ids.shape[1] <= 0:
+        raise ValueError("Cannot score an empty trajectory.")
+
+    explicit_eos_at_end = bool(int(input_ids[0, -1].item()) in eos_token_ids)
+    if eos_end_value_mode == "as_is" or not explicit_eos_at_end:
+        return critic_sequence_last_values(critic, input_ids)[0]
+    if input_ids.shape[1] < 2:
+        raise ValueError("eos_end_value_mode='ppo_pre_eos' requires at least one pre-EOS token.")
+
+    continuation_values = getattr(critic, "continuation_values", None)
+    if callable(continuation_values):
+        raise ValueError(
+            "eos_end_value_mode='ppo_pre_eos' is only valid for PPO-style full-sequence value-head critics, "
+            "but this critic exposes continuation_values(). Use --eos_end_value_mode=as_is."
+        )
+
+    values = critic_sequence_values(critic, input_ids)[0]
+    return values[-2]
+
+
 def score_sequences_with_critic(
     critic,
     *,
@@ -1053,6 +1098,8 @@ def score_sequences_with_critic(
     device: torch.device,
     pad_token_id: int,
     batch_size: int,
+    eos_token_ids: tuple[int, ...],
+    eos_end_value_mode: str,
 ) -> list[float]:
     if batch_size <= 0:
         raise ValueError(f"critic_score_batch_size must be > 0, got {batch_size}")
@@ -1061,7 +1108,12 @@ def score_sequences_with_critic(
     # Score one completed trajectory at a time to avoid padded-batch numerical drift.
     for sequence in sequences:
         input_ids = torch.tensor([list(sequence)], device=device, dtype=torch.long)
-        sequence_value = critic_sequence_last_values(critic, input_ids)[0]
+        sequence_value = critic_final_trajectory_value(
+            critic,
+            input_ids,
+            eos_token_ids=eos_token_ids,
+            eos_end_value_mode=eos_end_value_mode,
+        )
         values.append(float(sequence_value.item()))
     return values
 
@@ -1245,6 +1297,8 @@ def process_example(
         device=old_critic_device,
         pad_token_id=old_critic_pad_token_id,
         batch_size=critic_score_batch_size,
+        eos_token_ids=eos_token_ids,
+        eos_end_value_mode=eos_end_value_mode,
     )
     new_values = score_sequences_with_critic(
         new_critic,
@@ -1252,6 +1306,8 @@ def process_example(
         device=new_critic_device,
         pad_token_id=new_critic_pad_token_id,
         batch_size=critic_score_batch_size,
+        eos_token_ids=eos_token_ids,
+        eos_end_value_mode=eos_end_value_mode,
     )
 
     local_stage1_summary = None if reference_stage1_summary is None else dict(reference_stage1_summary)
@@ -1733,6 +1789,7 @@ def _start_local_worker_processes(
     max_prompt_length: int,
     max_new_tokens: int,
     eos_token_ids: tuple[int, ...],
+    eos_end_value_mode: str,
     use_actor_cache: bool,
     critic_score_batch_size: int,
     seed: int,
@@ -1765,6 +1822,7 @@ def _start_local_worker_processes(
                 "max_prompt_length": max_prompt_length,
                 "max_new_tokens": max_new_tokens,
                 "eos_token_ids": eos_token_ids,
+                "eos_end_value_mode": eos_end_value_mode,
                 "use_actor_cache": use_actor_cache,
                 "critic_score_batch_size": critic_score_batch_size,
                 "seed": seed,
@@ -1834,6 +1892,7 @@ def _worker_entry(
     max_prompt_length: int,
     max_new_tokens: int,
     eos_token_ids: tuple[int, ...],
+    eos_end_value_mode: str,
     use_actor_cache: bool,
     critic_score_batch_size: int,
     seed: int,
@@ -1977,6 +2036,7 @@ def _worker_entry(
                     max_prompt_length=max_prompt_length,
                     max_new_tokens=max_new_tokens,
                     eos_token_ids=eos_token_ids,
+                    eos_end_value_mode=eos_end_value_mode,
                     use_actor_cache=use_actor_cache,
                     critic_score_batch_size=critic_score_batch_size,
                     base_seed=seed,
@@ -2016,6 +2076,7 @@ def _worker_entry(
             "num_examples": assignment.num_examples,
             "shared_critic_checkpoint": bool(shared_critic_checkpoint),
             "shared_critic_runtime": bool(shared_critic_runtime),
+            "eos_end_value_mode": eos_end_value_mode,
             "generation_backend": generation_backend,
             "vllm_gpu_memory_utilization": float(vllm_gpu_memory_utilization),
             "vllm_enforce_eager": bool(vllm_enforce_eager),
@@ -2099,6 +2160,7 @@ def _ray_node_entry_remote(**kwargs) -> dict[str, Any]:
         max_prompt_length=kwargs["max_prompt_length"],
         max_new_tokens=kwargs["max_new_tokens"],
         eos_token_ids=kwargs["eos_token_ids"],
+        eos_end_value_mode=kwargs["eos_end_value_mode"],
         use_actor_cache=kwargs["use_actor_cache"],
         critic_score_batch_size=kwargs["critic_score_batch_size"],
         seed=kwargs["seed"],
@@ -2153,6 +2215,7 @@ def run_multi_worker(
     max_prompt_length: int,
     max_new_tokens: int,
     eos_token_ids: tuple[int, ...],
+    eos_end_value_mode: str,
     use_actor_cache: bool,
     critic_score_batch_size: int,
     seed: int,
@@ -2186,6 +2249,7 @@ def run_multi_worker(
         max_prompt_length=max_prompt_length,
         max_new_tokens=max_new_tokens,
         eos_token_ids=eos_token_ids,
+        eos_end_value_mode=eos_end_value_mode,
         use_actor_cache=use_actor_cache,
         critic_score_batch_size=critic_score_batch_size,
         seed=seed,
@@ -2257,6 +2321,7 @@ def run_ray_multi_worker(
     max_prompt_length: int,
     max_new_tokens: int,
     eos_token_ids: tuple[int, ...],
+    eos_end_value_mode: str,
     use_actor_cache: bool,
     critic_score_batch_size: int,
     seed: int,
@@ -2317,6 +2382,7 @@ def run_ray_multi_worker(
             max_prompt_length=max_prompt_length,
             max_new_tokens=max_new_tokens,
             eos_token_ids=eos_token_ids,
+            eos_end_value_mode=eos_end_value_mode,
             use_actor_cache=use_actor_cache,
             critic_score_batch_size=critic_score_batch_size,
             seed=seed,
@@ -2689,6 +2755,7 @@ def main() -> int:
             max_prompt_length=args.max_prompt_length,
             max_new_tokens=args.max_new_tokens,
             eos_token_ids=eos_token_ids,
+            eos_end_value_mode=args.eos_end_value_mode,
             use_actor_cache=not args.disable_actor_cache,
             critic_score_batch_size=args.critic_score_batch_size,
             seed=args.seed,
@@ -2724,6 +2791,7 @@ def main() -> int:
             max_prompt_length=args.max_prompt_length,
             max_new_tokens=args.max_new_tokens,
             eos_token_ids=eos_token_ids,
+            eos_end_value_mode=args.eos_end_value_mode,
             use_actor_cache=not args.disable_actor_cache,
             critic_score_batch_size=args.critic_score_batch_size,
             seed=args.seed,
@@ -2835,6 +2903,7 @@ def main() -> int:
                     max_prompt_length=args.max_prompt_length,
                     max_new_tokens=args.max_new_tokens,
                     eos_token_ids=eos_token_ids,
+                    eos_end_value_mode=args.eos_end_value_mode,
                     use_actor_cache=not args.disable_actor_cache,
                     critic_score_batch_size=args.critic_score_batch_size,
                     base_seed=args.seed,
