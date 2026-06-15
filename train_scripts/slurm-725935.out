@@ -1,0 +1,1168 @@
+Activated environment
+Python: /work/10587/npg493/vista/verl/.venv/bin/python3
+Ray: /work/10587/npg493/vista/verl/.venv/bin/ray
+Python 3.12.12
+Job ID: 725935
+Run ID: lowent_critic_cont_725935
+SLURM nodes: c642-[052,061-062,071]
+SCRATCH: /scratch/10587/npg493
+RUN_DIR: /scratch/10587/npg493/verl_runs/lowent_critic_cont_725935
+LOG_DIR: /scratch/10587/npg493/verl_runs/lowent_critic_cont_725935/logs
+POLICY_INIT_CKPT: /scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640
+drwxr-x--- 2 npg493 G-827437 4096 May 26 21:36 /scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640
+POLICY_MODEL_PATH: /scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor
+drwx------ 2 npg493 G-827568 4096 May 26 21:37 /scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor
+CRITIC_INIT_CKPT: /scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640
+drwxr-x--- 2 npg493 G-827437 4096 May 26 21:36 /scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640
+CRITIC_MODEL_PATH: /scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/critic
+drwx------ 2 npg493 G-827568 4096 May 26 21:37 /scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/critic
+Checking inputs...
+drwxr-xr-x 21 npg493 G-827568 4096 May 26 21:38 /work/10587/npg493/vista/verl
+-rw-r--r-- 1 npg493 G-827568 45M Apr 13 23:37 /scratch/10587/npg493/dataset/MetaMathQA-math-500/train.parquet
+-rw-r--r-- 1 npg493 G-827568 69K Apr 15 23:57 /scratch/10587/npg493/dataset/MetaMathQA-math-500/test.parquet
+Head node: c642-052
+Head IP: 129.114.19.75:6379
+Starting Ray head...
+Waiting for Ray head...
+Ray head is ready.
+Starting worker on c642-061
+Starting worker on c642-062
+Starting worker on c642-071
+Waiting for all Ray nodes to register...
+All 4 Ray nodes are registered.
+Ray cluster status:
+======== Autoscaler status: 2026-05-27 23:59:09.063102 ========
+Node status
+---------------------------------------------------------------
+Active:
+ 1 node_0d427765b928561c8b5ad61201fe1dcd9972cac536c02657fea5da8f
+ 1 node_8b13038f588edb8f8a1712a09196d641f8daac132cd49712cc6d78a9
+ 1 node_4a3a60d46df6a4c07b5be04b96cf4efdbd52be2147b169b3008ef98f
+ 1 node_bd628f0d305b00c2c79f2cefcabc03bfd0efa4bf8283650989321482
+Pending:
+ (no pending nodes)
+Recent failures:
+ (no failures)
+
+Resources
+---------------------------------------------------------------
+Total Usage:
+ 0.0/288.0 CPU
+ 0.0/4.0 GPU
+ 0B/544.91GiB memory
+ 0B/223.72GiB object_store_memory
+
+From request_resources:
+ (none)
+Pending Demands:
+ (no resource demands)
+/work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+ray init kwargs: {'num_cpus': None, 'runtime_env': {'env_vars': {'NCCL_DEBUG': 'WARN', 'VLLM_LOGGING_LEVEL': 'WARN', 'VLLM_ALLOW_RUNTIME_LORA_UPDATING': 'true', 'CUDA_DEVICE_MAX_CONNECTIONS': '1', 'NCCL_CUMEM_ENABLE': '0', 'VLLM_DISABLE_COMPILE_CACHE': '1', 'HCCL_HOST_SOCKET_PORT_RANGE': 'auto', 'HCCL_NPU_SOCKET_PORT_RANGE': 'auto'}, 'working_dir': None}}
+2026-05-27 23:59:55,943	INFO worker.py:1672 -- Using address 129.114.19.75:6379 set in the environment variable RAY_ADDRESS
+2026-05-27 23:59:55,953	INFO worker.py:1814 -- Connecting to existing Ray cluster at address: 129.114.19.75:6379...
+2026-05-27 23:59:56,000	INFO worker.py:2012 -- Connected to Ray cluster.
+/work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/ray/_private/worker.py:2051: FutureWarning: Tip: In future versions of Ray, Ray will no longer override accelerator visible devices env var if num_gpus=0 or num_gpus=None (default). To enable this behavior and turn off this error message, set RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
+  warnings.warn(
+[36m(pid=2693308)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+[36m(pid=2693308)[0m   import pynvml  # type: ignore[import]
+[36m(TaskRunner pid=2693308)[0m TaskRunner hostname: c642-052.vista.tacc.utexas.edu, PID: 2693308
+[36m(TaskRunner pid=2693308)[0m {'actor_rollout_ref': {'actor': {'_target_': 'verl.workers.config.FSDPActorConfig',
+[36m(TaskRunner pid=2693308)[0m                                  'calculate_entropy': False,
+[36m(TaskRunner pid=2693308)[0m                                  'calculate_sum_pi_squared': True,
+[36m(TaskRunner pid=2693308)[0m                                  'checkpoint': {'_target_': 'verl.trainer.config.CheckpointConfig',
+[36m(TaskRunner pid=2693308)[0m                                                 'async_save': False,
+[36m(TaskRunner pid=2693308)[0m                                                 'load_contents': ['model',
+[36m(TaskRunner pid=2693308)[0m                                                                   'optimizer',
+[36m(TaskRunner pid=2693308)[0m                                                                   'extra'],
+[36m(TaskRunner pid=2693308)[0m                                                 'mbridge_config': {},
+[36m(TaskRunner pid=2693308)[0m                                                 'save_contents': ['model',
+[36m(TaskRunner pid=2693308)[0m                                                                   'optimizer',
+[36m(TaskRunner pid=2693308)[0m                                                                   'extra']},
+[36m(TaskRunner pid=2693308)[0m                                  'clip_ratio': 0.2,
+[36m(TaskRunner pid=2693308)[0m                                  'clip_ratio_c': 3.0,
+[36m(TaskRunner pid=2693308)[0m                                  'clip_ratio_high': 0.2,
+[36m(TaskRunner pid=2693308)[0m                                  'clip_ratio_low': 0.2,
+[36m(TaskRunner pid=2693308)[0m                                  'data_loader_seed': 42,
+[36m(TaskRunner pid=2693308)[0m                                  'entropy_checkpointing': False,
+[36m(TaskRunner pid=2693308)[0m                                  'entropy_coeff': 0,
+[36m(TaskRunner pid=2693308)[0m                                  'entropy_from_logits_with_chunking': False,
+[36m(TaskRunner pid=2693308)[0m                                  'freeze_vision_tower': False,
+[36m(TaskRunner pid=2693308)[0m                                  'fsdp_config': {'_target_': 'verl.workers.config.FSDPEngineConfig',
+[36m(TaskRunner pid=2693308)[0m                                                  'dtype': 'bfloat16',
+[36m(TaskRunner pid=2693308)[0m                                                  'entropy_checkpointing': False,
+[36m(TaskRunner pid=2693308)[0m                                                  'entropy_from_logits_with_chunking': False,
+[36m(TaskRunner pid=2693308)[0m                                                  'forward_only': False,
+[36m(TaskRunner pid=2693308)[0m                                                  'forward_prefetch': False,
+[36m(TaskRunner pid=2693308)[0m                                                  'fsdp_size': -1,
+[36m(TaskRunner pid=2693308)[0m                                                  'full_determinism': False,
+[36m(TaskRunner pid=2693308)[0m                                                  'model_dtype': 'fp32',
+[36m(TaskRunner pid=2693308)[0m                                                  'offload_policy': False,
+[36m(TaskRunner pid=2693308)[0m                                                  'optimizer_offload': False,
+[36m(TaskRunner pid=2693308)[0m                                                  'param_offload': False,
+[36m(TaskRunner pid=2693308)[0m                                                  'reshard_after_forward': True,
+[36m(TaskRunner pid=2693308)[0m                                                  'seed': 42,
+[36m(TaskRunner pid=2693308)[0m                                                  'strategy': 'fsdp',
+[36m(TaskRunner pid=2693308)[0m                                                  'ulysses_sequence_parallel_size': 1,
+[36m(TaskRunner pid=2693308)[0m                                                  'use_orig_params': False,
+[36m(TaskRunner pid=2693308)[0m                                                  'use_torch_compile': True,
+[36m(TaskRunner pid=2693308)[0m                                                  'wrap_policy': {'min_num_params': 0}},
+[36m(TaskRunner pid=2693308)[0m                                  'grad_clip': 1.0,
+[36m(TaskRunner pid=2693308)[0m                                  'kl_loss_coef': 0.001,
+[36m(TaskRunner pid=2693308)[0m                                  'kl_loss_type': 'low_var_kl',
+[36m(TaskRunner pid=2693308)[0m                                  'loss_agg_mode': 'token-mean',
+[36m(TaskRunner pid=2693308)[0m                                  'loss_scale_factor': None,
+[36m(TaskRunner pid=2693308)[0m                                  'optim': {'_target_': 'verl.workers.config.FSDPOptimizerConfig',
+[36m(TaskRunner pid=2693308)[0m                                            'betas': [0.9, 0.999],
+[36m(TaskRunner pid=2693308)[0m                                            'clip_grad': 1.0,
+[36m(TaskRunner pid=2693308)[0m                                            'lr': 0.0,
+[36m(TaskRunner pid=2693308)[0m                                            'lr_scheduler_type': 'constant',
+[36m(TaskRunner pid=2693308)[0m                                            'lr_warmup_steps': -1,
+[36m(TaskRunner pid=2693308)[0m                                            'lr_warmup_steps_ratio': 0.0,
+[36m(TaskRunner pid=2693308)[0m                                            'min_lr_ratio': 0.0,
+[36m(TaskRunner pid=2693308)[0m                                            'num_cycles': 0.5,
+[36m(TaskRunner pid=2693308)[0m                                            'optimizer': 'AdamW',
+[36m(TaskRunner pid=2693308)[0m                                            'optimizer_impl': 'torch.optim',
+[36m(TaskRunner pid=2693308)[0m                                            'override_optimizer_config': None,
+[36m(TaskRunner pid=2693308)[0m                                            'total_training_steps': -1,
+[36m(TaskRunner pid=2693308)[0m                                            'warmup_style': None,
+[36m(TaskRunner pid=2693308)[0m                                            'weight_decay': 0.01,
+[36m(TaskRunner pid=2693308)[0m                                            'zero_indexed_step': True},
+[36m(TaskRunner pid=2693308)[0m                                  'policy_loss': {'_target_': 'verl.workers.config.PolicyLossConfig',
+[36m(TaskRunner pid=2693308)[0m                                                  'clip_cov_lb': 1.0,
+[36m(TaskRunner pid=2693308)[0m                                                  'clip_cov_ratio': 0.0002,
+[36m(TaskRunner pid=2693308)[0m                                                  'clip_cov_ub': 5.0,
+[36m(TaskRunner pid=2693308)[0m                                                  'kl_cov_ratio': 0.0002,
+[36m(TaskRunner pid=2693308)[0m                                                  'loss_mode': 'vanilla',
+[36m(TaskRunner pid=2693308)[0m                                                  'ppo_kl_coef': 0.1},
+[36m(TaskRunner pid=2693308)[0m                                  'ppo_epochs': 1,
+[36m(TaskRunner pid=2693308)[0m                                  'ppo_max_token_len_per_gpu': 16384,
+[36m(TaskRunner pid=2693308)[0m                                  'ppo_micro_batch_size': None,
+[36m(TaskRunner pid=2693308)[0m                                  'ppo_micro_batch_size_per_gpu': 4,
+[36m(TaskRunner pid=2693308)[0m                                  'ppo_mini_batch_size': 32,
+[36m(TaskRunner pid=2693308)[0m                                  'profiler': {'_target_': 'verl.utils.profiler.ProfilerConfig',
+[36m(TaskRunner pid=2693308)[0m                                               'all_ranks': False,
+[36m(TaskRunner pid=2693308)[0m                                               'enable': False,
+[36m(TaskRunner pid=2693308)[0m                                               'ranks': [],
+[36m(TaskRunner pid=2693308)[0m                                               'save_path': 'outputs/profile',
+[36m(TaskRunner pid=2693308)[0m                                               'tool': None,
+[36m(TaskRunner pid=2693308)[0m                                               'tool_config': {'npu': {'_target_': 'verl.utils.profiler.config.NPUToolConfig',
+[36m(TaskRunner pid=2693308)[0m                                                                       'analysis': True,
+[36m(TaskRunner pid=2693308)[0m                                                                       'contents': [],
+[36m(TaskRunner pid=2693308)[0m                                                                       'discrete': False,
+[36m(TaskRunner pid=2693308)[0m                                                                       'level': 'level0'},
+[36m(TaskRunner pid=2693308)[0m                                                               'nsys': {'_target_': 'verl.utils.profiler.config.NsightToolConfig',
+[36m(TaskRunner pid=2693308)[0m                                                                        'discrete': False},
+[36m(TaskRunner pid=2693308)[0m                                                               'torch': {'_target_': 'verl.utils.profiler.config.TorchProfilerToolConfig',
+[36m(TaskRunner pid=2693308)[0m                                                                         'contents': [],
+[36m(TaskRunner pid=2693308)[0m                                                                         'discrete': False},
+[36m(TaskRunner pid=2693308)[0m                                                               'torch_memory': {'_target_': 'verl.utils.profiler.config.TorchMemoryToolConfig',
+[36m(TaskRunner pid=2693308)[0m                                                                                'stack_depth': 32,
+[36m(TaskRunner pid=2693308)[0m                                                                                'trace_alloc_max_entries': 100000}}},
+[36m(TaskRunner pid=2693308)[0m                                  'qat': {'activation_observer': 'static_minmax',
+[36m(TaskRunner pid=2693308)[0m                                          'enable': False,
+[36m(TaskRunner pid=2693308)[0m                                          'group_size': 16,
+[36m(TaskRunner pid=2693308)[0m                                          'ignore_patterns': ['lm_head',
+[36m(TaskRunner pid=2693308)[0m                                                              'embed_tokens',
+[36m(TaskRunner pid=2693308)[0m                                                              're:.*mlp.gate$'],
+[36m(TaskRunner pid=2693308)[0m                                          'mode': 'w4a16',
+[36m(TaskRunner pid=2693308)[0m                                          'quantization_config_path': None},
+[36m(TaskRunner pid=2693308)[0m                                  'rollout_n': 8,
+[36m(TaskRunner pid=2693308)[0m                                  'router_replay': {'_target_': 'verl.workers.config.RouterReplayConfig',
+[36m(TaskRunner pid=2693308)[0m                                                    'mode': 'disabled',
+[36m(TaskRunner pid=2693308)[0m                                                    'record_file': None,
+[36m(TaskRunner pid=2693308)[0m                                                    'replay_file': None},
+[36m(TaskRunner pid=2693308)[0m                                  'shuffle': False,
+[36m(TaskRunner pid=2693308)[0m                                  'strategy': 'fsdp',
+[36m(TaskRunner pid=2693308)[0m                                  'sum_pi_squared_checkpointing': False,
+[36m(TaskRunner pid=2693308)[0m                                  'tau_neg': 1.05,
+[36m(TaskRunner pid=2693308)[0m                                  'tau_pos': 1.0,
+[36m(TaskRunner pid=2693308)[0m                                  'ulysses_sequence_parallel_size': 1,
+[36m(TaskRunner pid=2693308)[0m                                  'use_dynamic_bsz': False,
+[36m(TaskRunner pid=2693308)[0m                                  'use_fused_kernels': False,
+[36m(TaskRunner pid=2693308)[0m                                  'use_kl_loss': False,
+[36m(TaskRunner pid=2693308)[0m                                  'use_prefix_grouper': False,
+[36m(TaskRunner pid=2693308)[0m                                  'use_remove_padding': True,
+[36m(TaskRunner pid=2693308)[0m                                  'use_torch_compile': True},
+[36m(TaskRunner pid=2693308)[0m                        'hybrid_engine': True,
+[36m(TaskRunner pid=2693308)[0m                        'model': {'_target_': 'verl.workers.config.HFModelConfig',
+[36m(TaskRunner pid=2693308)[0m                                  'custom_chat_template': None,
+[36m(TaskRunner pid=2693308)[0m                                  'enable_activation_offload': False,
+[36m(TaskRunner pid=2693308)[0m                                  'enable_gradient_checkpointing': True,
+[36m(TaskRunner pid=2693308)[0m                                  'exclude_modules': None,
+[36m(TaskRunner pid=2693308)[0m                                  'external_lib': None,
+[36m(TaskRunner pid=2693308)[0m                                  'fused_kernel_options': {'impl_backend': 'torch'},
+[36m(TaskRunner pid=2693308)[0m                                  'hf_config_path': None,
+[36m(TaskRunner pid=2693308)[0m                                  'lora_adapter_path': None,
+[36m(TaskRunner pid=2693308)[0m                                  'lora_alpha': 16,
+[36m(TaskRunner pid=2693308)[0m                                  'lora_rank': 0,
+[36m(TaskRunner pid=2693308)[0m                                  'mtp': {'_target_': 'verl.workers.config.MtpConfig',
+[36m(TaskRunner pid=2693308)[0m                                          'detach_encoder': False,
+[36m(TaskRunner pid=2693308)[0m                                          'enable': False,
+[36m(TaskRunner pid=2693308)[0m                                          'enable_rollout': False,
+[36m(TaskRunner pid=2693308)[0m                                          'enable_train': False,
+[36m(TaskRunner pid=2693308)[0m                                          'method': 'mtp',
+[36m(TaskRunner pid=2693308)[0m                                          'mtp_loss_scaling_factor': 0.1,
+[36m(TaskRunner pid=2693308)[0m                                          'num_speculative_tokens': 1,
+[36m(TaskRunner pid=2693308)[0m                                          'speculative_algorithm': 'EAGLE',
+[36m(TaskRunner pid=2693308)[0m                                          'speculative_eagle_topk': 1,
+[36m(TaskRunner pid=2693308)[0m                                          'speculative_num_draft_tokens': 4,
+[36m(TaskRunner pid=2693308)[0m                                          'speculative_num_steps': 3},
+[36m(TaskRunner pid=2693308)[0m                                  'override_config': {},
+[36m(TaskRunner pid=2693308)[0m                                  'path': '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor',
+[36m(TaskRunner pid=2693308)[0m                                  'target_modules': 'all-linear',
+[36m(TaskRunner pid=2693308)[0m                                  'tiled_mlp': {'enabled': False,
+[36m(TaskRunner pid=2693308)[0m                                                'num_shards': 4},
+[36m(TaskRunner pid=2693308)[0m                                  'tokenizer_path': None,
+[36m(TaskRunner pid=2693308)[0m                                  'trust_remote_code': False,
+[36m(TaskRunner pid=2693308)[0m                                  'use_fused_kernels': False,
+[36m(TaskRunner pid=2693308)[0m                                  'use_liger': False,
+[36m(TaskRunner pid=2693308)[0m                                  'use_remove_padding': True,
+[36m(TaskRunner pid=2693308)[0m                                  'use_shm': False},
+[36m(TaskRunner pid=2693308)[0m                        'nccl_timeout': 600,
+[36m(TaskRunner pid=2693308)[0m                        'ref': {'_target_': 'verl.workers.config.FSDPActorConfig',
+[36m(TaskRunner pid=2693308)[0m                                'entropy_checkpointing': False,
+[36m(TaskRunner pid=2693308)[0m                                'entropy_from_logits_with_chunking': False,
+[36m(TaskRunner pid=2693308)[0m                                'fsdp_config': {'_target_': 'verl.workers.config.FSDPEngineConfig',
+[36m(TaskRunner pid=2693308)[0m                                                'dtype': 'bfloat16',
+[36m(TaskRunner pid=2693308)[0m                                                'entropy_checkpointing': False,
+[36m(TaskRunner pid=2693308)[0m                                                'entropy_from_logits_with_chunking': False,
+[36m(TaskRunner pid=2693308)[0m                                                'forward_only': True,
+[36m(TaskRunner pid=2693308)[0m                                                'forward_prefetch': False,
+[36m(TaskRunner pid=2693308)[0m                                                'fsdp_size': -1,
+[36m(TaskRunner pid=2693308)[0m                                                'full_determinism': False,
+[36m(TaskRunner pid=2693308)[0m                                                'model_dtype': 'fp32',
+[36m(TaskRunner pid=2693308)[0m                                                'offload_policy': False,
+[36m(TaskRunner pid=2693308)[0m                                                'optimizer_offload': False,
+[36m(TaskRunner pid=2693308)[0m                                                'param_offload': True,
+[36m(TaskRunner pid=2693308)[0m                                                'reshard_after_forward': True,
+[36m(TaskRunner pid=2693308)[0m                                                'seed': 42,
+[36m(TaskRunner pid=2693308)[0m                                                'strategy': 'fsdp',
+[36m(TaskRunner pid=2693308)[0m                                                'ulysses_sequence_parallel_size': 1,
+[36m(TaskRunner pid=2693308)[0m                                                'use_orig_params': False,
+[36m(TaskRunner pid=2693308)[0m                                                'use_torch_compile': True,
+[36m(TaskRunner pid=2693308)[0m                                                'wrap_policy': {'min_num_params': 0}},
+[36m(TaskRunner pid=2693308)[0m                                'log_prob_max_token_len_per_gpu': 16384,
+[36m(TaskRunner pid=2693308)[0m                                'log_prob_micro_batch_size': None,
+[36m(TaskRunner pid=2693308)[0m                                'log_prob_micro_batch_size_per_gpu': 1,
+[36m(TaskRunner pid=2693308)[0m                                'log_prob_use_dynamic_bsz': False,
+[36m(TaskRunner pid=2693308)[0m                                'profiler': {'_target_': 'verl.utils.profiler.ProfilerConfig',
+[36m(TaskRunner pid=2693308)[0m                                             'all_ranks': False,
+[36m(TaskRunner pid=2693308)[0m                                             'enable': False,
+[36m(TaskRunner pid=2693308)[0m                                             'ranks': [],
+[36m(TaskRunner pid=2693308)[0m                                             'save_path': 'outputs/profile',
+[36m(TaskRunner pid=2693308)[0m                                             'tool': None,
+[36m(TaskRunner pid=2693308)[0m                                             'tool_config': {'npu': {'_target_': 'verl.utils.profiler.config.NPUToolConfig',
+[36m(TaskRunner pid=2693308)[0m                                                                     'analysis': True,
+[36m(TaskRunner pid=2693308)[0m                                                                     'contents': [],
+[36m(TaskRunner pid=2693308)[0m                                                                     'discrete': False,
+[36m(TaskRunner pid=2693308)[0m                                                                     'level': 'level0'},
+[36m(TaskRunner pid=2693308)[0m                                                             'nsys': {'_target_': 'verl.utils.profiler.config.NsightToolConfig',
+[36m(TaskRunner pid=2693308)[0m                                                                      'discrete': False},
+[36m(TaskRunner pid=2693308)[0m                                                             'torch': {'_target_': 'verl.utils.profiler.config.TorchProfilerToolConfig',
+[36m(TaskRunner pid=2693308)[0m                                                                       'contents': [],
+[36m(TaskRunner pid=2693308)[0m                                                                       'discrete': False},
+[36m(TaskRunner pid=2693308)[0m                                                             'torch_memory': {'_target_': 'verl.utils.profiler.config.TorchMemoryToolConfig',
+[36m(TaskRunner pid=2693308)[0m                                                                              'stack_depth': 32,
+[36m(TaskRunner pid=2693308)[0m                                                                              'trace_alloc_max_entries': 100000}}},
+[36m(TaskRunner pid=2693308)[0m                                'rollout_n': 8,
+[36m(TaskRunner pid=2693308)[0m                                'router_replay': {'_target_': 'verl.workers.config.RouterReplayConfig',
+[36m(TaskRunner pid=2693308)[0m                                                  'mode': 'disabled',
+[36m(TaskRunner pid=2693308)[0m                                                  'record_file': None,
+[36m(TaskRunner pid=2693308)[0m                                                  'replay_file': None},
+[36m(TaskRunner pid=2693308)[0m                                'strategy': 'fsdp',
+[36m(TaskRunner pid=2693308)[0m                                'ulysses_sequence_parallel_size': 1,
+[36m(TaskRunner pid=2693308)[0m                                'use_torch_compile': True},
+[36m(TaskRunner pid=2693308)[0m                        'rollout': {'_target_': 'verl.workers.config.RolloutConfig',
+[36m(TaskRunner pid=2693308)[0m                                    'agent': {'_target_': 'verl.workers.config.AgentLoopConfig',
+[36m(TaskRunner pid=2693308)[0m                                              'agent_loop_config_path': None,
+[36m(TaskRunner pid=2693308)[0m                                              'custom_async_server': {'_target_': 'verl.workers.config.CustomAsyncServerConfig',
+[36m(TaskRunner pid=2693308)[0m                                                                      'name': None,
+[36m(TaskRunner pid=2693308)[0m                                                                      'path': None},
+[36m(TaskRunner pid=2693308)[0m                                              'default_agent_loop': 'single_turn_agent',
+[36m(TaskRunner pid=2693308)[0m                                              'num_workers': 8},
+[36m(TaskRunner pid=2693308)[0m                                    'calculate_log_probs': False,
+[36m(TaskRunner pid=2693308)[0m                                    'checkpoint_engine': {'_target_': 'verl.workers.config.CheckpointEngineConfig',
+[36m(TaskRunner pid=2693308)[0m                                                          'backend': 'naive',
+[36m(TaskRunner pid=2693308)[0m                                                          'engine_kwargs': {},
+[36m(TaskRunner pid=2693308)[0m                                                          'update_weights_bucket_megabytes': 4096},
+[36m(TaskRunner pid=2693308)[0m                                    'cudagraph_capture_sizes': None,
+[36m(TaskRunner pid=2693308)[0m                                    'data_parallel_size': 1,
+[36m(TaskRunner pid=2693308)[0m                                    'disable_log_stats': True,
+[36m(TaskRunner pid=2693308)[0m                                    'do_sample': True,
+[36m(TaskRunner pid=2693308)[0m                                    'dtype': 'bfloat16',
+[36m(TaskRunner pid=2693308)[0m                                    'enable_chunked_prefill': True,
+[36m(TaskRunner pid=2693308)[0m                                    'enable_prefix_caching': True,
+[36m(TaskRunner pid=2693308)[0m                                    'enable_rollout_routing_replay': False,
+[36m(TaskRunner pid=2693308)[0m                                    'enforce_eager': True,
+[36m(TaskRunner pid=2693308)[0m                                    'engine_kwargs': {'sglang': {},
+[36m(TaskRunner pid=2693308)[0m                                                      'trtllm': {},
+[36m(TaskRunner pid=2693308)[0m                                                      'vllm': {}},
+[36m(TaskRunner pid=2693308)[0m                                    'expert_parallel_size': 1,
+[36m(TaskRunner pid=2693308)[0m                                    'free_cache_engine': True,
+[36m(TaskRunner pid=2693308)[0m                                    'gpu_memory_utilization': 0.4,
+[36m(TaskRunner pid=2693308)[0m                                    'ignore_eos': False,
+[36m(TaskRunner pid=2693308)[0m                                    'layered_summon': False,
+[36m(TaskRunner pid=2693308)[0m                                    'load_format': 'dummy',
+[36m(TaskRunner pid=2693308)[0m                                    'log_prob_max_token_len_per_gpu': 16384,
+[36m(TaskRunner pid=2693308)[0m                                    'log_prob_micro_batch_size': None,
+[36m(TaskRunner pid=2693308)[0m                                    'log_prob_micro_batch_size_per_gpu': 1,
+[36m(TaskRunner pid=2693308)[0m                                    'log_prob_use_dynamic_bsz': False,
+[36m(TaskRunner pid=2693308)[0m                                    'logprobs_mode': 'processed_logprobs',
+[36m(TaskRunner pid=2693308)[0m                                    'max_model_len': None,
+[36m(TaskRunner pid=2693308)[0m                                    'max_num_batched_tokens': 8192,
+[36m(TaskRunner pid=2693308)[0m                                    'max_num_seqs': 1024,
+[36m(TaskRunner pid=2693308)[0m                                    'mode': 'async',
+[36m(TaskRunner pid=2693308)[0m                                    'mtp': {'_target_': 'verl.workers.config.MtpConfig',
+[36m(TaskRunner pid=2693308)[0m                                            'detach_encoder': False,
+[36m(TaskRunner pid=2693308)[0m                                            'enable': False,
+[36m(TaskRunner pid=2693308)[0m                                            'enable_rollout': False,
+[36m(TaskRunner pid=2693308)[0m                                            'enable_train': False,
+[36m(TaskRunner pid=2693308)[0m                                            'method': 'mtp',
+[36m(TaskRunner pid=2693308)[0m                                            'mtp_loss_scaling_factor': 0.1,
+[36m(TaskRunner pid=2693308)[0m                                            'num_speculative_tokens': 1,
+[36m(TaskRunner pid=2693308)[0m                                            'speculative_algorithm': 'EAGLE',
+[36m(TaskRunner pid=2693308)[0m                                            'speculative_eagle_topk': 1,
+[36m(TaskRunner pid=2693308)[0m                                            'speculative_num_draft_tokens': 4,
+[36m(TaskRunner pid=2693308)[0m                                            'speculative_num_steps': 3},
+[36m(TaskRunner pid=2693308)[0m                                    'multi_stage_wake_up': False,
+[36m(TaskRunner pid=2693308)[0m                                    'multi_turn': {'_target_': 'verl.workers.config.MultiTurnConfig',
+[36m(TaskRunner pid=2693308)[0m                                                   'enable': False,
+[36m(TaskRunner pid=2693308)[0m                                                   'format': 'hermes',
+[36m(TaskRunner pid=2693308)[0m                                                   'interaction_config_path': None,
+[36m(TaskRunner pid=2693308)[0m                                                   'max_assistant_turns': None,
+[36m(TaskRunner pid=2693308)[0m                                                   'max_parallel_calls': 1,
+[36m(TaskRunner pid=2693308)[0m                                                   'max_tool_response_length': 256,
+[36m(TaskRunner pid=2693308)[0m                                                   'max_user_turns': None,
+[36m(TaskRunner pid=2693308)[0m                                                   'num_repeat_rollouts': None,
+[36m(TaskRunner pid=2693308)[0m                                                   'tokenization_sanity_check_mode': 'strict',
+[36m(TaskRunner pid=2693308)[0m                                                   'tool_config_path': None,
+[36m(TaskRunner pid=2693308)[0m                                                   'tool_response_truncate_side': 'middle',
+[36m(TaskRunner pid=2693308)[0m                                                   'use_inference_chat_template': False},
+[36m(TaskRunner pid=2693308)[0m                                    'n': 8,
+[36m(TaskRunner pid=2693308)[0m                                    'name': 'vllm',
+[36m(TaskRunner pid=2693308)[0m                                    'over_sample_rate': 0,
+[36m(TaskRunner pid=2693308)[0m                                    'pipeline_model_parallel_size': 1,
+[36m(TaskRunner pid=2693308)[0m                                    'profiler': {'_target_': 'verl.utils.profiler.ProfilerConfig',
+[36m(TaskRunner pid=2693308)[0m                                                 'all_ranks': False,
+[36m(TaskRunner pid=2693308)[0m                                                 'enable': False,
+[36m(TaskRunner pid=2693308)[0m                                                 'ranks': [],
+[36m(TaskRunner pid=2693308)[0m                                                 'save_path': 'outputs/profile',
+[36m(TaskRunner pid=2693308)[0m                                                 'tool': None,
+[36m(TaskRunner pid=2693308)[0m                                                 'tool_config': {'npu': {'_target_': 'verl.utils.profiler.config.NPUToolConfig',
+[36m(TaskRunner pid=2693308)[0m                                                                         'analysis': True,
+[36m(TaskRunner pid=2693308)[0m                                                                         'contents': [],
+[36m(TaskRunner pid=2693308)[0m                                                                         'discrete': False,
+[36m(TaskRunner pid=2693308)[0m                                                                         'level': 'level0'},
+[36m(TaskRunner pid=2693308)[0m                                                                 'torch': {'_target_': 'verl.utils.profiler.config.TorchProfilerToolConfig',
+[36m(TaskRunner pid=2693308)[0m                                                                           'contents': [],
+[36m(TaskRunner pid=2693308)[0m                                                                           'discrete': False}}},
+[36m(TaskRunner pid=2693308)[0m                                    'prometheus': {'_target_': 'verl.workers.config.PrometheusConfig',
+[36m(TaskRunner pid=2693308)[0m                                                   'enable': False,
+[36m(TaskRunner pid=2693308)[0m                                                   'file': '/tmp/ray/session_latest/metrics/prometheus/prometheus.yml',
+[36m(TaskRunner pid=2693308)[0m                                                   'port': 9090,
+[36m(TaskRunner pid=2693308)[0m                                                   'served_model_name': '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor'},
+[36m(TaskRunner pid=2693308)[0m                                    'prompt_length': 2048,
+[36m(TaskRunner pid=2693308)[0m                                    'qat': {'activation_observer': 'static_minmax',
+[36m(TaskRunner pid=2693308)[0m                                            'enable': False,
+[36m(TaskRunner pid=2693308)[0m                                            'group_size': 16,
+[36m(TaskRunner pid=2693308)[0m                                            'ignore_patterns': ['lm_head',
+[36m(TaskRunner pid=2693308)[0m                                                                'embed_tokens',
+[36m(TaskRunner pid=2693308)[0m                                                                're:.*mlp.gate$'],
+[36m(TaskRunner pid=2693308)[0m                                            'mode': 'w4a16',
+[36m(TaskRunner pid=2693308)[0m                                            'quantization_config_path': None},
+[36m(TaskRunner pid=2693308)[0m                                    'quantization': None,
+[36m(TaskRunner pid=2693308)[0m                                    'quantization_config_file': None,
+[36m(TaskRunner pid=2693308)[0m                                    'response_length': 2048,
+[36m(TaskRunner pid=2693308)[0m                                    'scheduling_policy': 'fcfs',
+[36m(TaskRunner pid=2693308)[0m                                    'skip_dump_dir': '/tmp/rollout_dump',
+[36m(TaskRunner pid=2693308)[0m                                    'skip_rollout': False,
+[36m(TaskRunner pid=2693308)[0m                                    'skip_tokenizer_init': True,
+[36m(TaskRunner pid=2693308)[0m                                    'temperature': 1.0,
+[36m(TaskRunner pid=2693308)[0m                                    'tensor_model_parallel_size': 1,
+[36m(TaskRunner pid=2693308)[0m                                    'top_k': -1,
+[36m(TaskRunner pid=2693308)[0m                                    'top_p': 1,
+[36m(TaskRunner pid=2693308)[0m                                    'trace': {'_target_': 'verl.workers.config.TraceConfig',
+[36m(TaskRunner pid=2693308)[0m                                              'backend': None,
+[36m(TaskRunner pid=2693308)[0m                                              'max_samples_per_step_per_worker': None,
+[36m(TaskRunner pid=2693308)[0m                                              'token2text': False},
+[36m(TaskRunner pid=2693308)[0m                                    'val_kwargs': {'_target_': 'verl.workers.config.SamplingConfig',
+[36m(TaskRunner pid=2693308)[0m                                                   'do_sample': False,
+[36m(TaskRunner pid=2693308)[0m                                                   'n': 1,
+[36m(TaskRunner pid=2693308)[0m                                                   'temperature': 0,
+[36m(TaskRunner pid=2693308)[0m                                                   'top_k': -1,
+[36m(TaskRunner pid=2693308)[0m                                                   'top_p': 1.0}}},
+[36m(TaskRunner pid=2693308)[0m  'algorithm': {'_target_': 'verl.trainer.config.AlgoConfig',
+[36m(TaskRunner pid=2693308)[0m                'actor_lam': None,
+[36m(TaskRunner pid=2693308)[0m                'adv_estimator': 'gae',
+[36m(TaskRunner pid=2693308)[0m                'adv_mode': 'token',
+[36m(TaskRunner pid=2693308)[0m                'chunk_boundary_critic': {'chunk_size': 32,
+[36m(TaskRunner pid=2693308)[0m                                          'enable': False,
+[36m(TaskRunner pid=2693308)[0m                                          'loss_type': 'bce',
+[36m(TaskRunner pid=2693308)[0m                                          'uniform_per_state_weight': False},
+[36m(TaskRunner pid=2693308)[0m                'chunk_reduce': 'first',
+[36m(TaskRunner pid=2693308)[0m                'chunk_size': 8,
+[36m(TaskRunner pid=2693308)[0m                'critic_lam': None,
+[36m(TaskRunner pid=2693308)[0m                'gamma': 1.0,
+[36m(TaskRunner pid=2693308)[0m                'kl_ctrl': {'_target_': 'verl.trainer.config.KLControlConfig',
+[36m(TaskRunner pid=2693308)[0m                            'horizon': 10000,
+[36m(TaskRunner pid=2693308)[0m                            'kl_coef': 0.001,
+[36m(TaskRunner pid=2693308)[0m                            'target_kl': 0.1,
+[36m(TaskRunner pid=2693308)[0m                            'type': 'fixed'},
+[36m(TaskRunner pid=2693308)[0m                'kl_penalty': 'kl',
+[36m(TaskRunner pid=2693308)[0m                'lam': 1.0,
+[36m(TaskRunner pid=2693308)[0m                'norm_adv_by_std_in_grpo': True,
+[36m(TaskRunner pid=2693308)[0m                'pf_ppo': {'reweight_method': 'pow', 'weight_pow': 2.0},
+[36m(TaskRunner pid=2693308)[0m                'prompt_residual_alpha': 1.0,
+[36m(TaskRunner pid=2693308)[0m                'prompt_residual_alpha_ramp_steps': 0,
+[36m(TaskRunner pid=2693308)[0m                'rollout_correction': {'bypass_mode': False,
+[36m(TaskRunner pid=2693308)[0m                                       'loss_type': 'ppo_clip',
+[36m(TaskRunner pid=2693308)[0m                                       'rollout_is': None,
+[36m(TaskRunner pid=2693308)[0m                                       'rollout_is_batch_normalize': False,
+[36m(TaskRunner pid=2693308)[0m                                       'rollout_is_threshold': 2.0,
+[36m(TaskRunner pid=2693308)[0m                                       'rollout_rs': None,
+[36m(TaskRunner pid=2693308)[0m                                       'rollout_rs_threshold': None},
+[36m(TaskRunner pid=2693308)[0m                'use_kl_in_reward': False,
+[36m(TaskRunner pid=2693308)[0m                'use_pf_ppo': False},
+[36m(TaskRunner pid=2693308)[0m  'critic': {'_target_': 'verl.workers.config.FSDPCriticConfig',
+[36m(TaskRunner pid=2693308)[0m             'checkpoint': {'_target_': 'verl.trainer.config.CheckpointConfig',
+[36m(TaskRunner pid=2693308)[0m                            'async_save': False,
+[36m(TaskRunner pid=2693308)[0m                            'load_contents': ['model', 'optimizer', 'extra'],
+[36m(TaskRunner pid=2693308)[0m                            'mbridge_config': {},
+[36m(TaskRunner pid=2693308)[0m                            'save_contents': ['model', 'optimizer', 'extra']},
+[36m(TaskRunner pid=2693308)[0m             'cliprange_value': 0.5,
+[36m(TaskRunner pid=2693308)[0m             'data_loader_seed': 42,
+[36m(TaskRunner pid=2693308)[0m             'enable': None,
+[36m(TaskRunner pid=2693308)[0m             'forward_max_token_len_per_gpu': 32768,
+[36m(TaskRunner pid=2693308)[0m             'forward_micro_batch_size': None,
+[36m(TaskRunner pid=2693308)[0m             'forward_micro_batch_size_per_gpu': 4,
+[36m(TaskRunner pid=2693308)[0m             'grad_clip': 1.0,
+[36m(TaskRunner pid=2693308)[0m             'loss_agg_mode': 'token-mean',
+[36m(TaskRunner pid=2693308)[0m             'model': {'_target_': 'verl.workers.config.FSDPCriticModelCfg',
+[36m(TaskRunner pid=2693308)[0m                       'enable_activation_offload': False,
+[36m(TaskRunner pid=2693308)[0m                       'enable_gradient_checkpointing': True,
+[36m(TaskRunner pid=2693308)[0m                       'external_lib': 'trl',
+[36m(TaskRunner pid=2693308)[0m                       'fsdp_config': {'_target_': 'verl.workers.config.FSDPEngineConfig',
+[36m(TaskRunner pid=2693308)[0m                                       'dtype': 'bfloat16',
+[36m(TaskRunner pid=2693308)[0m                                       'entropy_checkpointing': False,
+[36m(TaskRunner pid=2693308)[0m                                       'entropy_from_logits_with_chunking': False,
+[36m(TaskRunner pid=2693308)[0m                                       'forward_only': False,
+[36m(TaskRunner pid=2693308)[0m                                       'forward_prefetch': False,
+[36m(TaskRunner pid=2693308)[0m                                       'fsdp_size': -1,
+[36m(TaskRunner pid=2693308)[0m                                       'full_determinism': False,
+[36m(TaskRunner pid=2693308)[0m                                       'model_dtype': 'fp32',
+[36m(TaskRunner pid=2693308)[0m                                       'offload_policy': False,
+[36m(TaskRunner pid=2693308)[0m                                       'optimizer_offload': False,
+[36m(TaskRunner pid=2693308)[0m                                       'param_offload': False,
+[36m(TaskRunner pid=2693308)[0m                                       'reshard_after_forward': True,
+[36m(TaskRunner pid=2693308)[0m                                       'seed': 42,
+[36m(TaskRunner pid=2693308)[0m                                       'strategy': 'fsdp',
+[36m(TaskRunner pid=2693308)[0m                                       'ulysses_sequence_parallel_size': 1,
+[36m(TaskRunner pid=2693308)[0m                                       'use_orig_params': False,
+[36m(TaskRunner pid=2693308)[0m                                       'use_torch_compile': True,
+[36m(TaskRunner pid=2693308)[0m                                       'wrap_policy': {'min_num_params': 0}},
+[36m(TaskRunner pid=2693308)[0m                       'lora_alpha': 16,
+[36m(TaskRunner pid=2693308)[0m                       'lora_rank': 0,
+[36m(TaskRunner pid=2693308)[0m                       'override_config': {},
+[36m(TaskRunner pid=2693308)[0m                       'path': '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/critic',
+[36m(TaskRunner pid=2693308)[0m                       'target_modules': 'all-linear',
+[36m(TaskRunner pid=2693308)[0m                       'tiled_mlp': {'enabled': False, 'num_shards': 4},
+[36m(TaskRunner pid=2693308)[0m                       'tokenizer_path': '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor',
+[36m(TaskRunner pid=2693308)[0m                       'trust_remote_code': False,
+[36m(TaskRunner pid=2693308)[0m                       'use_remove_padding': False,
+[36m(TaskRunner pid=2693308)[0m                       'use_shm': False,
+[36m(TaskRunner pid=2693308)[0m                       'value_head_init_mean': 0.0,
+[36m(TaskRunner pid=2693308)[0m                       'value_head_init_method': None,
+[36m(TaskRunner pid=2693308)[0m                       'value_head_init_std': None},
+[36m(TaskRunner pid=2693308)[0m             'optim': {'_target_': 'verl.workers.config.FSDPOptimizerConfig',
+[36m(TaskRunner pid=2693308)[0m                       'betas': [0.9, 0.999],
+[36m(TaskRunner pid=2693308)[0m                       'clip_grad': 1.0,
+[36m(TaskRunner pid=2693308)[0m                       'lr': 1e-05,
+[36m(TaskRunner pid=2693308)[0m                       'lr_scheduler_type': 'constant',
+[36m(TaskRunner pid=2693308)[0m                       'lr_warmup_steps': -1,
+[36m(TaskRunner pid=2693308)[0m                       'lr_warmup_steps_ratio': 0.0,
+[36m(TaskRunner pid=2693308)[0m                       'min_lr_ratio': 0.0,
+[36m(TaskRunner pid=2693308)[0m                       'num_cycles': 0.5,
+[36m(TaskRunner pid=2693308)[0m                       'optimizer': 'AdamW',
+[36m(TaskRunner pid=2693308)[0m                       'optimizer_impl': 'torch.optim',
+[36m(TaskRunner pid=2693308)[0m                       'override_optimizer_config': None,
+[36m(TaskRunner pid=2693308)[0m                       'total_training_steps': -1,
+[36m(TaskRunner pid=2693308)[0m                       'warmup_style': None,
+[36m(TaskRunner pid=2693308)[0m                       'weight_decay': 0.01,
+[36m(TaskRunner pid=2693308)[0m                       'zero_indexed_step': True},
+[36m(TaskRunner pid=2693308)[0m             'ppo_epochs': 1,
+[36m(TaskRunner pid=2693308)[0m             'ppo_max_token_len_per_gpu': 32768,
+[36m(TaskRunner pid=2693308)[0m             'ppo_micro_batch_size': None,
+[36m(TaskRunner pid=2693308)[0m             'ppo_micro_batch_size_per_gpu': 4,
+[36m(TaskRunner pid=2693308)[0m             'ppo_mini_batch_size': 32,
+[36m(TaskRunner pid=2693308)[0m             'profiler': {'_target_': 'verl.utils.profiler.ProfilerConfig',
+[36m(TaskRunner pid=2693308)[0m                          'all_ranks': False,
+[36m(TaskRunner pid=2693308)[0m                          'enable': False,
+[36m(TaskRunner pid=2693308)[0m                          'ranks': [],
+[36m(TaskRunner pid=2693308)[0m                          'save_path': 'outputs/profile',
+[36m(TaskRunner pid=2693308)[0m                          'tool': None,
+[36m(TaskRunner pid=2693308)[0m                          'tool_config': {'npu': {'_target_': 'verl.utils.profiler.config.NPUToolConfig',
+[36m(TaskRunner pid=2693308)[0m                                                  'analysis': True,
+[36m(TaskRunner pid=2693308)[0m                                                  'contents': [],
+[36m(TaskRunner pid=2693308)[0m                                                  'discrete': False,
+[36m(TaskRunner pid=2693308)[0m                                                  'level': 'level0'},
+[36m(TaskRunner pid=2693308)[0m                                          'nsys': {'_target_': 'verl.utils.profiler.config.NsightToolConfig',
+[36m(TaskRunner pid=2693308)[0m                                                   'discrete': False},
+[36m(TaskRunner pid=2693308)[0m                                          'torch': {'_target_': 'verl.utils.profiler.config.TorchProfilerToolConfig',
+[36m(TaskRunner pid=2693308)[0m                                                    'contents': [],
+[36m(TaskRunner pid=2693308)[0m                                                    'discrete': False},
+[36m(TaskRunner pid=2693308)[0m                                          'torch_memory': {'_target_': 'verl.utils.profiler.config.TorchMemoryToolConfig',
+[36m(TaskRunner pid=2693308)[0m                                                           'stack_depth': 32,
+[36m(TaskRunner pid=2693308)[0m                                                           'trace_alloc_max_entries': 100000}}},
+[36m(TaskRunner pid=2693308)[0m             'prompt_residual_prompt_loss_weight': 1.0,
+[36m(TaskRunner pid=2693308)[0m             'prompt_residual_residual_loss_weight': 1.0,
+[36m(TaskRunner pid=2693308)[0m             'rollout_n': 8,
+[36m(TaskRunner pid=2693308)[0m             'shuffle': False,
+[36m(TaskRunner pid=2693308)[0m             'strategy': 'fsdp',
+[36m(TaskRunner pid=2693308)[0m             'ulysses_sequence_parallel_size': 1,
+[36m(TaskRunner pid=2693308)[0m             'use_dynamic_bsz': False,
+[36m(TaskRunner pid=2693308)[0m             'value_head_architecture': 'linear',
+[36m(TaskRunner pid=2693308)[0m             'value_head_gru_hidden_size': 256,
+[36m(TaskRunner pid=2693308)[0m             'value_head_state_size': None,
+[36m(TaskRunner pid=2693308)[0m             'value_head_type': 'scalar',
+[36m(TaskRunner pid=2693308)[0m             'value_hl_gauss_sigma': None,
+[36m(TaskRunner pid=2693308)[0m             'value_hl_gauss_sigma_ratio': 0.75,
+[36m(TaskRunner pid=2693308)[0m             'value_loss_mode': 'ppo_regression',
+[36m(TaskRunner pid=2693308)[0m             'value_max': 1.0,
+[36m(TaskRunner pid=2693308)[0m             'value_min': 0.0,
+[36m(TaskRunner pid=2693308)[0m             'value_num_bins': 11,
+[36m(TaskRunner pid=2693308)[0m             'value_target_out_of_range': 'error',
+[36m(TaskRunner pid=2693308)[0m             'value_target_scale_max': 1.0,
+[36m(TaskRunner pid=2693308)[0m             'value_target_scale_min': 0.0,
+[36m(TaskRunner pid=2693308)[0m             'value_target_scaling': 'identity',
+[36m(TaskRunner pid=2693308)[0m             'value_target_type': 'two_hot'},
+[36m(TaskRunner pid=2693308)[0m  'data': {'apply_chat_template_kwargs': {},
+[36m(TaskRunner pid=2693308)[0m           'custom_cls': {'name': None, 'path': None},
+[36m(TaskRunner pid=2693308)[0m           'datagen': {'name': None, 'path': None},
+[36m(TaskRunner pid=2693308)[0m           'dataloader_num_workers': 8,
+[36m(TaskRunner pid=2693308)[0m           'filter_overlong_prompts': False,
+[36m(TaskRunner pid=2693308)[0m           'filter_overlong_prompts_workers': 1,
+[36m(TaskRunner pid=2693308)[0m           'image_key': 'images',
+[36m(TaskRunner pid=2693308)[0m           'image_patch_size': 14,
+[36m(TaskRunner pid=2693308)[0m           'max_prompt_length': 2048,
+[36m(TaskRunner pid=2693308)[0m           'max_response_length': 2048,
+[36m(TaskRunner pid=2693308)[0m           'prompt_key': 'prompt',
+[36m(TaskRunner pid=2693308)[0m           'response_key': 'ground_truth',
+[36m(TaskRunner pid=2693308)[0m           'return_full_prompt': False,
+[36m(TaskRunner pid=2693308)[0m           'return_multi_modal_inputs': True,
+[36m(TaskRunner pid=2693308)[0m           'return_raw_chat': True,
+[36m(TaskRunner pid=2693308)[0m           'return_raw_input_ids': False,
+[36m(TaskRunner pid=2693308)[0m           'reward_fn_key': 'data_source',
+[36m(TaskRunner pid=2693308)[0m           'sampler': {'class_name': None, 'class_path': None},
+[36m(TaskRunner pid=2693308)[0m           'seed': None,
+[36m(TaskRunner pid=2693308)[0m           'shuffle': True,
+[36m(TaskRunner pid=2693308)[0m           'tokenizer': None,
+[36m(TaskRunner pid=2693308)[0m           'tool_config_path': None,
+[36m(TaskRunner pid=2693308)[0m           'train_batch_size': 64,
+[36m(TaskRunner pid=2693308)[0m           'train_files': '/scratch/10587/npg493/dataset/MetaMathQA-math-500/train.parquet',
+[36m(TaskRunner pid=2693308)[0m           'train_max_samples': -1,
+[36m(TaskRunner pid=2693308)[0m           'truncation': 'error',
+[36m(TaskRunner pid=2693308)[0m           'trust_remote_code': False,
+[36m(TaskRunner pid=2693308)[0m           'use_shm': False,
+[36m(TaskRunner pid=2693308)[0m           'val_batch_size': None,
+[36m(TaskRunner pid=2693308)[0m           'val_files': '/scratch/10587/npg493/dataset/MetaMathQA-math-500/test.parquet',
+[36m(TaskRunner pid=2693308)[0m           'val_max_samples': -1,
+[36m(TaskRunner pid=2693308)[0m           'validation_shuffle': False,
+[36m(TaskRunner pid=2693308)[0m           'video_key': 'videos'},
+[36m(TaskRunner pid=2693308)[0m  'global_profiler': {'_target_': 'verl.utils.profiler.ProfilerConfig',
+[36m(TaskRunner pid=2693308)[0m                      'global_tool_config': {'nsys': {'_target_': 'verl.utils.profiler.config.NsightToolConfig',
+[36m(TaskRunner pid=2693308)[0m                                                      'controller_nsight_options': {'cuda-graph-trace': 'graph',
+[36m(TaskRunner pid=2693308)[0m                                                                                    'cuda-memory-usage': 'true',
+[36m(TaskRunner pid=2693308)[0m                                                                                    'trace': 'cuda,nvtx,cublas,ucx'},
+[36m(TaskRunner pid=2693308)[0m                                                      'discrete': False,
+[36m(TaskRunner pid=2693308)[0m                                                      'worker_nsight_options': {'capture-range': 'cudaProfilerApi',
+[36m(TaskRunner pid=2693308)[0m                                                                                'capture-range-end': None,
+[36m(TaskRunner pid=2693308)[0m                                                                                'cuda-graph-trace': 'graph',
+[36m(TaskRunner pid=2693308)[0m                                                                                'cuda-memory-usage': 'true',
+[36m(TaskRunner pid=2693308)[0m                                                                                'kill': 'none',
+[36m(TaskRunner pid=2693308)[0m                                                                                'trace': 'cuda,nvtx,cublas,ucx'}},
+[36m(TaskRunner pid=2693308)[0m                                             'torch_memory': {'context': 'all',
+[36m(TaskRunner pid=2693308)[0m                                                              'kw_args': {},
+[36m(TaskRunner pid=2693308)[0m                                                              'stack_depth': 32,
+[36m(TaskRunner pid=2693308)[0m                                                              'stacks': 'all',
+[36m(TaskRunner pid=2693308)[0m                                                              'trace_alloc_max_entries': 100000}},
+[36m(TaskRunner pid=2693308)[0m                      'profile_continuous_steps': False,
+[36m(TaskRunner pid=2693308)[0m                      'save_path': 'outputs/profile',
+[36m(TaskRunner pid=2693308)[0m                      'steps': None,
+[36m(TaskRunner pid=2693308)[0m                      'tool': None},
+[36m(TaskRunner pid=2693308)[0m  'model_engine': 'dp',
+[36m(TaskRunner pid=2693308)[0m  'ray_kwargs': {'ray_init': {'num_cpus': None}, 'timeline_json_file': None},
+[36m(TaskRunner pid=2693308)[0m  'reward': {'custom_reward_function': {'name': 'compute_score', 'path': None},
+[36m(TaskRunner pid=2693308)[0m             'num_workers': 8,
+[36m(TaskRunner pid=2693308)[0m             'reward_kwargs': {'math_dapo_binary_reward': True},
+[36m(TaskRunner pid=2693308)[0m             'reward_manager': {'_target_': 'verl.workers.config.reward_model.RewardManagerConfig',
+[36m(TaskRunner pid=2693308)[0m                                'module': {'_target_': 'verl.trainer.config.config.ModuleConfig',
+[36m(TaskRunner pid=2693308)[0m                                           'name': 'custom_reward_manager',
+[36m(TaskRunner pid=2693308)[0m                                           'path': None},
+[36m(TaskRunner pid=2693308)[0m                                'name': 'naive',
+[36m(TaskRunner pid=2693308)[0m                                'source': 'register'},
+[36m(TaskRunner pid=2693308)[0m             'reward_model': {'enable': False,
+[36m(TaskRunner pid=2693308)[0m                              'enable_resource_pool': False,
+[36m(TaskRunner pid=2693308)[0m                              'model_path': None,
+[36m(TaskRunner pid=2693308)[0m                              'n_gpus_per_node': 8,
+[36m(TaskRunner pid=2693308)[0m                              'nnodes': 0,
+[36m(TaskRunner pid=2693308)[0m                              'rollout': {'_target_': 'verl.workers.config.RolloutConfig',
+[36m(TaskRunner pid=2693308)[0m                                          'cudagraph_capture_sizes': None,
+[36m(TaskRunner pid=2693308)[0m                                          'data_parallel_size': 1,
+[36m(TaskRunner pid=2693308)[0m                                          'disable_log_stats': True,
+[36m(TaskRunner pid=2693308)[0m                                          'dtype': 'bfloat16',
+[36m(TaskRunner pid=2693308)[0m                                          'enable_chunked_prefill': True,
+[36m(TaskRunner pid=2693308)[0m                                          'enable_prefix_caching': True,
+[36m(TaskRunner pid=2693308)[0m                                          'enforce_eager': True,
+[36m(TaskRunner pid=2693308)[0m                                          'engine_kwargs': {},
+[36m(TaskRunner pid=2693308)[0m                                          'expert_parallel_size': 1,
+[36m(TaskRunner pid=2693308)[0m                                          'free_cache_engine': True,
+[36m(TaskRunner pid=2693308)[0m                                          'gpu_memory_utilization': 0.5,
+[36m(TaskRunner pid=2693308)[0m                                          'limit_images': None,
+[36m(TaskRunner pid=2693308)[0m                                          'load_format': 'auto',
+[36m(TaskRunner pid=2693308)[0m                                          'max_model_len': None,
+[36m(TaskRunner pid=2693308)[0m                                          'max_num_batched_tokens': 8192,
+[36m(TaskRunner pid=2693308)[0m                                          'max_num_seqs': 1024,
+[36m(TaskRunner pid=2693308)[0m                                          'name': '???',
+[36m(TaskRunner pid=2693308)[0m                                          'prompt_length': 2048,
+[36m(TaskRunner pid=2693308)[0m                                          'response_length': 2048,
+[36m(TaskRunner pid=2693308)[0m                                          'skip_tokenizer_init': False,
+[36m(TaskRunner pid=2693308)[0m                                          'tensor_model_parallel_size': 2}},
+[36m(TaskRunner pid=2693308)[0m             'sandbox_fusion': {'max_concurrent': 64,
+[36m(TaskRunner pid=2693308)[0m                                'memory_limit_mb': 1024,
+[36m(TaskRunner pid=2693308)[0m                                'url': None}},
+[36m(TaskRunner pid=2693308)[0m  'trainer': {'actor_update_interval': 1,
+[36m(TaskRunner pid=2693308)[0m              'balance_batch': True,
+[36m(TaskRunner pid=2693308)[0m              'critic_warmup': 1000000000,
+[36m(TaskRunner pid=2693308)[0m              'default_hdfs_dir': None,
+[36m(TaskRunner pid=2693308)[0m              'default_local_dir': '/scratch/10587/npg493/verl_runs/lowent_critic_cont_725935/train_log',
+[36m(TaskRunner pid=2693308)[0m              'del_local_ckpt_after_load': False,
+[36m(TaskRunner pid=2693308)[0m              'device': 'cuda',
+[36m(TaskRunner pid=2693308)[0m              'esi_redundant_time': 0,
+[36m(TaskRunner pid=2693308)[0m              'experiment_name': 'lowent_critic_cont_725935',
+[36m(TaskRunner pid=2693308)[0m              'log_val_generations': 0,
+[36m(TaskRunner pid=2693308)[0m              'logger': ['console', 'wandb'],
+[36m(TaskRunner pid=2693308)[0m              'max_actor_ckpt_to_keep': None,
+[36m(TaskRunner pid=2693308)[0m              'max_critic_ckpt_to_keep': None,
+[36m(TaskRunner pid=2693308)[0m              'n_gpus_per_node': 1,
+[36m(TaskRunner pid=2693308)[0m              'nnodes': 4,
+[36m(TaskRunner pid=2693308)[0m              'overlong_filtering': False,
+[36m(TaskRunner pid=2693308)[0m              'project_name': 'shuozhe_ppo',
+[36m(TaskRunner pid=2693308)[0m              'ray_wait_register_center_timeout': 300,
+[36m(TaskRunner pid=2693308)[0m              'resume_from_path': None,
+[36m(TaskRunner pid=2693308)[0m              'resume_mode': 'disable',
+[36m(TaskRunner pid=2693308)[0m              'rollout_data_dir': None,
+[36m(TaskRunner pid=2693308)[0m              'save_freq': 20,
+[36m(TaskRunner pid=2693308)[0m              'test_freq': 20,
+[36m(TaskRunner pid=2693308)[0m              'total_epochs': 5,
+[36m(TaskRunner pid=2693308)[0m              'total_training_steps': None,
+[36m(TaskRunner pid=2693308)[0m              'use_legacy_worker_impl': 'auto',
+[36m(TaskRunner pid=2693308)[0m              'val_before_train': True,
+[36m(TaskRunner pid=2693308)[0m              'val_only': False,
+[36m(TaskRunner pid=2693308)[0m              'validation_data_dir': None},
+[36m(TaskRunner pid=2693308)[0m  'transfer_queue': {'enable': False}}
+[36m(TaskRunner pid=2693308)[0m /work/10587/npg493/vista/verl/verl/workers/config/critic.py:299: UserWarning: using model in Critic Config is deprecated, please use model_config instead
+[36m(TaskRunner pid=2693308)[0m   super().__post_init__()
+[36m(TaskRunner pid=2693308)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(TaskRunner pid=2693308)[0m [validate_config] All configuration checks passed successfully!
+[36m(TaskRunner pid=2693308)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(TaskRunner pid=2693308)[0m /work/10587/npg493/vista/verl/verl/utils/tokenizer.py:109: UserWarning: Failed to create processor: Unsupported processor type: Qwen2TokenizerFast. This may affect multimodal processing
+[36m(TaskRunner pid=2693308)[0m   warnings.warn(f"Failed to create processor: {e}. This may affect multimodal processing", stacklevel=1)
+[36m(TaskRunner pid=2693308)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(TaskRunner pid=2693308)[0m Using dataset class: RLHFDataset
+[36m(TaskRunner pid=2693308)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(TaskRunner pid=2693308)[0m dataset len: 131603
+[36m(TaskRunner pid=2693308)[0m Using dataset class: RLHFDataset
+[36m(TaskRunner pid=2693308)[0m dataset len: 500
+[36m(TaskRunner pid=2693308)[0m Size of train dataloader: 2056, Size of val dataloader: 1
+[36m(TaskRunner pid=2693308)[0m Total training steps: 10280
+[36m(TaskRunner pid=2693308)[0m Total actor update steps: 0
+[36m(TaskRunner pid=2693308)[0m Warning: actor update schedule yields zero actor optimizer steps; using 1 scheduler step.
+[36m(TaskRunner pid=2693308)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(TaskRunner pid=2693308)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(TaskRunner pid=2693308)[0m colocated worker base class <class 'verl.single_controller.base.worker.Worker'>
+[36m(pid=2693535)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+[36m(pid=2693535)[0m   import pynvml  # type: ignore[import]
+[36m(pid=1713761, ip=129.114.19.77)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+[36m(pid=1713761, ip=129.114.19.77)[0m   import pynvml  # type: ignore[import]
+[36m(pid=1948715, ip=129.114.19.76)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+[36m(pid=1948715, ip=129.114.19.76)[0m   import pynvml  # type: ignore[import]
+[36m(WorkerDict pid=1713761, ip=129.114.19.77)[0m [Gloo] Rank 2 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[36m(WorkerDict pid=2693535)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(pid=852427, ip=129.114.19.78)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+[36m(pid=852427, ip=129.114.19.78)[0m   import pynvml  # type: ignore[import]
+[36m(WorkerDict pid=2693535)[0m Critic overriding config {'bos_token_id': None, 'eos_token_id': 151643, 'pad_token_id': 151643}
+[36m(WorkerDict pid=2693535)[0m Critic model config after override: Qwen2Config {
+[36m(WorkerDict pid=2693535)[0m   "architectures": [
+[36m(WorkerDict pid=2693535)[0m     "Qwen2ForCausalLM"
+[36m(WorkerDict pid=2693535)[0m   ],
+[36m(WorkerDict pid=2693535)[0m   "attention_dropout": 0.0,
+[36m(WorkerDict pid=2693535)[0m   "classifier_dropout": 0.0,
+[36m(WorkerDict pid=2693535)[0m   "dtype": "bfloat16",
+[36m(WorkerDict pid=2693535)[0m   "eos_token_id": 151643,
+[36m(WorkerDict pid=2693535)[0m   "hidden_act": "silu",
+[36m(WorkerDict pid=2693535)[0m   "hidden_dropout": "0",
+[36m(WorkerDict pid=2693535)[0m   "hidden_size": 3584,
+[36m(WorkerDict pid=2693535)[0m   "id2label": {
+[36m(WorkerDict pid=2693535)[0m     "0": "LABEL_0"
+[36m(WorkerDict pid=2693535)[0m   },
+[36m(WorkerDict pid=2693535)[0m   "initializer_range": 0.02,
+[36m(WorkerDict pid=2693535)[0m   "intermediate_size": 18944,
+[36m(WorkerDict pid=2693535)[0m   "label2id": {
+[36m(WorkerDict pid=2693535)[0m     "LABEL_0": 0
+[36m(WorkerDict pid=2693535)[0m   },
+[36m(WorkerDict pid=2693535)[0m   "layer_types": [
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention"
+[36m(WorkerDict pid=2693535)[0m   ],
+[36m(WorkerDict pid=2693535)[0m   "max_position_embeddings": 131072,
+[36m(WorkerDict pid=2693535)[0m   "max_window_layers": 28,
+[36m(WorkerDict pid=2693535)[0m   "model_type": "qwen2",
+[36m(WorkerDict pid=2693535)[0m   "num_attention_heads": 28,
+[36m(WorkerDict pid=2693535)[0m   "num_hidden_layers": 28,
+[36m(WorkerDict pid=2693535)[0m   "num_key_value_heads": 4,
+[36m(WorkerDict pid=2693535)[0m   "pad_token_id": 151643,
+[36m(WorkerDict pid=2693535)[0m   "rms_norm_eps": 1e-06,
+[36m(WorkerDict pid=2693535)[0m   "rope_scaling": null,
+[36m(WorkerDict pid=2693535)[0m   "rope_theta": 1000000.0,
+[36m(WorkerDict pid=2693535)[0m   "sliding_window": null,
+[36m(WorkerDict pid=2693535)[0m   "summary_dropout_prob": 0.0,
+[36m(WorkerDict pid=2693535)[0m   "tie_word_embeddings": false,
+[36m(WorkerDict pid=2693535)[0m   "transformers_version": "4.57.6",
+[36m(WorkerDict pid=2693535)[0m   "use_cache": true,
+[36m(WorkerDict pid=2693535)[0m   "use_mrope": false,
+[36m(WorkerDict pid=2693535)[0m   "use_sliding_window": false,
+[36m(WorkerDict pid=2693535)[0m   "value_head_architecture": "linear",
+[36m(WorkerDict pid=2693535)[0m   "value_head_gru_hidden_size": 256,
+[36m(WorkerDict pid=2693535)[0m   "value_head_state_size": null,
+[36m(WorkerDict pid=2693535)[0m   "value_head_type": "scalar",
+[36m(WorkerDict pid=2693535)[0m   "value_hl_gauss_sigma": null,
+[36m(WorkerDict pid=2693535)[0m   "value_hl_gauss_sigma_ratio": 0.75,
+[36m(WorkerDict pid=2693535)[0m   "value_max": 1.0,
+[36m(WorkerDict pid=2693535)[0m   "value_min": 0.0,
+[36m(WorkerDict pid=2693535)[0m   "value_num_bins": 11,
+[36m(WorkerDict pid=2693535)[0m   "value_target_out_of_range": "error",
+[36m(WorkerDict pid=2693535)[0m   "value_target_scale_max": 1.0,
+[36m(WorkerDict pid=2693535)[0m   "value_target_scale_min": 0.0,
+[36m(WorkerDict pid=2693535)[0m   "value_target_scaling": "identity",
+[36m(WorkerDict pid=2693535)[0m   "value_target_type": "two_hot",
+[36m(WorkerDict pid=2693535)[0m   "vocab_size": 152064
+[36m(WorkerDict pid=2693535)[0m }
+[36m(WorkerDict pid=2693535)[0m 
+[36m(WorkerDict pid=2693535)[0m /work/10587/npg493/vista/verl/verl/utils/tokenizer.py:109: UserWarning: Failed to create processor: Unsupported processor type: Qwen2TokenizerFast. This may affect multimodal processing
+[36m(WorkerDict pid=2693535)[0m   warnings.warn(f"Failed to create processor: {e}. This may affect multimodal processing", stacklevel=1)
+[36m(WorkerDict pid=852427, ip=129.114.19.78)[0m Monkey patch state_dict in AutoModelForCausalLMWithValueHead. 
+[36m(WorkerDict pid=852427, ip=129.114.19.78)[0m Skipping monkey patch for Qwen2ForTokenClassification as use_fused_kernels is False or fused_kernels_backend is None
+[36m(WorkerDict pid=852427, ip=129.114.19.78)[0m [Gloo] Rank 3 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3[32m [repeated 3x across cluster] (Ray deduplicates logs by default. Set RAY_DEDUP_LOGS=0 to disable log deduplication, or see https://docs.ray.io/en/master/ray-observability/user-guides/configure-logging.html#log-deduplication for more options.)[0m
+[36m(WorkerDict pid=2693535)[0m Monkey patch state_dict in AutoModelForCausalLMWithValueHead. [32m [repeated 3x across cluster][0m
+[36m(WorkerDict pid=2693535)[0m Skipping monkey patch for Qwen2ForTokenClassification as use_fused_kernels is False or fused_kernels_backend is None[32m [repeated 3x across cluster][0m
+[36m(WorkerDict pid=2693535)[0m Qwen2ForTokenClassification contains 7.07B parameters
+[36m(WorkerDict pid=2693535)[0m Before critic FSDP, memory allocated (GB): 0.00, memory reserved (GB): 0.00, device memory used/total (GB): 0.52/95.00
+[36m(WorkerDict pid=2693535)[0m NCCL version 2.27.5+cuda12.9
+[36m(WorkerDict pid=2693535)[0m After critic FSDP, memory allocated (GB): 6.59, memory reserved (GB): 12.08, device memory used/total (GB): 16.92/95.00
+[36m(WorkerDict pid=2693535)[0m Total steps: 10280, num_warmup_steps: 0
+[36m(WorkerDict pid=2693535)[0m Critic use_remove_padding=False
+[36m(WorkerDict pid=1948715, ip=129.114.19.76)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.[32m [repeated 8x across cluster][0m
+[36m(WorkerDict pid=852427, ip=129.114.19.78)[0m /work/10587/npg493/vista/verl/verl/utils/tokenizer.py:109: UserWarning: Failed to create processor: Unsupported processor type: Qwen2TokenizerFast. This may affect multimodal processing[32m [repeated 3x across cluster][0m
+[36m(WorkerDict pid=852427, ip=129.114.19.78)[0m   warnings.warn(f"Failed to create processor: {e}. This may affect multimodal processing", stacklevel=1)[32m [repeated 3x across cluster][0m
+[36m(WorkerDict pid=2693535)[0m Model config after override: Qwen2Config {
+[36m(WorkerDict pid=2693535)[0m   "architectures": [
+[36m(WorkerDict pid=2693535)[0m     "Qwen2ForCausalLM"
+[36m(WorkerDict pid=2693535)[0m   ],
+[36m(WorkerDict pid=2693535)[0m   "attention_dropout": 0.0,
+[36m(WorkerDict pid=2693535)[0m   "dtype": "bfloat16",
+[36m(WorkerDict pid=2693535)[0m   "eos_token_id": 151643,
+[36m(WorkerDict pid=2693535)[0m   "hidden_act": "silu",
+[36m(WorkerDict pid=2693535)[0m   "hidden_size": 3584,
+[36m(WorkerDict pid=2693535)[0m   "initializer_range": 0.02,
+[36m(WorkerDict pid=2693535)[0m   "intermediate_size": 18944,
+[36m(WorkerDict pid=2693535)[0m   "layer_types": [
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention",
+[36m(WorkerDict pid=2693535)[0m     "full_attention"
+[36m(WorkerDict pid=2693535)[0m   ],
+[36m(WorkerDict pid=2693535)[0m   "max_position_embeddings": 131072,
+[36m(WorkerDict pid=2693535)[0m   "max_window_layers": 28,
+[36m(WorkerDict pid=2693535)[0m   "model_type": "qwen2",
+[36m(WorkerDict pid=2693535)[0m   "num_attention_heads": 28,
+[36m(WorkerDict pid=2693535)[0m   "num_hidden_layers": 28,
+[36m(WorkerDict pid=2693535)[0m   "num_key_value_heads": 4,
+[36m(WorkerDict pid=2693535)[0m   "pad_token_id": 151643,
+[36m(WorkerDict pid=2693535)[0m   "rms_norm_eps": 1e-06,
+[36m(WorkerDict pid=2693535)[0m   "rope_scaling": null,
+[36m(WorkerDict pid=2693535)[0m   "rope_theta": 1000000.0,
+[36m(WorkerDict pid=2693535)[0m   "sliding_window": null,
+[36m(WorkerDict pid=2693535)[0m   "tie_word_embeddings": false,
+[36m(WorkerDict pid=2693535)[0m   "transformers_version": "4.57.6",
+[36m(WorkerDict pid=2693535)[0m   "use_cache": true,
+[36m(WorkerDict pid=2693535)[0m   "use_mrope": false,
+[36m(WorkerDict pid=2693535)[0m   "use_sliding_window": false,
+[36m(WorkerDict pid=2693535)[0m   "vocab_size": 152064
+[36m(WorkerDict pid=2693535)[0m }
+[36m(WorkerDict pid=2693535)[0m 
+[36m(WorkerDict pid=1948715, ip=129.114.19.76)[0m `torch_dtype` is deprecated! Use `dtype` instead!
+[36m(WorkerDict pid=1948715, ip=129.114.19.76)[0m Flash Attention 2 only supports torch.float16 and torch.bfloat16 dtypes, but the current dype in Qwen2ForCausalLM is torch.float32. You should run training or inference using Automatic Mixed-Precision via the `with torch.autocast(device_type='torch_device'):` decorator, or load the model with the `dtype` argument. Example: `model = AutoModel.from_pretrained("openai/whisper-tiny", attn_implementation="flash_attention_2", dtype=torch.float16)`
+[36m(WorkerDict pid=1948715, ip=129.114.19.76)[0m Flash Attention 2 only supports torch.float16 and torch.bfloat16 dtypes, but the current dype in Qwen2Model is torch.float32. You should run training or inference using Automatic Mixed-Precision via the `with torch.autocast(device_type='torch_device'):` decorator, or load the model with the `dtype` argument. Example: `model = AutoModel.from_pretrained("openai/whisper-tiny", attn_implementation="flash_attention_2", dtype=torch.float16)`
+[36m(WorkerDict pid=852427, ip=129.114.19.78)[0m Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]
+[36m(WorkerDict pid=2693535)[0m Loading checkpoint shards:  25%|██▌       | 1/4 [00:06<00:19,  6.47s/it]
+[36m(WorkerDict pid=1713761, ip=129.114.19.77)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.[32m [repeated 7x across cluster][0m
+[36m(WorkerDict pid=852427, ip=129.114.19.78)[0m /work/10587/npg493/vista/verl/verl/utils/tokenizer.py:109: UserWarning: Failed to create processor: Unsupported processor type: Qwen2TokenizerFast. This may affect multimodal processing[32m [repeated 4x across cluster][0m
+[36m(WorkerDict pid=852427, ip=129.114.19.78)[0m   warnings.warn(f"Failed to create processor: {e}. This may affect multimodal processing", stacklevel=1)[32m [repeated 4x across cluster][0m
+[36m(WorkerDict pid=2693535)[0m `torch_dtype` is deprecated! Use `dtype` instead![32m [repeated 3x across cluster][0m
+[36m(WorkerDict pid=2693535)[0m Flash Attention 2 only supports torch.float16 and torch.bfloat16 dtypes, but the current dype in Qwen2Model is torch.float32. You should run training or inference using Automatic Mixed-Precision via the `with torch.autocast(device_type='torch_device'):` decorator, or load the model with the `dtype` argument. Example: `model = AutoModel.from_pretrained("openai/whisper-tiny", attn_implementation="flash_attention_2", dtype=torch.float16)`[32m [repeated 6x across cluster][0m
+[36m(WorkerDict pid=2693535)[0m Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s][32m [repeated 3x across cluster][0m
+[36m(WorkerDict pid=2693535)[0m Loading checkpoint shards:  50%|█████     | 2/4 [00:12<00:12,  6.20s/it][32m [repeated 4x across cluster][0m
+[36m(WorkerDict pid=2693535)[0m Loading checkpoint shards:  75%|███████▌  | 3/4 [00:19<00:06,  6.46s/it][32m [repeated 4x across cluster][0m
+[36m(WorkerDict pid=2693535)[0m Monkey patch state_dict in AutoModelForCausalLMWithValueHead. 
+[36m(WorkerDict pid=2693535)[0m Monkey patch _flash_attention_forward in transformers.integrations.flash_attention
+[36m(WorkerDict pid=2693535)[0m Skipping monkey patch for Qwen2ForCausalLM as use_fused_kernels is False or fused_kernels_backend is torch
+[36m(WorkerDict pid=852427, ip=129.114.19.78)[0m Critic use_remove_padding=False[32m [repeated 3x across cluster][0m
+[36m(WorkerDict pid=2693535)[0m Loading checkpoint shards: 100%|██████████| 4/4 [00:20<00:00,  4.26s/it]Loading checkpoint shards: 100%|██████████| 4/4 [00:20<00:00,  5.04s/it]
+[36m(WorkerDict pid=2693535)[0m Qwen2ForCausalLM contains 7.62B parameters
+[36m(WorkerDict pid=2693535)[0m wrap_policy: functools.partial(<function _or_policy at 0x400f131f1ee0>, policies=[functools.partial(<function transformer_auto_wrap_policy at 0x400f131f1da0>, transformer_layer_cls={<class 'transformers.models.qwen2.modeling_qwen2.Qwen2DecoderLayer'>})])
+[36m(WorkerDict pid=2693535)[0m Total steps: 1, num_warmup_steps: 0
+[36m(WorkerDict pid=2693535)[0m Actor use_remove_padding=True
+[36m(WorkerDict pid=2693535)[0m Actor use_fused_kernels=False
+[36m(WorkerDict pid=2693535)[0m Actor use_prefix_grouper=False
+[36m(WorkerDict pid=2693535)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(WorkerDict pid=1948715, ip=129.114.19.76)[0m Loading checkpoint shards:  75%|███████▌  | 3/4 [00:20<00:06,  6.85s/it][32m [repeated 3x across cluster][0m
+[36m(WorkerDict pid=2693535)[0m /work/10587/npg493/vista/verl/verl/utils/tokenizer.py:109: UserWarning: Failed to create processor: Unsupported processor type: Qwen2TokenizerFast. This may affect multimodal processing
+[36m(WorkerDict pid=2693535)[0m   warnings.warn(f"Failed to create processor: {e}. This may affect multimodal processing", stacklevel=1)
+[36m(WorkerDict pid=1948715, ip=129.114.19.76)[0m [Gloo] Rank 1 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[36m(WorkerDict pid=1948715, ip=129.114.19.76)[0m [Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[36m(WorkerDict pid=1948715, ip=129.114.19.76)[0m [Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[36m(WorkerDict pid=852427, ip=129.114.19.78)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+[36m(WorkerDict pid=852427, ip=129.114.19.78)[0m We recommend installing via `pip install torch-c-dlpack-ext`
+[36m(WorkerDict pid=852427, ip=129.114.19.78)[0m   warnings.warn(
+[36m(WorkerDict pid=1948715, ip=129.114.19.76)[0m Loading checkpoint shards: 100%|██████████| 4/4 [00:21<00:00,  4.56s/it]Loading checkpoint shards: 100%|██████████| 4/4 [00:21<00:00,  5.47s/it][32m [repeated 3x across cluster][0m
+[36m(WorkerDict pid=1713761, ip=129.114.19.77)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.[32m [repeated 7x across cluster][0m
+[36m(WorkerDict pid=1713761, ip=129.114.19.77)[0m /work/10587/npg493/vista/verl/verl/utils/tokenizer.py:109: UserWarning: Failed to create processor: Unsupported processor type: Qwen2TokenizerFast. This may affect multimodal processing[32m [repeated 3x across cluster][0m
+[36m(WorkerDict pid=1713761, ip=129.114.19.77)[0m   warnings.warn(f"Failed to create processor: {e}. This may affect multimodal processing", stacklevel=1)[32m [repeated 3x across cluster][0m
+[36m(WorkerDict pid=852427, ip=129.114.19.78)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:675: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+[36m(WorkerDict pid=852427, ip=129.114.19.78)[0m   warnings.warn(
+[36m(WorkerDict pid=1713761, ip=129.114.19.77)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+[36m(WorkerDict pid=1713761, ip=129.114.19.77)[0m We recommend installing via `pip install torch-c-dlpack-ext`
+[36m(WorkerDict pid=1713761, ip=129.114.19.77)[0m   warnings.warn(
+[36m(WorkerDict pid=1713761, ip=129.114.19.77)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:675: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+[36m(WorkerDict pid=1713761, ip=129.114.19.77)[0m   warnings.warn(
+[36m(WorkerDict pid=1948715, ip=129.114.19.76)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+[36m(WorkerDict pid=1948715, ip=129.114.19.76)[0m We recommend installing via `pip install torch-c-dlpack-ext`
+[36m(WorkerDict pid=1948715, ip=129.114.19.76)[0m   warnings.warn(
+[36m(WorkerDict pid=1948715, ip=129.114.19.76)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:675: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+[36m(WorkerDict pid=1948715, ip=129.114.19.76)[0m   warnings.warn(
+[36m(WorkerDict pid=2693535)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+[36m(WorkerDict pid=2693535)[0m We recommend installing via `pip install torch-c-dlpack-ext`
+[36m(WorkerDict pid=2693535)[0m   warnings.warn(
+[36m(WorkerDict pid=2693535)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:675: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+[36m(WorkerDict pid=2693535)[0m   warnings.warn(
+[36m(pid=852629, ip=129.114.19.78)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+[36m(pid=852629, ip=129.114.19.78)[0m   import pynvml  # type: ignore[import]
+[36m(RewardLoopWorker pid=1948862, ip=129.114.19.76)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(pid=1713905, ip=129.114.19.77)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.[32m [repeated 7x across cluster][0m
+[36m(pid=1713905, ip=129.114.19.77)[0m   import pynvml  # type: ignore[import][32m [repeated 7x across cluster][0m
+[36m(TaskRunner pid=2693308)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+[36m(TaskRunner pid=2693308)[0m We recommend installing via `pip install torch-c-dlpack-ext`
+[36m(TaskRunner pid=2693308)[0m   warnings.warn(
+[36m(RewardLoopWorker pid=1713905, ip=129.114.19.77)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.[32m [repeated 7x across cluster][0m
+[36m(pid=2693885)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+[36m(pid=2693885)[0m   import pynvml  # type: ignore[import]
+[36m(pid=852758, ip=129.114.19.78)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+[36m(pid=852758, ip=129.114.19.78)[0m We recommend installing via `pip install torch-c-dlpack-ext`
+[36m(pid=852758, ip=129.114.19.78)[0m   warnings.warn(
+[36m(pid=1714085, ip=129.114.19.77)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.[32m [repeated 3x across cluster][0m
+[36m(pid=1714085, ip=129.114.19.77)[0m   import pynvml  # type: ignore[import][32m [repeated 3x across cluster][0m
+[36m(vLLMHttpServer pid=852758, ip=129.114.19.78)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(vLLMHttpServer pid=852758, ip=129.114.19.78)[0m WARNING 05-28 00:06:14 [vllm.py:601] Enforce eager set, overriding optimization level to -O0
+[36m(WorkerDict pid=1948715, ip=129.114.19.76)[0m Monkey patch state_dict in AutoModelForCausalLMWithValueHead. [32m [repeated 3x across cluster][0m
+[36m(WorkerDict pid=1948715, ip=129.114.19.76)[0m Monkey patch _flash_attention_forward in transformers.integrations.flash_attention[32m [repeated 3x across cluster][0m
+[36m(WorkerDict pid=1948715, ip=129.114.19.76)[0m Skipping monkey patch for Qwen2ForCausalLM as use_fused_kernels is False or fused_kernels_backend is torch[32m [repeated 3x across cluster][0m
+[36m(WorkerDict pid=1713761, ip=129.114.19.77)[0m [Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0[32m [repeated 9x across cluster][0m
+[36m(vLLMHttpServer pid=852758, ip=129.114.19.78)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(vLLMHttpServer pid=852758, ip=129.114.19.78)[0m /work/10587/npg493/vista/verl/verl/utils/tokenizer.py:109: UserWarning: Failed to create processor: Unsupported processor type: Qwen2TokenizerFast. This may affect multimodal processing
+[36m(vLLMHttpServer pid=852758, ip=129.114.19.78)[0m   warnings.warn(f"Failed to create processor: {e}. This may affect multimodal processing", stacklevel=1)
+[36m(vLLMHttpServer pid=852758, ip=129.114.19.78)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(vLLMHttpServer pid=852758, ip=129.114.19.78)[0m WARNING 05-28 00:06:14 [system_utils.py:136] We must use the `spawn` multiprocessing start method. Overriding VLLM_WORKER_MULTIPROC_METHOD to 'spawn'. See https://docs.vllm.ai/en/latest/usage/troubleshooting.html#python-multiprocessing for more information. Reasons: In a Ray actor and can only be spawned; CUDA is initialized
+[36m(vLLMHttpServer pid=852758, ip=129.114.19.78)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.[32m [repeated 2x across cluster][0m
+[36m(vLLMHttpServer pid=852758, ip=129.114.19.78)[0m   import pynvml  # type: ignore[import][32m [repeated 2x across cluster][0m
+[36m(pid=2693885)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+[36m(pid=2693885)[0m We recommend installing via `pip install torch-c-dlpack-ext`
+[36m(pid=2693885)[0m   warnings.warn(
+[36m(vLLMHttpServer pid=2693885)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(vLLMHttpServer pid=2693885)[0m ['serve',
+[36m(vLLMHttpServer pid=2693885)[0m  '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor',
+[36m(vLLMHttpServer pid=2693885)[0m  '--dtype',
+[36m(vLLMHttpServer pid=2693885)[0m  'bfloat16',
+[36m(vLLMHttpServer pid=2693885)[0m  '--load_format',
+[36m(vLLMHttpServer pid=2693885)[0m  'dummy',
+[36m(vLLMHttpServer pid=2693885)[0m  '--distributed_executor_backend',
+[36m(vLLMHttpServer pid=2693885)[0m  'mp',
+[36m(vLLMHttpServer pid=2693885)[0m  '--worker_extension_cls',
+[36m(vLLMHttpServer pid=2693885)[0m  'verl.workers.rollout.vllm_rollout.utils.vLLMColocateWorkerExtension',
+[36m(vLLMHttpServer pid=2693885)[0m  '--max_model_len',
+[36m(vLLMHttpServer pid=2693885)[0m  '131072',
+[36m(vLLMHttpServer pid=2693885)[0m  '--max_num_seqs',
+[36m(vLLMHttpServer pid=2693885)[0m  '1024',
+[36m(vLLMHttpServer pid=2693885)[0m  '--enable_chunked_prefill',
+[36m(vLLMHttpServer pid=2693885)[0m  '--max_num_batched_tokens',
+[36m(vLLMHttpServer pid=2693885)[0m  '8192',
+[36m(vLLMHttpServer pid=2693885)[0m  '--enable_prefix_caching',
+[36m(vLLMHttpServer pid=2693885)[0m  '--enable_sleep_mode',
+[36m(vLLMHttpServer pid=2693885)[0m  '--logprobs_mode',
+[36m(vLLMHttpServer pid=2693885)[0m  'processed_logprobs',
+[36m(vLLMHttpServer pid=2693885)[0m  '--enforce_eager',
+[36m(vLLMHttpServer pid=2693885)[0m  '--gpu_memory_utilization',
+[36m(vLLMHttpServer pid=2693885)[0m  '0.4',
+[36m(vLLMHttpServer pid=2693885)[0m  '--disable_log_stats',
+[36m(vLLMHttpServer pid=2693885)[0m  '--tensor_parallel_size',
+[36m(vLLMHttpServer pid=2693885)[0m  '1',
+[36m(vLLMHttpServer pid=2693885)[0m  '--seed',
+[36m(vLLMHttpServer pid=2693885)[0m  '0',
+[36m(vLLMHttpServer pid=2693885)[0m  '--override_generation_config',
+[36m(vLLMHttpServer pid=2693885)[0m  '{"temperature": 1.0, "top_k": -1, "top_p": 1, "repetition_penalty": 1.0, '
+[36m(vLLMHttpServer pid=2693885)[0m  '"max_new_tokens": 2048}',
+[36m(vLLMHttpServer pid=2693885)[0m  '--hf_overrides',
+[36m(vLLMHttpServer pid=2693885)[0m  '{}',
+[36m(vLLMHttpServer pid=2693885)[0m  '--scheduling_policy',
+[36m(vLLMHttpServer pid=2693885)[0m  'fcfs',
+[36m(vLLMHttpServer pid=2693885)[0m  '--compilation_config',
+[36m(vLLMHttpServer pid=2693885)[0m  '{"cudagraph_mode": "FULL_AND_PIECEWISE"}']
+[36m(vLLMHttpServer pid=2693885)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(vLLMHttpServer pid=2693885)[0m /work/10587/npg493/vista/verl/verl/utils/tokenizer.py:109: UserWarning: Failed to create processor: Unsupported processor type: Qwen2TokenizerFast. This may affect multimodal processing
+[36m(vLLMHttpServer pid=2693885)[0m   warnings.warn(f"Failed to create processor: {e}. This may affect multimodal processing", stacklevel=1)
+[36m(vLLMHttpServer pid=2693885)[0m WARNING 05-28 00:06:30 [vllm.py:601] Enforce eager set, overriding optimization level to -O0
+[36m(vLLMHttpServer pid=2693885)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(vLLMHttpServer pid=2693885)[0m WARNING 05-28 00:06:30 [system_utils.py:136] We must use the `spawn` multiprocessing start method. Overriding VLLM_WORKER_MULTIPROC_METHOD to 'spawn'. See https://docs.vllm.ai/en/latest/usage/troubleshooting.html#python-multiprocessing for more information. Reasons: In a Ray actor and can only be spawned; CUDA is initialized
+[36m(vLLMHttpServer pid=2693885)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+[36m(vLLMHttpServer pid=2693885)[0m   import pynvml  # type: ignore[import]
+[36m(vLLMHttpServer pid=2693885)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+[36m(vLLMHttpServer pid=2693885)[0m   import pynvml  # type: ignore[import]
+[36m(pid=1949042, ip=129.114.19.76)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+[36m(pid=1949042, ip=129.114.19.76)[0m We recommend installing via `pip install torch-c-dlpack-ext`
+[36m(pid=1949042, ip=129.114.19.76)[0m   warnings.warn(
+[36m(vLLMHttpServer pid=1949042, ip=129.114.19.76)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(vLLMHttpServer pid=1949042, ip=129.114.19.76)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(vLLMHttpServer pid=1949042, ip=129.114.19.76)[0m /work/10587/npg493/vista/verl/verl/utils/tokenizer.py:109: UserWarning: Failed to create processor: Unsupported processor type: Qwen2TokenizerFast. This may affect multimodal processing
+[36m(vLLMHttpServer pid=1949042, ip=129.114.19.76)[0m   warnings.warn(f"Failed to create processor: {e}. This may affect multimodal processing", stacklevel=1)
+[36m(vLLMHttpServer pid=1949042, ip=129.114.19.76)[0m WARNING 05-28 00:06:46 [vllm.py:601] Enforce eager set, overriding optimization level to -O0
+[36m(vLLMHttpServer pid=1949042, ip=129.114.19.76)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(vLLMHttpServer pid=1949042, ip=129.114.19.76)[0m WARNING 05-28 00:06:46 [system_utils.py:136] We must use the `spawn` multiprocessing start method. Overriding VLLM_WORKER_MULTIPROC_METHOD to 'spawn'. See https://docs.vllm.ai/en/latest/usage/troubleshooting.html#python-multiprocessing for more information. Reasons: In a Ray actor and can only be spawned; CUDA is initialized
+[36m(vLLMHttpServer pid=1949042, ip=129.114.19.76)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+[36m(vLLMHttpServer pid=1949042, ip=129.114.19.76)[0m   import pynvml  # type: ignore[import]
+[36m(vLLMHttpServer pid=1949042, ip=129.114.19.76)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+[36m(vLLMHttpServer pid=1949042, ip=129.114.19.76)[0m   import pynvml  # type: ignore[import]
+[36m(vLLMHttpServer pid=852758, ip=129.114.19.78)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+[36m(vLLMHttpServer pid=852758, ip=129.114.19.78)[0m We recommend installing via `pip install torch-c-dlpack-ext`
+[36m(vLLMHttpServer pid=852758, ip=129.114.19.78)[0m   warnings.warn(
+[36m(vLLMHttpServer pid=852758, ip=129.114.19.78)[0m [0;36m(Worker pid=852845)[0;0m 2026-05-28 00:07:09,132 - INFO - autotuner.py:256 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+[36m(vLLMHttpServer pid=852758, ip=129.114.19.78)[0m [0;36m(Worker pid=852845)[0;0m 2026-05-28 00:07:09,147 - INFO - autotuner.py:262 - flashinfer.jit: [Autotuner]: Autotuning process ends
+[36m(vLLMHttpServer pid=852758, ip=129.114.19.78)[0m [0;36m(EngineCore_DP0 pid=852833)[0;0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(vLLMHttpServer pid=852758, ip=129.114.19.78)[0m [0;36m(EngineCore_DP0 pid=852833)[0;0m WARNING 05-28 00:07:09 [vllm.py:608] Inductor compilation was disabled by user settings,Optimizations settings that are only active duringInductor compilation will be ignored.
+[36m(vLLMHttpServer pid=852758, ip=129.114.19.78)[0m WARNING 05-28 00:07:10 [api_server.py:1358] LoRA dynamic loading & unloading is enabled in the API server. This should ONLY be used for local development!
+[36m(vLLMHttpServer pid=852758, ip=129.114.19.78)[0m WARNING 05-28 00:07:10 [model.py:1576] Default sampling parameters have been overridden by the model's Hugging Face generation config recommended from the model creator. If this is not intended, please relaunch vLLM instance with `--generation-config vllm`.
+[36m(vLLMHttpServer pid=2693885)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+[36m(vLLMHttpServer pid=2693885)[0m We recommend installing via `pip install torch-c-dlpack-ext`
+[36m(vLLMHttpServer pid=2693885)[0m   warnings.warn(
+[36m(vLLMHttpServer pid=2693885)[0m [0;36m(Worker pid=2693971)[0;0m 2026-05-28 00:07:22,684 - INFO - autotuner.py:256 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+[36m(vLLMHttpServer pid=2693885)[0m [0;36m(Worker pid=2693971)[0;0m 2026-05-28 00:07:22,700 - INFO - autotuner.py:262 - flashinfer.jit: [Autotuner]: Autotuning process ends
+[36m(vLLMHttpServer pid=2693885)[0m [0;36m(EngineCore_DP0 pid=2693960)[0;0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(vLLMHttpServer pid=2693885)[0m [0;36m(EngineCore_DP0 pid=2693960)[0;0m WARNING 05-28 00:07:23 [vllm.py:608] Inductor compilation was disabled by user settings,Optimizations settings that are only active duringInductor compilation will be ignored.
+[36m(vLLMHttpServer pid=2693885)[0m WARNING 05-28 00:07:23 [api_server.py:1358] LoRA dynamic loading & unloading is enabled in the API server. This should ONLY be used for local development!
+[36m(vLLMHttpServer pid=2693885)[0m WARNING 05-28 00:07:23 [model.py:1576] Default sampling parameters have been overridden by the model's Hugging Face generation config recommended from the model creator. If this is not intended, please relaunch vLLM instance with `--generation-config vllm`.
+[36m(vLLMHttpServer pid=1949042, ip=129.114.19.76)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+[36m(vLLMHttpServer pid=1949042, ip=129.114.19.76)[0m We recommend installing via `pip install torch-c-dlpack-ext`
+[36m(vLLMHttpServer pid=1949042, ip=129.114.19.76)[0m   warnings.warn(
+[36m(vLLMHttpServer pid=1949042, ip=129.114.19.76)[0m [0;36m(Worker pid=1949128)[0;0m 2026-05-28 00:07:37,748 - INFO - autotuner.py:256 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+[36m(vLLMHttpServer pid=1949042, ip=129.114.19.76)[0m [0;36m(Worker pid=1949128)[0;0m 2026-05-28 00:07:37,762 - INFO - autotuner.py:262 - flashinfer.jit: [Autotuner]: Autotuning process ends
+[36m(vLLMHttpServer pid=1949042, ip=129.114.19.76)[0m [0;36m(EngineCore_DP0 pid=1949117)[0;0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(vLLMHttpServer pid=1949042, ip=129.114.19.76)[0m [0;36m(EngineCore_DP0 pid=1949117)[0;0m WARNING 05-28 00:07:38 [vllm.py:608] Inductor compilation was disabled by user settings,Optimizations settings that are only active duringInductor compilation will be ignored.
+[36m(vLLMHttpServer pid=1949042, ip=129.114.19.76)[0m WARNING 05-28 00:07:38 [api_server.py:1358] LoRA dynamic loading & unloading is enabled in the API server. This should ONLY be used for local development!
+[36m(vLLMHttpServer pid=1949042, ip=129.114.19.76)[0m WARNING 05-28 00:07:38 [model.py:1576] Default sampling parameters have been overridden by the model's Hugging Face generation config recommended from the model creator. If this is not intended, please relaunch vLLM instance with `--generation-config vllm`.
+[36m(pid=1714085, ip=129.114.19.77)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+[36m(pid=1714085, ip=129.114.19.77)[0m We recommend installing via `pip install torch-c-dlpack-ext`
+[36m(pid=1714085, ip=129.114.19.77)[0m   warnings.warn(
+[36m(vLLMHttpServer pid=1714085, ip=129.114.19.77)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(vLLMHttpServer pid=1714085, ip=129.114.19.77)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(vLLMHttpServer pid=1714085, ip=129.114.19.77)[0m WARNING 05-28 00:07:50 [vllm.py:601] Enforce eager set, overriding optimization level to -O0
+[36m(vLLMHttpServer pid=1714085, ip=129.114.19.77)[0m /work/10587/npg493/vista/verl/verl/utils/tokenizer.py:109: UserWarning: Failed to create processor: Unsupported processor type: Qwen2TokenizerFast. This may affect multimodal processing
+[36m(vLLMHttpServer pid=1714085, ip=129.114.19.77)[0m   warnings.warn(f"Failed to create processor: {e}. This may affect multimodal processing", stacklevel=1)
+[36m(vLLMHttpServer pid=1714085, ip=129.114.19.77)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(vLLMHttpServer pid=1714085, ip=129.114.19.77)[0m WARNING 05-28 00:07:50 [system_utils.py:136] We must use the `spawn` multiprocessing start method. Overriding VLLM_WORKER_MULTIPROC_METHOD to 'spawn'. See https://docs.vllm.ai/en/latest/usage/troubleshooting.html#python-multiprocessing for more information. Reasons: In a Ray actor and can only be spawned; CUDA is initialized
+[36m(vLLMHttpServer pid=1714085, ip=129.114.19.77)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+[36m(vLLMHttpServer pid=1714085, ip=129.114.19.77)[0m   import pynvml  # type: ignore[import]
+[36m(vLLMHttpServer pid=1714085, ip=129.114.19.77)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+[36m(vLLMHttpServer pid=1714085, ip=129.114.19.77)[0m   import pynvml  # type: ignore[import]
+[36m(vLLMHttpServer pid=1714085, ip=129.114.19.77)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+[36m(vLLMHttpServer pid=1714085, ip=129.114.19.77)[0m We recommend installing via `pip install torch-c-dlpack-ext`
+[36m(vLLMHttpServer pid=1714085, ip=129.114.19.77)[0m   warnings.warn(
+[36m(vLLMHttpServer pid=1714085, ip=129.114.19.77)[0m [0;36m(Worker pid=1714183)[0;0m 2026-05-28 00:08:39,635 - INFO - autotuner.py:256 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+[36m(vLLMHttpServer pid=1714085, ip=129.114.19.77)[0m [0;36m(Worker pid=1714183)[0;0m 2026-05-28 00:08:39,651 - INFO - autotuner.py:262 - flashinfer.jit: [Autotuner]: Autotuning process ends
+[36m(vLLMHttpServer pid=1714085, ip=129.114.19.77)[0m [0;36m(EngineCore_DP0 pid=1714172)[0;0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(vLLMHttpServer pid=1714085, ip=129.114.19.77)[0m [0;36m(EngineCore_DP0 pid=1714172)[0;0m WARNING 05-28 00:08:40 [vllm.py:608] Inductor compilation was disabled by user settings,Optimizations settings that are only active duringInductor compilation will be ignored.
+[36m(vLLMHttpServer pid=1714085, ip=129.114.19.77)[0m WARNING 05-28 00:08:40 [api_server.py:1358] LoRA dynamic loading & unloading is enabled in the API server. This should ONLY be used for local development!
+[36m(vLLMHttpServer pid=1714085, ip=129.114.19.77)[0m WARNING 05-28 00:08:40 [model.py:1576] Default sampling parameters have been overridden by the model's Hugging Face generation config recommended from the model creator. If this is not intended, please relaunch vLLM instance with `--generation-config vllm`.
+[36m(TaskRunner pid=2693308)[0m AgentLoopManager: ['129.114.19.75:35401', '129.114.19.76:40779', '129.114.19.77:33321', '129.114.19.78:32965']
+[36m(pid=1714268, ip=129.114.19.77)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+[36m(pid=1714268, ip=129.114.19.77)[0m   import pynvml  # type: ignore[import]
+[36m(TaskRunner pid=2693308)[0m wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home1/10587/npg493/.netrc.
+[36m(TaskRunner pid=2693308)[0m wandb: Currently logged in as: prathyusha1 (prathyusha1-the-university-of-texas-at-austin) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+[36m(TaskRunner pid=2693308)[0m wandb: Tracking run with wandb version 0.27.0
+[36m(TaskRunner pid=2693308)[0m wandb: Run data is saved locally in /work/10587/npg493/vista/verl/train_scripts/wandb/run-20260528_000844-5gde78fx
+[36m(TaskRunner pid=2693308)[0m wandb: Run `wandb offline` to turn off syncing.
+[36m(TaskRunner pid=2693308)[0m wandb: Syncing run lowent_critic_cont_725935
+[36m(TaskRunner pid=2693308)[0m wandb: ⭐️ View project at https://wandb.ai/prathyusha1-the-university-of-texas-at-austin/shuozhe_ppo
+[36m(TaskRunner pid=2693308)[0m wandb: 🚀 View run at https://wandb.ai/prathyusha1-the-university-of-texas-at-austin/shuozhe_ppo/runs/5gde78fx
+[36m(TaskRunner pid=2693308)[0m wandb: Detected [openai] in use.
+[36m(TaskRunner pid=2693308)[0m wandb: Use W&B Weave for improved LLM call tracing. Install Weave with `pip install weave` then add `import weave` to the top of your script.
+[36m(TaskRunner pid=2693308)[0m wandb: For more information, check out the docs at: https://weave-docs.wandb.ai
+[36m(TaskRunner pid=2693308)[0m test_gen_batch meta info: {'eos_token_id': 151643, 'pad_token_id': 151643, 'recompute_log_prob': False, 'do_sample': False, 'validate': True, 'global_steps': 0}
+[36m(AgentLoopWorker pid=1949224, ip=129.114.19.76)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+[36m(AgentLoopWorker pid=1949224, ip=129.114.19.76)[0m We recommend installing via `pip install torch-c-dlpack-ext`
+[36m(AgentLoopWorker pid=1949224, ip=129.114.19.76)[0m   warnings.warn(
+[36m(pid=852942, ip=129.114.19.78)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.[32m [repeated 7x across cluster][0m
+[36m(pid=852942, ip=129.114.19.78)[0m   import pynvml  # type: ignore[import][32m [repeated 7x across cluster][0m
+[36m(AgentLoopWorker pid=1949224, ip=129.114.19.76)[0m Using dataset class: RLHFDataset
+[36m(AgentLoopWorker pid=1949224, ip=129.114.19.76)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(AgentLoopWorker pid=1949224, ip=129.114.19.76)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(AgentLoopWorker pid=1949224, ip=129.114.19.76)[0m /work/10587/npg493/vista/verl/verl/utils/tokenizer.py:109: UserWarning: Failed to create processor: Unsupported processor type: Qwen2TokenizerFast. This may affect multimodal processing
+[36m(AgentLoopWorker pid=1949224, ip=129.114.19.76)[0m   warnings.warn(f"Failed to create processor: {e}. This may affect multimodal processing", stacklevel=1)
+[36m(AgentLoopWorker pid=1949224, ip=129.114.19.76)[0m You're using a Qwen2TokenizerFast tokenizer. Please note that with a fast tokenizer, using the `__call__` method is faster than using a method to encode the text followed by a call to the `pad` method to get a padded encoding.
+[36m(AgentLoopWorker pid=852943, ip=129.114.19.78)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+[36m(AgentLoopWorker pid=852943, ip=129.114.19.78)[0m We recommend installing via `pip install torch-c-dlpack-ext`
+[36m(AgentLoopWorker pid=852943, ip=129.114.19.78)[0m   warnings.warn(
+[36m(AgentLoopWorker pid=852943, ip=129.114.19.78)[0m Using dataset class: RLHFDataset
+[36m(AgentLoopWorker pid=852943, ip=129.114.19.78)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(AgentLoopWorker pid=852943, ip=129.114.19.78)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(AgentLoopWorker pid=852943, ip=129.114.19.78)[0m /work/10587/npg493/vista/verl/verl/utils/tokenizer.py:109: UserWarning: Failed to create processor: Unsupported processor type: Qwen2TokenizerFast. This may affect multimodal processing
+[36m(AgentLoopWorker pid=852943, ip=129.114.19.78)[0m   warnings.warn(f"Failed to create processor: {e}. This may affect multimodal processing", stacklevel=1)
+[36m(AgentLoopWorker pid=852943, ip=129.114.19.78)[0m You're using a Qwen2TokenizerFast tokenizer. Please note that with a fast tokenizer, using the `__call__` method is faster than using a method to encode the text followed by a call to the `pad` method to get a padded encoding.
+[36m(AgentLoopWorker pid=2694071)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+[36m(AgentLoopWorker pid=2694071)[0m We recommend installing via `pip install torch-c-dlpack-ext`
+[36m(AgentLoopWorker pid=2694071)[0m   warnings.warn(
+[36m(AgentLoopWorker pid=2694071)[0m Using dataset class: RLHFDataset
+[36m(AgentLoopWorker pid=2694071)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(AgentLoopWorker pid=2694071)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(AgentLoopWorker pid=2694071)[0m /work/10587/npg493/vista/verl/verl/utils/tokenizer.py:109: UserWarning: Failed to create processor: Unsupported processor type: Qwen2TokenizerFast. This may affect multimodal processing
+[36m(AgentLoopWorker pid=2694071)[0m   warnings.warn(f"Failed to create processor: {e}. This may affect multimodal processing", stacklevel=1)
+[36m(AgentLoopWorker pid=2694071)[0m You're using a Qwen2TokenizerFast tokenizer. Please note that with a fast tokenizer, using the `__call__` method is faster than using a method to encode the text followed by a call to the `pad` method to get a padded encoding.
+[36m(AgentLoopWorker pid=2694070)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+[36m(AgentLoopWorker pid=2694070)[0m We recommend installing via `pip install torch-c-dlpack-ext`
+[36m(AgentLoopWorker pid=2694070)[0m   warnings.warn(
+[36m(AgentLoopWorker pid=2694070)[0m Using dataset class: RLHFDataset
+[36m(AgentLoopWorker pid=2694070)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(AgentLoopWorker pid=2694070)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(AgentLoopWorker pid=2694070)[0m /work/10587/npg493/vista/verl/verl/utils/tokenizer.py:109: UserWarning: Failed to create processor: Unsupported processor type: Qwen2TokenizerFast. This may affect multimodal processing
+[36m(AgentLoopWorker pid=2694070)[0m   warnings.warn(f"Failed to create processor: {e}. This may affect multimodal processing", stacklevel=1)
+[36m(AgentLoopWorker pid=2694070)[0m You're using a Qwen2TokenizerFast tokenizer. Please note that with a fast tokenizer, using the `__call__` method is faster than using a method to encode the text followed by a call to the `pad` method to get a padded encoding.
+[36m(AgentLoopWorker pid=1949225, ip=129.114.19.76)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+[36m(AgentLoopWorker pid=1949225, ip=129.114.19.76)[0m We recommend installing via `pip install torch-c-dlpack-ext`
+[36m(AgentLoopWorker pid=1949225, ip=129.114.19.76)[0m   warnings.warn(
+[36m(AgentLoopWorker pid=1949225, ip=129.114.19.76)[0m Using dataset class: RLHFDataset
+[36m(AgentLoopWorker pid=1949225, ip=129.114.19.76)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(AgentLoopWorker pid=1949225, ip=129.114.19.76)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(AgentLoopWorker pid=1949225, ip=129.114.19.76)[0m /work/10587/npg493/vista/verl/verl/utils/tokenizer.py:109: UserWarning: Failed to create processor: Unsupported processor type: Qwen2TokenizerFast. This may affect multimodal processing
+[36m(AgentLoopWorker pid=1949225, ip=129.114.19.76)[0m   warnings.warn(f"Failed to create processor: {e}. This may affect multimodal processing", stacklevel=1)
+[36m(AgentLoopWorker pid=1949225, ip=129.114.19.76)[0m You're using a Qwen2TokenizerFast tokenizer. Please note that with a fast tokenizer, using the `__call__` method is faster than using a method to encode the text followed by a call to the `pad` method to get a padded encoding.
+[36m(AgentLoopWorker pid=1714268, ip=129.114.19.77)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+[36m(AgentLoopWorker pid=1714268, ip=129.114.19.77)[0m We recommend installing via `pip install torch-c-dlpack-ext`
+[36m(AgentLoopWorker pid=1714268, ip=129.114.19.77)[0m   warnings.warn(
+[36m(AgentLoopWorker pid=1714268, ip=129.114.19.77)[0m Using dataset class: RLHFDataset
+[36m(AgentLoopWorker pid=1714268, ip=129.114.19.77)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(AgentLoopWorker pid=1714268, ip=129.114.19.77)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(AgentLoopWorker pid=1714268, ip=129.114.19.77)[0m /work/10587/npg493/vista/verl/verl/utils/tokenizer.py:109: UserWarning: Failed to create processor: Unsupported processor type: Qwen2TokenizerFast. This may affect multimodal processing
+[36m(AgentLoopWorker pid=1714268, ip=129.114.19.77)[0m   warnings.warn(f"Failed to create processor: {e}. This may affect multimodal processing", stacklevel=1)
+[36m(AgentLoopWorker pid=1714268, ip=129.114.19.77)[0m You're using a Qwen2TokenizerFast tokenizer. Please note that with a fast tokenizer, using the `__call__` method is faster than using a method to encode the text followed by a call to the `pad` method to get a padded encoding.
+[36m(AgentLoopWorker pid=852942, ip=129.114.19.78)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+[36m(AgentLoopWorker pid=852942, ip=129.114.19.78)[0m We recommend installing via `pip install torch-c-dlpack-ext`
+[36m(AgentLoopWorker pid=852942, ip=129.114.19.78)[0m   warnings.warn(
+[36m(AgentLoopWorker pid=852942, ip=129.114.19.78)[0m Using dataset class: RLHFDataset
+[36m(AgentLoopWorker pid=852942, ip=129.114.19.78)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(AgentLoopWorker pid=852942, ip=129.114.19.78)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(AgentLoopWorker pid=852942, ip=129.114.19.78)[0m /work/10587/npg493/vista/verl/verl/utils/tokenizer.py:109: UserWarning: Failed to create processor: Unsupported processor type: Qwen2TokenizerFast. This may affect multimodal processing
+[36m(AgentLoopWorker pid=852942, ip=129.114.19.78)[0m   warnings.warn(f"Failed to create processor: {e}. This may affect multimodal processing", stacklevel=1)
+[36m(AgentLoopWorker pid=852942, ip=129.114.19.78)[0m You're using a Qwen2TokenizerFast tokenizer. Please note that with a fast tokenizer, using the `__call__` method is faster than using a method to encode the text followed by a call to the `pad` method to get a padded encoding.
+[36m(AgentLoopWorker pid=1714269, ip=129.114.19.77)[0m /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/tvm_ffi/_optional_torch_c_dlpack.py:181: UserWarning: Failed to JIT torch c dlpack extension, EnvTensorAllocator will not be enabled.
+[36m(AgentLoopWorker pid=1714269, ip=129.114.19.77)[0m We recommend installing via `pip install torch-c-dlpack-ext`
+[36m(AgentLoopWorker pid=1714269, ip=129.114.19.77)[0m   warnings.warn(
+[36m(AgentLoopWorker pid=1714269, ip=129.114.19.77)[0m Using dataset class: RLHFDataset
+[36m(AgentLoopWorker pid=1714269, ip=129.114.19.77)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(AgentLoopWorker pid=1714269, ip=129.114.19.77)[0m The tokenizer you are loading from '/scratch/10587/npg493/verl_runs/low_ent_critic_training_ckpt_750_actor_697767/train_log/global_step_640/merged_hf/actor' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+[36m(AgentLoopWorker pid=1714269, ip=129.114.19.77)[0m /work/10587/npg493/vista/verl/verl/utils/tokenizer.py:109: UserWarning: Failed to create processor: Unsupported processor type: Qwen2TokenizerFast. This may affect multimodal processing
+[36m(AgentLoopWorker pid=1714269, ip=129.114.19.77)[0m   warnings.warn(f"Failed to create processor: {e}. This may affect multimodal processing", stacklevel=1)
+[36m(AgentLoopWorker pid=1714269, ip=129.114.19.77)[0m You're using a Qwen2TokenizerFast tokenizer. Please note that with a fast tokenizer, using the `__call__` method is faster than using a method to encode the text followed by a call to the `pad` method to get a padded encoding.
+[36m(TaskRunner pid=2693308)[0m validation generation end
+[36m(TaskRunner pid=2693308)[0m ("Initial validation metrics: {'val-aux/lighteval/MATH/reward/mean@1': "
+[36m(TaskRunner pid=2693308)[0m  "np.float64(0.606), 'val-core/lighteval/MATH/acc/mean@1': np.float64(0.606), "
+[36m(TaskRunner pid=2693308)[0m  "'val-aux/num_turns/min': np.int32(2), 'val-aux/num_turns/max': np.int32(2), "
+[36m(TaskRunner pid=2693308)[0m  "'val-aux/num_turns/mean': np.float64(2.0), 'val-aux/response_length/min': "
+[36m(TaskRunner pid=2693308)[0m  "152, 'val-aux/response_length/max': 2048, 'val-aux/response_length/mean': "
+[36m(TaskRunner pid=2693308)[0m  '619.116}')
+[36m(TaskRunner pid=2693308)[0m step:0 - val-aux/lighteval/MATH/reward/mean@1:np.float64(0.606) - val-core/lighteval/MATH/acc/mean@1:np.float64(0.606) - val-aux/num_turns/min:np.int32(2) - val-aux/num_turns/max:np.int32(2) - val-aux/num_turns/mean:np.float64(2.0) - val-aux/response_length/min:152 - val-aux/response_length/max:2048 - val-aux/response_length/mean:619.116
+[36m(TaskRunner pid=2693308)[0m Training Progress:   0%|          | 0/10280 [00:00<?, ?it/s]
+[36m(WorkerDict pid=852427, ip=129.114.19.78)[0m [rank3]:V0528 00:14:10.380000 852427 .venv/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py:1832] skipping: entropy_from_logits (reason: dynamo tracing is disabled, file: /work/10587/npg493/vista/verl/verl/utils/torch_functional.py)
+[36m(WorkerDict pid=852427, ip=129.114.19.78)[0m [rank3]:V0528 00:14:10.381000 852427 .venv/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py:1832] skipping: softmax (reason: in skipfiles, file: /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/nn/functional.py)
+[36m(WorkerDict pid=852427, ip=129.114.19.78)[0m [rank3]:V0528 00:14:10.509000 852427 .venv/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py:1832] skipping: calculate_sum_pi_squared_from_logits (reason: dynamo tracing is disabled, file: /work/10587/npg493/vista/verl/verl/utils/torch_functional.py)
+[36m(TaskRunner pid=2693308)[0m step:1 - global_seqlen/min:54264 - global_seqlen/max:67086 - global_seqlen/minmax_diff:12822 - global_seqlen/balanced_min:58571 - global_seqlen/balanced_max:58941 - global_seqlen/mean:58669.25 - actor/entropy:0.0465986393392086 - perf/mfu/actor_infer:0 - critic/vf_loss:np.float64(0.0242975227732245) - critic/vf_clipfrac:np.float64(0.0) - critic/vpred_mean:np.float64(0.9986594752408564) - critic/grad_norm:np.float64(15.99118423461914) - critic/lr:np.float64(1e-05) - perf/mfu/critic:np.float64(0.03919525523166026) - training/critic_update_skipped_no_valid_samples:0 - training/actor_update_interval:1 - training/is_actor_update_step:0 - training/actor_update_skipped_no_valid_samples:0 - training/global_step:1 - training/epoch:0 - training/actor_frozen:0 - training/chunk_boundary_critic_enabled:0 - critic/score/mean:0.978515625 - critic/score/max:1.0 - critic/score/min:0.0 - critic/rewards/mean:0.978515625 - critic/rewards/max:1.0 - critic/rewards/min:0.0 - critic/advantages/mean:-1.616179545749219e-08 - critic/advantages/max:4.360360622406006 - critic/advantages/min:-5.416934013366699 - critic/returns/mean:0.9558455348014832 - critic/returns/max:1.0 - critic/returns/min:0.0 - critic/values/mean:0.921875 - critic/values/max:1.03125 - critic/values/min:-0.010986328125 - critic/prompt_end_value/mean:0.94921875 - critic/trajectory_end_value/mean:0.953125 - critic/prompt_end_vs_reward_gap:0.067138671875 - critic/trajectory_end_vs_reward_gap:0.057420700788497925 - critic/vf_rho:0.8272612690925598 - critic/vf_explained_var:0.17273873090744019 - response_length/mean:362.806640625 - response_length/max:2048.0 - response_length/min:172.0 - response_length/clip_ratio:0.001953125 - response_length_non_aborted/mean:362.806640625 - response_length_non_aborted/max:2048.0 - response_length_non_aborted/min:172.0 - response_length_non_aborted/clip_ratio:0.001953125 - response/aborted_ratio:0.0 - prompt_length/mean:95.546875 - prompt_length/max:205.0 - prompt_length/min:56.0 - prompt_length/clip_ratio:0.0 - num_turns/min:np.int32(2) - num_turns/max:np.int32(2) - num_turns/mean:np.float64(2.0) - timing_s/start_profile:0.0003018210409209132 - timing_s/agent_loop/num_preempted/min:np.int64(-1) - timing_s/agent_loop/num_preempted/max:np.int64(-1) - timing_s/agent_loop/num_preempted/mean:np.float64(-1.0) - timing_s/agent_loop/generate_sequences/min:np.float64(2.577825979096815) - timing_s/agent_loop/generate_sequences/max:np.float64(54.77351902402006) - timing_s/agent_loop/generate_sequences/mean:np.float64(5.523643967741293) - timing_s/agent_loop/tool_calls/min:np.float64(0.0) - timing_s/agent_loop/tool_calls/max:np.float64(0.0) - timing_s/agent_loop/tool_calls/mean:np.float64(0.0) - timing_s/agent_loop/slowest/generate_sequences:np.float64(54.77351902402006) - timing_s/agent_loop/slowest/tool_calls:np.float64(0.0) - timing_s/agent_loop/slowest/prompt_length:74 - timing_s/agent_loop/slowest/response_length:2048 - timing_s/agent_loop/slowest/num_preempted:np.int64(-1) - timing_s/gen:55.64302842901088 - timing_s/reward:2.659193705767393e-05 - timing_s/old_log_prob:34.215438949060626 - timing_s/values:18.78041513392236 - timing_s/adv:0.25942958798259497 - timing_s/update_critic:70.20573161891662 - timing_s/update_weights:2.3500909619033337 - timing_s/step:181.51500864105765 - timing_s/stop_profile:4.319904837757349e-05 - timing_per_token_ms/adv:0.0011054751338332898 - timing_per_token_ms/gen:0.2995474110209084 - timing_per_token_ms/values:0.0800266542265427 - timing_per_token_ms/update_critic:0.2991589785914965 - perf/total_num_tokens:234677 - perf/time_per_step:181.51500864105765 - perf/throughput:323.2198287030759 - variance_proxy/proxy1_signal_strength:0.0 - variance_proxy/proxy2_total_power:14.113935470581055 - variance_proxy/proxy3_pure_noise:0.0 - variance_proxy/expected_a_squared:0.5335099101066589 - variance_proxy/expected_w:9.452851295471191
+[36m(TaskRunner pid=2693308)[0m Training Progress:   0%|          | 1/10280 [03:01<518:55:29, 181.74s/it]
+[36m(WorkerDict pid=2693535)[0m [rank0]:V0528 00:14:10.814000 2693535 .venv/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py:1832] skipping: entropy_from_logits (reason: dynamo tracing is disabled, file: /work/10587/npg493/vista/verl/verl/utils/torch_functional.py)[32m [repeated 3x across cluster][0m
+[36m(WorkerDict pid=2693535)[0m [rank0]:V0528 00:14:10.816000 2693535 .venv/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py:1832] skipping: softmax (reason: in skipfiles, file: /work/10587/npg493/vista/verl/.venv/lib/python3.12/site-packages/torch/nn/functional.py)[32m [repeated 3x across cluster][0m
+[36m(WorkerDict pid=2693535)[0m [rank0]:V0528 00:14:10.850000 2693535 .venv/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py:1832] skipping: calculate_sum_pi_squared_from_logits (reason: dynamo tracing is disabled, file: /work/10587/npg493/vista/verl/verl/utils/torch_functional.py)[32m [repeated 3x across cluster][0m
+[36m(TaskRunner pid=2693308)[0m step:2 - global_seqlen/min:54153 - global_seqlen/max:58566 - global_seqlen/minmax_diff:4413 - global_seqlen/balanced_min:56655 - global_seqlen/balanced_max:56658 - global_seqlen/mean:56656.75 - actor/entropy:0.04032672569155693 - perf/mfu/actor_infer:0 - critic/vf_loss:np.float64(0.017568666885154016) - critic/vf_clipfrac:np.float64(0.0) - critic/vpred_mean:np.float64(0.9965324872173369) - critic/grad_norm:np.float64(4.359561085700989) - critic/lr:np.float64(1e-05) - perf/mfu/critic:np.float64(0.0388141746089491) - training/critic_update_skipped_no_valid_samples:0 - training/actor_update_interval:1 - training/is_actor_update_step:0 - training/actor_update_skipped_no_valid_samples:0 - training/global_step:2 - training/epoch:0 - training/actor_frozen:0 - training/chunk_boundary_critic_enabled:0 - critic/score/mean:0.990234375 - critic/score/max:1.0 - critic/score/min:0.0 - critic/rewards/mean:0.990234375 - critic/rewards/max:1.0 - critic/rewards/min:0.0 - critic/advantages/mean:9.89971482567853e-09 - critic/advantages/max:6.21025276184082 - critic/advantages/min:-6.616250514984131 - critic/returns/mean:0.9890672564506531 - critic/returns/max:1.0 - critic/returns/min:0.0 - critic/values/mean:0.99609375 - critic/values/max:1.1015625 - critic/values/min:0.04833984375 - critic/prompt_end_value/mean:0.99609375 - critic/trajectory_end_value/mean:1.0078125 - critic/prompt_end_vs_reward_gap:0.06099700927734375 - critic/trajectory_end_vs_reward_gap:0.08868026733398438 - critic/vf_rho:2.2081563472747803 - critic/vf_explained_var:-1.2081563472747803 - response_length/mean:353.724609375 - response_length/max:1064.0 - response_length/min:134.0 - response_length/clip_ratio:0.0 - response_length_non_aborted/mean:353.724609375 - response_length_non_aborted/max:1064.0 - response_length_non_aborted/min:134.0 - response_length_non_aborted/clip_ratio:0.0 - response/aborted_ratio:0.0 - prompt_length/mean:88.90625 - prompt_length/max:145.0 - prompt_length/min:52.0 - prompt_length/clip_ratio:0.0 - num_turns/min:np.int32(2) - num_turns/max:np.int32(2) - num_turns/mean:np.float64(2.0) - timing_s/start_profile:4.447903484106064e-05 - timing_s/agent_loop/num_preempted/min:np.int64(-1) - timing_s/agent_loop/num_preempted/max:np.int64(-1) - timing_s/agent_loop/num_preempted/mean:np.float64(-1.0) - timing_s/agent_loop/generate_sequences/min:np.float64(2.2244550199247897) - timing_s/agent_loop/generate_sequences/max:np.float64(15.287786534056067) - timing_s/agent_loop/generate_sequences/mean:np.float64(5.414544510485541) - timing_s/agent_loop/tool_calls/min:np.float64(0.0) - timing_s/agent_loop/tool_calls/max:np.float64(0.0) - timing_s/agent_loop/tool_calls/mean:np.float64(0.0) - timing_s/agent_loop/slowest/generate_sequences:np.float64(15.287786534056067) - timing_s/agent_loop/slowest/tool_calls:np.float64(0.0) - timing_s/agent_loop/slowest/prompt_length:72 - timing_s/agent_loop/slowest/response_length:1064 - timing_s/agent_loop/slowest/num_preempted:np.int64(-1) - timing_s/gen:16.147471814998426 - timing_s/reward:1.3824086636304855e-05 - timing_s/old_log_prob:31.809453375055455 - timing_s/values:18.56754177599214 - timing_s/adv:0.13767238799482584 - timing_s/update_critic:68.42921852099244 - timing_s/update_weights:2.3661447720369324 - timing_s/step:137.50903102592565 - timing_s/stop_profile:2.8191949240863323e-05 - timing_per_token_ms/adv:0.0006074844921162343 - timing_per_token_ms/gen:0.08915984371116757 - timing_per_token_ms/values:0.0819299632258828 - timing_per_token_ms/update_critic:0.30194645175108187 - perf/total_num_tokens:226627 - perf/time_per_step:137.50903102592565 - perf/throughput:412.0220292245246 - variance_proxy/proxy1_signal_strength:0.0 - variance_proxy/proxy2_total_power:10.935771942138672 - variance_proxy/proxy3_pure_noise:0.0 - variance_proxy/expected_a_squared:0.7517797350883484 - variance_proxy/expected_w:8.243061065673828
+[36m(TaskRunner pid=2693308)[0m Training Progress:   0%|          | 2/10280 [05:19<444:38:01, 155.74s/it]
+[36m(TaskRunner pid=2693308)[0m step:3 - global_seqlen/min:57666 - global_seqlen/max:63788 - global_seqlen/minmax_diff:6122 - global_seqlen/balanced_min:59842 - global_seqlen/balanced_max:60446 - global_seqlen/mean:60045.5 - actor/entropy:0.038070376962423325 - perf/mfu/actor_infer:0 - critic/vf_loss:np.float64(0.008071240416484216) - critic/vf_clipfrac:np.float64(0.0) - critic/vpred_mean:np.float64(0.9402680872008204) - critic/grad_norm:np.float64(16.675901889801025) - critic/lr:np.float64(1e-05) - perf/mfu/critic:np.float64(0.04115674994885351) - training/critic_update_skipped_no_valid_samples:0 - training/actor_update_interval:1 - training/is_actor_update_step:0 - training/actor_update_skipped_no_valid_samples:0 - training/global_step:3 - training/epoch:0 - training/actor_frozen:0 - training/chunk_boundary_critic_enabled:0 - critic/score/mean:0.998046875 - critic/score/max:1.0 - critic/score/min:0.0 - critic/rewards/mean:0.998046875 - critic/rewards/max:1.0 - critic/rewards/min:0.0 - critic/advantages/mean:-1.6571689798183797e-08 - critic/advantages/max:6.492345333099365 - critic/advantages/min:-8.395392417907715 - critic/returns/mean:0.9891995787620544 - critic/returns/max:1.0 - critic/returns/min:0.0 - critic/values/mean:0.9296875 - critic/values/max:1.0 - critic/values/min:0.134765625 - critic/prompt_end_value/mean:0.93359375 - critic/trajectory_end_value/mean:0.953125 - critic/prompt_end_vs_reward_gap:0.06658935546875 - critic/trajectory_end_vs_reward_gap:0.0451202392578125 - critic/vf_rho:1.0429425239562988 - critic/vf_explained_var:-0.04294252395629883 - response_length/mean:370.35546875 - response_length/max:2048.0 - response_length/min:173.0 - response_length/clip_ratio:0.001953125 - response_length_non_aborted/mean:370.35546875 - response_length_non_aborted/max:2048.0 - response_length_non_aborted/min:173.0 - response_length_non_aborted/clip_ratio:0.001953125 - response/aborted_ratio:0.0 - prompt_length/mean:98.75 - prompt_length/max:183.0 - prompt_length/min:48.0 - prompt_length/clip_ratio:0.0 - num_turns/min:np.int32(2) - num_turns/max:np.int32(2) - num_turns/mean:np.float64(2.0) - timing_s/start_profile:2.8511974960565567e-05 - timing_s/agent_loop/num_preempted/min:np.int64(-1) - timing_s/agent_loop/num_preempted/max:np.int64(-1) - timing_s/agent_loop/num_preempted/mean:np.float64(-1.0) - timing_s/agent_loop/generate_sequences/min:np.float64(2.8659765330376104) - timing_s/agent_loop/generate_sequences/max:np.float64(29.55816729401704) - timing_s/agent_loop/generate_sequences/mean:np.float64(5.632818780293007) - timing_s/agent_loop/tool_calls/min:np.float64(0.0) - timing_s/agent_loop/tool_calls/max:np.float64(0.0) - timing_s/agent_loop/tool_calls/mean:np.float64(0.0) - timing_s/agent_loop/slowest/generate_sequences:np.float64(29.55816729401704) - timing_s/agent_loop/slowest/tool_calls:np.float64(0.0) - timing_s/agent_loop/slowest/prompt_length:183 - timing_s/agent_loop/slowest/response_length:2048 - timing_s/agent_loop/slowest/num_preempted:np.int64(-1) - timing_s/gen:30.415030609001406 - timing_s/reward:1.0207993909716606e-05 - timing_s/old_log_prob:31.9138472720515 - timing_s/values:18.60223004699219 - timing_s/adv:0.1412388529861346 - timing_s/update_critic:68.43349838699214 - timing_s/update_weights:2.353332660975866 - timing_s/step:151.91333505010698 - timing_s/stop_profile:2.8799055144190788e-05 - timing_per_token_ms/adv:0.000588049283402314 - timing_per_token_ms/gen:0.16039821649914782 - timing_per_token_ms/values:0.07745055852225476 - timing_per_token_ms/update_critic:0.2849235096176739 - perf/total_num_tokens:240182 - perf/time_per_step:151.91333505010698 - perf/throughput:395.26154817280946 - variance_proxy/proxy1_signal_strength:0.0 - variance_proxy/proxy2_total_power:9.304313659667969 - variance_proxy/proxy3_pure_noise:0.0 - variance_proxy/expected_a_squared:0.37645280361175537 - variance_proxy/expected_w:8.162422180175781
+[36m(TaskRunner pid=2693308)[0m Training Progress:   0%|          | 3/10280 [07:51<439:37:58, 154.00s/it]
+[36m(TaskRunner pid=2693308)[0m step:4 - global_seqlen/min:63347 - global_seqlen/max:68012 - global_seqlen/minmax_diff:4665 - global_seqlen/balanced_min:65389 - global_seqlen/balanced_max:65394 - global_seqlen/mean:65391.75 - actor/entropy:0.04292905703186989 - perf/mfu/actor_infer:0 - critic/vf_loss:np.float64(0.025425701161907455) - critic/vf_clipfrac:np.float64(0.0002917975507443771) - critic/vpred_mean:np.float64(0.9397213505581021) - critic/grad_norm:np.float64(9.180026412010193) - critic/lr:np.float64(1e-05) - perf/mfu/critic:np.float64(0.044810931051202735) - training/critic_update_skipped_no_valid_samples:0 - training/actor_update_interval:1 - training/is_actor_update_step:0 - training/actor_update_skipped_no_valid_samples:0 - training/global_step:4 - training/epoch:0 - training/actor_frozen:0 - training/chunk_boundary_critic_enabled:0 - critic/score/mean:0.966796875 - critic/score/max:1.0 - critic/score/min:0.0 - critic/rewards/mean:0.966796875 - critic/rewards/max:1.0 - critic/rewards/min:0.0 - critic/advantages/mean:-1.1266055643943673e-08 - critic/advantages/max:3.467684268951416 - critic/advantages/min:-4.400589942932129 - critic/returns/mean:0.9369294047355652 - critic/returns/max:1.0 - critic/returns/min:0.0 - critic/values/mean:0.90625 - critic/values/max:0.98046875 - critic/values/min:0.13671875 - critic/prompt_end_value/mean:0.921875 - critic/trajectory_end_value/mean:0.9296875 - critic/prompt_end_vs_reward_gap:0.09918975830078125 - critic/trajectory_end_vs_reward_gap:0.08338165283203125 - critic/vf_rho:0.8824034333229065 - critic/vf_explained_var:0.1175965666770935 - response_length/mean:412.669921875 - response_length/max:1633.0 - response_length/min:186.0 - response_length/clip_ratio:0.0 - response_length_non_aborted/mean:412.669921875 - response_length_non_aborted/max:1633.0 - response_length_non_aborted/min:186.0 - response_length_non_aborted/clip_ratio:0.0 - response/aborted_ratio:0.0 - prompt_length/mean:98.203125 - prompt_length/max:208.0 - prompt_length/min:54.0 - prompt_length/clip_ratio:0.0 - num_turns/min:np.int32(2) - num_turns/max:np.int32(2) - num_turns/mean:np.float64(2.0) - timing_s/start_profile:2.5823945179581642e-05 - timing_s/agent_loop/num_preempted/min:np.int64(-1) - timing_s/agent_loop/num_preempted/max:np.int64(-1) - timing_s/agent_loop/num_preempted/mean:np.float64(-1.0) - timing_s/agent_loop/generate_sequences/min:np.float64(3.0412080329842865) - timing_s/agent_loop/generate_sequences/max:np.float64(23.0191415050067) - timing_s/agent_loop/generate_sequences/mean:np.float64(6.204259393338418) - timing_s/agent_loop/tool_calls/min:np.float64(0.0) - timing_s/agent_loop/tool_calls/max:np.float64(0.0) - timing_s/agent_loop/tool_calls/mean:np.float64(0.0) - timing_s/agent_loop/slowest/generate_sequences:np.float64(23.0191415050067) - timing_s/agent_loop/slowest/tool_calls:np.float64(0.0) - timing_s/agent_loop/slowest/prompt_length:107 - timing_s/agent_loop/slowest/response_length:1633 - timing_s/agent_loop/slowest/num_preempted:np.int64(-1) - timing_s/gen:23.878681072965264 - timing_s/reward:1.2640026398003101e-05 - timing_s/old_log_prob:31.86328846705146 - timing_s/values:18.574519196990877 - timing_s/adv:0.13553424191195518 - timing_s/update_critic:68.51215600699652 - timing_s/update_weights:2.347266232012771 - timing_s/step:145.36400312709156 - timing_s/stop_profile:2.697599120438099e-05 - timing_per_token_ms/adv:0.0005181626195657525 - timing_per_token_ms/gen:0.11301538226661018 - timing_per_token_ms/values:0.07101247174525409 - timing_per_token_ms/update_critic:0.2619296624077063 - perf/total_num_tokens:261567 - perf/time_per_step:145.36400312709156 - perf/throughput:449.8483021469082 - variance_proxy/proxy1_signal_strength:0.0 - variance_proxy/proxy2_total_power:13.02686882019043 - variance_proxy/proxy3_pure_noise:0.0 - variance_proxy/expected_a_squared:0.5368139743804932 - variance_proxy/expected_w:10.01198959350586
+[36m(TaskRunner pid=2693308)[0m Training Progress:   0%|          | 4/10280 [10:16<429:52:51, 150.60s/it]
+Stopping Ray on all nodes...
+Syncing run directory back to WORK...
+Archived run to: /scratch/10587/npg493/value_decoding_output_archive/lowent_critic_cont_725935

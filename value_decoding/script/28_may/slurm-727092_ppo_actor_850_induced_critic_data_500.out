@@ -1,0 +1,29 @@
+Activated environment
+Python: /work/10587/npg493/vista/verl/.venv/bin/python3
+Python 3.12.12
+Job ID: 727092
+Run ID: search_induced_critic_data_727092
+SLURM nodes: c642-[032,072,082,092]
+SCRATCH: /scratch/10587/npg493
+RUN_DIR: /scratch/10587/npg493/value_decoding_runs/search_induced_critic_data_727092
+SHARD_ROOT: /scratch/10587/npg493/value_decoding_runs/search_induced_critic_data_727092/shards
+OUTPUT_DIR: /scratch/10587/npg493/value_decoding_runs/search_induced_critic_data_727092/search_induced_critic_data
+ARCHIVE_DIR: /scratch/10587/npg493/value_decoding_output_archive/search_induced_critic_data_727092
+Checking inputs...
+drwxr-xr-x 21 npg493 G-827568 4096 May 28 00:47 /work/10587/npg493/vista/verl
+-rw-r--r-- 1 npg493 G-827568 69K Apr 15 23:57 /scratch/10587/npg493/dataset/MetaMathQA-math-500/test.parquet
+drwxr-x--- 2 npg493 G-827437 4096 Apr 15 22:02 /scratch/10587/npg493/verl_runs/qwen2.5_7B_ppo_664998/global_step_850/actor
+drwxr-x--- 2 npg493 G-827437 4096 Apr 15 22:03 /scratch/10587/npg493/verl_runs/qwen2.5_7B_ppo_664998/global_step_850/critic
+actor: detected raw FSDP checkpoint at /scratch/10587/npg493/verl_runs/qwen2.5_7B_ppo_664998/global_step_850/actor
+critic: detected raw FSDP checkpoint at /scratch/10587/npg493/verl_runs/qwen2.5_7B_ppo_664998/global_step_850/critic
+Saved launcher script snapshot to: /scratch/10587/npg493/value_decoding_runs/search_induced_critic_data_727092/search_induced_critic_data/submitted_script/slurm_script
+Dataset rows: 500
+Total prompts requested after bounds/debug: 500
+Num shards: 4
+Prompts per shard: 125
+Launching shard 0 on c642-032: start=0 max=125
+Launching shard 1 on c642-072: start=125 max=125
+Launching shard 2 on c642-082: start=250 max=125
+Launching shard 3 on c642-092: start=375 max=125
+Syncing run directory back to WORK...
+Archived run to: /scratch/10587/npg493/value_decoding_output_archive/search_induced_critic_data_727092

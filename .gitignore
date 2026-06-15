@@ -141,6 +141,11 @@ actor_proposal_diagnostic_math500
 
 value_decoding/output_archive
 
+<<<<<<< HEAD
 value_decoding/local_runs/
 
 *.whl*
+=======
+value_decoding/local_runs/*.out
+*.err
+>>>>>>> c4d8e52f (add all changes except slurm files)
