@@ -59,6 +59,10 @@ try:
 except ImportError:
     ray = None
 
+LLM = None
+SamplingParams = None
+TokensPrompt = None
+
 
 TOKENIZER_FINGERPRINT_FILES = (
     "tokenizer.json",
@@ -140,6 +144,21 @@ PRIMARY_PLOT_METHODS = (
 REFERENCE_CRITIC_VALUE_ABS_TOL = 1e-2
 RAY_NODE_RESOURCE_FRACTION = 1e-3
 RAY_PROGRESS_POLL_INTERVAL_SEC = 0.2
+
+
+def _require_vllm():
+    global LLM, SamplingParams, TokensPrompt
+    if LLM is not None and SamplingParams is not None and TokensPrompt is not None:
+        return LLM, SamplingParams, TokensPrompt
+    try:
+        from vllm import LLM as imported_llm, SamplingParams as imported_sampling_params
+        from vllm.inputs.data import TokensPrompt as imported_tokens_prompt
+    except ImportError as exc:
+        raise ImportError("vLLM is required when --generation_backend=vllm, but it is not installed.") from exc
+    LLM = imported_llm
+    SamplingParams = imported_sampling_params
+    TokensPrompt = imported_tokens_prompt
+    return LLM, SamplingParams, TokensPrompt
 
 
 def _make_main_module_importable() -> None:
@@ -344,6 +363,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--actor_temperature", type=float, default=1.0)
     parser.add_argument("--actor_top_p", type=float, default=1.0)
     parser.add_argument("--actor_top_k", type=int, default=0)
+    parser.add_argument(
+        "--generation_backend",
+        type=str,
+        default="torch",
+        choices=["torch", "vllm"],
+        help="Actor response generation backend.",
+    )
+    parser.add_argument(
+        "--vllm_gpu_memory_utilization",
+        type=float,
+        default=0.6,
+        help="GPU memory utilization passed to vLLM when --generation_backend=vllm.",
+    )
+    parser.add_argument(
+        "--vllm_enforce_eager",
+        action="store_true",
+        help="Pass enforce_eager=True to vLLM. This can improve debuggability/reproducibility at a speed cost.",
+    )
     parser.add_argument("--skip_plots", action="store_true", help="Skip PNG plot generation.")
     parser.add_argument("--plot_dpi", type=int, default=160)
     return parser.parse_args()
@@ -866,6 +903,126 @@ def sample_actor_trajectory(
     )
 
 
+def _vllm_output_token_ids(output: Any) -> tuple[int, ...]:
+    token_ids = getattr(output, "token_ids", None)
+    if token_ids is None:
+        token_ids = getattr(output, "output_token_ids", None)
+    if token_ids is None:
+        return ()
+    return tuple(int(token_id) for token_id in token_ids)
+
+
+def _vllm_output_text(output: Any, tokenizer) -> str:
+    text = getattr(output, "text", None)
+    if text is not None:
+        return str(text)
+    return tokenizer.decode(_vllm_output_token_ids(output), skip_special_tokens=True)
+
+
+def _resolve_vllm_dtype_name(dtype_name: str) -> str:
+    normalized = dtype_name.lower()
+    if normalized == "bf16":
+        return "bfloat16"
+    if normalized == "fp16":
+        return "float16"
+    if normalized == "fp32":
+        return "float32"
+    return dtype_name
+
+
+def _vllm_token_logprob(logprob_entry: Any, token_id: int) -> float:
+    if isinstance(logprob_entry, dict):
+        candidate = logprob_entry.get(token_id)
+        if candidate is None:
+            candidate = logprob_entry.get(str(token_id))
+    else:
+        candidate = logprob_entry
+    if candidate is None:
+        raise RuntimeError(f"vLLM did not return a logprob for sampled token id {token_id}.")
+    value = getattr(candidate, "logprob", candidate)
+    return float(value)
+
+
+def sample_vllm_actor_trajectory(
+    *,
+    llm,
+    tokenizer,
+    example: ExampleRecord,
+    prompt_ids: torch.Tensor,
+    sample_idx: int,
+    seed: int,
+    actor_sampling_mode: str,
+    actor_temperature: float,
+    actor_top_p: float,
+    actor_top_k: int,
+    max_new_tokens: int,
+    eos_token_ids: tuple[int, ...],
+) -> SampledTrajectory:
+    _, sampling_params_cls, tokens_prompt_cls = _require_vllm()
+    if actor_sampling_mode not in {ActorSamplingMode.SAMPLE.value, ActorSamplingMode.GREEDY.value}:
+        raise ValueError(f"Unsupported actor_sampling_mode for vLLM backend: {actor_sampling_mode}")
+
+    prompt_token_ids = [int(token_id) for token_id in prompt_ids[0].detach().cpu().tolist()]
+    if max_new_tokens <= 0:
+        generated_token_ids: tuple[int, ...] = ()
+        response_text = ""
+        finish_reason = None
+        actor_response_logprob = 0.0
+    else:
+        sampling_params = sampling_params_cls(
+            n=1,
+            temperature=0.0 if actor_sampling_mode == ActorSamplingMode.GREEDY.value else float(actor_temperature),
+            top_p=float(actor_top_p),
+            top_k=0 if int(actor_top_k) <= 0 else int(actor_top_k),
+            max_tokens=int(max_new_tokens),
+            seed=int(seed),
+            stop_token_ids=list(eos_token_ids),
+            skip_special_tokens=True,
+            logprobs=1,
+        )
+        request_outputs = llm.generate(
+            prompts=[tokens_prompt_cls(prompt_token_ids=prompt_token_ids)],
+            sampling_params=sampling_params,
+            use_tqdm=False,
+        )
+        output = request_outputs[0].outputs[0]
+        generated_token_ids = _vllm_output_token_ids(output)
+        response_text = _vllm_output_text(output, tokenizer)
+        finish_reason = getattr(output, "finish_reason", None)
+        cumulative_logprob = getattr(output, "cumulative_logprob", None)
+        if cumulative_logprob is not None:
+            actor_response_logprob = float(cumulative_logprob)
+        else:
+            logprob_entries = getattr(output, "logprobs", None)
+            if logprob_entries is None:
+                raise RuntimeError("vLLM did not return token logprobs; best-of-N actor-logprob metrics require them.")
+            actor_response_logprob = sum(
+                _vllm_token_logprob(logprob_entry, token_id)
+                for logprob_entry, token_id in zip(logprob_entries, generated_token_ids, strict=True)
+            )
+
+    response_length = len(generated_token_ids)
+    eos_emitted = bool(generated_token_ids and generated_token_ids[-1] in eos_token_ids) or str(finish_reason) == "stop"
+    max_length_hit = bool(max_new_tokens > 0 and not eos_emitted and response_length >= max_new_tokens)
+    task_score = float(score_response(example, response_text))
+    actor_response_avg_logprob = actor_response_logprob / max(response_length, 1)
+    full_sequence_token_ids = tuple(prompt_token_ids) + tuple(int(token_id) for token_id in generated_token_ids)
+
+    return SampledTrajectory(
+        sample_idx=sample_idx,
+        sample_seed=seed,
+        prompt_length=len(prompt_token_ids),
+        full_sequence_token_ids=full_sequence_token_ids,
+        response_text=response_text,
+        response_length=response_length,
+        eos_emitted=eos_emitted,
+        max_length_hit=max_length_hit,
+        task_score=task_score,
+        actor_response_logprob=float(actor_response_logprob),
+        actor_response_avg_logprob=float(actor_response_avg_logprob),
+    )
+
+
 def _pad_sequence_batch(
     sequences: Sequence[Sequence[int]],
     *,
@@ -1013,6 +1170,7 @@ def _accumulate_stage1_validation_summary(
 def process_example(
     *,
     actor,
+    vllm_llm,
     old_critic,
     new_critic,
     actor_tokenizer,
@@ -1046,21 +1204,38 @@ def process_example(
 
     sampled_trajectories: list[SampledTrajectory] = []
     for sample_idx in range(max_bank_size):
-        sampled_trajectory = sample_actor_trajectory(
-            actor=actor,
-            tokenizer=actor_tokenizer,
-            example=example,
-            prompt_ids=prompt_ids,
-            sample_idx=sample_idx,
-            seed=_sample_seed(base_seed, example_id=example.example_id, sample_idx=sample_idx),
-            actor_sampling_mode=actor_sampling_mode,
-            actor_temperature=actor_temperature,
-            actor_top_p=actor_top_p,
-            actor_top_k=actor_top_k,
-            max_new_tokens=max_new_tokens,
-            eos_token_ids=eos_token_ids,
-            use_actor_cache=use_actor_cache,
-        )
+        sample_seed = _sample_seed(base_seed, example_id=example.example_id, sample_idx=sample_idx)
+        if vllm_llm is not None:
+            sampled_trajectory = sample_vllm_actor_trajectory(
+                llm=vllm_llm,
+                tokenizer=actor_tokenizer,
+                example=example,
+                prompt_ids=prompt_ids,
+                sample_idx=sample_idx,
+                seed=sample_seed,
+                actor_sampling_mode=actor_sampling_mode,
+                actor_temperature=actor_temperature,
+                actor_top_p=actor_top_p,
+                actor_top_k=actor_top_k,
+                max_new_tokens=max_new_tokens,
+                eos_token_ids=eos_token_ids,
+            )
+        else:
+            sampled_trajectory = sample_actor_trajectory(
+                actor=actor,
+                tokenizer=actor_tokenizer,
+                example=example,
+                prompt_ids=prompt_ids,
+                sample_idx=sample_idx,
+                seed=sample_seed,
+                actor_sampling_mode=actor_sampling_mode,
+                actor_temperature=actor_temperature,
+                actor_top_p=actor_top_p,
+                actor_top_k=actor_top_k,
+                max_new_tokens=max_new_tokens,
+                eos_token_ids=eos_token_ids,
+                use_actor_cache=use_actor_cache,
+            )
         sampled_trajectories.append(sampled_trajectory)
 
     full_sequences = [trajectory.full_sequence_token_ids for trajectory in sampled_trajectories]
@@ -1565,6 +1740,9 @@ def _start_local_worker_processes(
     actor_temperature: float,
     actor_top_p: float,
     actor_top_k: int,
+    generation_backend: str,
+    vllm_gpu_memory_utilization: float,
+    vllm_enforce_eager: bool,
     reference_stage1_trajectory_bank_path: str | None,
     worker_root: Path,
 ) -> tuple[Any, list[tuple[mp.Process, WorkerAssignment]]]:
@@ -1594,6 +1772,9 @@ def _start_local_worker_processes(
                 "actor_temperature": actor_temperature,
                 "actor_top_p": actor_top_p,
                 "actor_top_k": actor_top_k,
+                "generation_backend": generation_backend,
+                "vllm_gpu_memory_utilization": vllm_gpu_memory_utilization,
+                "vllm_enforce_eager": vllm_enforce_eager,
                 "reference_stage1_trajectory_bank_path": reference_stage1_trajectory_bank_path,
                 "worker_root": str(worker_root),
                 "progress_queue": progress_queue,
@@ -1660,6 +1841,9 @@ def _worker_entry(
     actor_temperature: float,
     actor_top_p: float,
     actor_top_k: int,
+    generation_backend: str,
+    vllm_gpu_memory_utilization: float,
+    vllm_enforce_eager: bool,
     reference_stage1_trajectory_bank_path: str | None,
     worker_root: str,
     progress_queue=None,
@@ -1696,12 +1880,8 @@ def _worker_entry(
         else:
             old_critic_tokenizer = load_tokenizer(old_critic_hf_path, trust_remote_code=trust_remote_code)
             new_critic_tokenizer = load_tokenizer(new_critic_hf_path, trust_remote_code=trust_remote_code)
-        actor = load_actor_model(
-            actor_hf_path,
-            dtype=dtype,
-            device=actor_device,
-            trust_remote_code=trust_remote_code,
-        )
+        actor = None
+        vllm_llm = None
         if shared_critic_runtime:
             shared_critic = load_critic_model(
                 old_critic_hf_path,
@@ -1724,6 +1904,29 @@ def _worker_entry(
                 device=new_critic_device,
                 trust_remote_code=trust_remote_code,
             )
+
+        if generation_backend == "torch":
+            actor = load_actor_model(
+                actor_hf_path,
+                dtype=dtype,
+                device=actor_device,
+                trust_remote_code=trust_remote_code,
+            )
+        elif generation_backend == "vllm":
+            llm_cls, _, _ = _require_vllm()
+            if actor_device.type != "cuda":
+                raise ValueError("--generation_backend=vllm requires CUDA actor devices.")
+            vllm_llm = llm_cls(
+                model=str(actor_hf_path),
+                tokenizer=str(actor_hf_path),
+                dtype=_resolve_vllm_dtype_name(dtype_name),
+                trust_remote_code=trust_remote_code,
+                tensor_parallel_size=1,
+                gpu_memory_utilization=float(vllm_gpu_memory_utilization),
+                enforce_eager=bool(vllm_enforce_eager),
+            )
+        else:
+            raise ValueError(f"Unsupported generation backend: {generation_backend}")
 
         reference_stage1_bank = None
         reference_stage1_summary = None
@@ -1755,6 +1958,7 @@ def _worker_entry(
             for example in local_examples:
                 prompt_trajectory_rows, prompt_summary, prompt_stage1_summary = process_example(
                     actor=actor,
+                    vllm_llm=vllm_llm,
                     old_critic=old_critic,
                     new_critic=new_critic,
                     actor_tokenizer=actor_tokenizer,
@@ -1812,6 +2016,9 @@ def _worker_entry(
             "num_examples": assignment.num_examples,
             "shared_critic_checkpoint": bool(shared_critic_checkpoint),
             "shared_critic_runtime": bool(shared_critic_runtime),
+            "generation_backend": generation_backend,
+            "vllm_gpu_memory_utilization": float(vllm_gpu_memory_utilization),
+            "vllm_enforce_eager": bool(vllm_enforce_eager),
             "runtime_sec": time.perf_counter() - start_time,
             "reference_stage1_validation": local_stage1_summary,
         }
@@ -1899,6 +2106,9 @@ def _ray_node_entry_remote(**kwargs) -> dict[str, Any]:
         actor_temperature=kwargs["actor_temperature"],
         actor_top_p=kwargs["actor_top_p"],
         actor_top_k=kwargs["actor_top_k"],
+        generation_backend=kwargs["generation_backend"],
+        vllm_gpu_memory_utilization=kwargs["vllm_gpu_memory_utilization"],
+        vllm_enforce_eager=kwargs["vllm_enforce_eager"],
         reference_stage1_trajectory_bank_path=kwargs["reference_stage1_trajectory_bank_path"],
         worker_root=Path(kwargs["worker_root"]),
     )
@@ -1950,6 +2160,9 @@ def run_multi_worker(
     actor_temperature: float,
     actor_top_p: float,
     actor_top_k: int,
+    generation_backend: str,
+    vllm_gpu_memory_utilization: float,
+    vllm_enforce_eager: bool,
     reference_stage1_trajectory_bank_path: str | None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None]:
     assignments = build_worker_assignments(num_examples=len(examples), worker_layouts=worker_layouts)
@@ -1980,6 +2193,9 @@ def run_multi_worker(
         actor_temperature=actor_temperature,
         actor_top_p=actor_top_p,
         actor_top_k=actor_top_k,
+        generation_backend=generation_backend,
+        vllm_gpu_memory_utilization=vllm_gpu_memory_utilization,
+        vllm_enforce_eager=vllm_enforce_eager,
         reference_stage1_trajectory_bank_path=reference_stage1_trajectory_bank_path,
         worker_root=worker_root,
     )
@@ -2048,6 +2264,9 @@ def run_ray_multi_worker(
     actor_temperature: float,
     actor_top_p: float,
     actor_top_k: int,
+    generation_backend: str,
+    vllm_gpu_memory_utilization: float,
+    vllm_enforce_eager: bool,
     reference_stage1_trajectory_bank_path: str | None,
     ray_num_cpus_per_worker: float,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None]:
@@ -2105,6 +2324,9 @@ def run_ray_multi_worker(
             actor_temperature=actor_temperature,
             actor_top_p=actor_top_p,
             actor_top_k=actor_top_k,
+            generation_backend=generation_backend,
+            vllm_gpu_memory_utilization=vllm_gpu_memory_utilization,
+            vllm_enforce_eager=vllm_enforce_eager,
             reference_stage1_trajectory_bank_path=reference_stage1_trajectory_bank_path,
             worker_root=str(worker_root),
             progress_actor=progress_actor,
@@ -2350,6 +2572,13 @@ def main() -> int:
         raise ValueError(f"--critic_score_batch_size must be > 0, got {args.critic_score_batch_size}")
     if args.ray_num_cpus_per_worker <= 0:
         raise ValueError(f"--ray_num_cpus_per_worker must be > 0, got {args.ray_num_cpus_per_worker}")
+    if args.generation_backend == "vllm" and not (0.0 < args.vllm_gpu_memory_utilization <= 1.0):
+        raise ValueError(
+            "--vllm_gpu_memory_utilization must be in (0, 1], "
+            f"got {args.vllm_gpu_memory_utilization}"
+        )
+    if args.generation_backend == "vllm":
+        _require_vllm()
     if not args.skip_plots and plt is None:
         raise RuntimeError(
             "matplotlib is required for plot generation but could not be imported."
@@ -2467,6 +2696,9 @@ def main() -> int:
             actor_temperature=args.actor_temperature,
             actor_top_p=args.actor_top_p,
             actor_top_k=args.actor_top_k,
+            generation_backend=args.generation_backend,
+            vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
+            vllm_enforce_eager=args.vllm_enforce_eager,
             reference_stage1_trajectory_bank_path=(
                 str(Path(args.reference_stage1_trajectory_bank).resolve())
                 if args.reference_stage1_trajectory_bank
@@ -2499,6 +2731,9 @@ def main() -> int:
             actor_temperature=args.actor_temperature,
             actor_top_p=args.actor_top_p,
             actor_top_k=args.actor_top_k,
+            generation_backend=args.generation_backend,
+            vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
+            vllm_enforce_eager=args.vllm_enforce_eager,
             reference_stage1_trajectory_bank_path=(
                 str(Path(args.reference_stage1_trajectory_bank).resolve())
                 if args.reference_stage1_trajectory_bank
@@ -2515,12 +2750,8 @@ def main() -> int:
         new_critic_device = resolve_device(assignment.new_critic_device) if assignment.new_critic_device else old_critic_device
         shared_critic_runtime = shared_critic_checkpoint and old_critic_device == new_critic_device
 
-        actor = load_actor_model(
-            actor_hf_dir,
-            dtype=dtype,
-            device=actor_device,
-            trust_remote_code=args.trust_remote_code,
-        )
+        actor = None
+        vllm_llm = None
         if shared_critic_runtime:
             shared_critic = load_critic_model(
                 old_critic_hf_dir,
@@ -2544,6 +2775,29 @@ def main() -> int:
                 trust_remote_code=args.trust_remote_code,
             )
 
+        if args.generation_backend == "torch":
+            actor = load_actor_model(
+                actor_hf_dir,
+                dtype=dtype,
+                device=actor_device,
+                trust_remote_code=args.trust_remote_code,
+            )
+        elif args.generation_backend == "vllm":
+            llm_cls, _, _ = _require_vllm()
+            if actor_device.type != "cuda":
+                raise ValueError("--generation_backend=vllm requires CUDA actor devices.")
+            vllm_llm = llm_cls(
+                model=str(actor_hf_dir),
+                tokenizer=str(actor_hf_dir),
+                dtype=_resolve_vllm_dtype_name(args.dtype),
+                trust_remote_code=args.trust_remote_code,
+                tensor_parallel_size=1,
+                gpu_memory_utilization=float(args.vllm_gpu_memory_utilization),
+                enforce_eager=bool(args.vllm_enforce_eager),
+            )
+        else:
+            raise ValueError(f"Unsupported generation backend: {args.generation_backend}")
+
         old_pad_token_id = int(old_critic_tokenizer.pad_token_id)
         new_pad_token_id = int(new_critic_tokenizer.pad_token_id)
 
@@ -2562,6 +2816,7 @@ def main() -> int:
                 progress_bar.set_postfix_str(f"example_id={example.example_id}")
                 prompt_trajectory_rows, prompt_summary, prompt_stage1_summary = process_example(
                     actor=actor,
+                    vllm_llm=vllm_llm,
                     old_critic=old_critic,
                     new_critic=new_critic,
                     actor_tokenizer=actor_tokenizer,

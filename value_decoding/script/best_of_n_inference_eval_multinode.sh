@@ -94,6 +94,10 @@ ACTOR_SAMPLING_MODE="sample"
 ACTOR_TEMPERATURE=1.0
 ACTOR_TOP_P=1.0
 ACTOR_TOP_K=0
+GENERATION_BACKEND="vllm"
+# vLLM shares the worker GPU with the critics in this script, so keep this conservative.
+VLLM_GPU_MEMORY_UTILIZATION=0.6
+VLLM_ENFORCE_EAGER=0
 SEED="42"
 
 REFERENCE_STAGE1_TRAJECTORY_BANK=""
@@ -377,6 +381,8 @@ run_one_seed() {
     --actor_temperature "$ACTOR_TEMPERATURE"
     --actor_top_p "$ACTOR_TOP_P"
     --actor_top_k "$ACTOR_TOP_K"
+    --generation_backend "$GENERATION_BACKEND"
+    --vllm_gpu_memory_utilization "$VLLM_GPU_MEMORY_UTILIZATION"
     --n_values "${N_VALUES_ARR[@]}"
     --plot_dpi "$PLOT_DPI"
     --ray_address auto
@@ -392,6 +398,7 @@ run_one_seed() {
   [[ ${#WORKER_LAYOUTS_ARR[@]} -gt 0 ]] && CMD+=(--worker_layouts "${WORKER_LAYOUTS_ARR[@]}")
   [[ -n "$REFERENCE_STAGE1_TRAJECTORY_BANK" ]] && CMD+=(--reference_stage1_trajectory_bank "$REFERENCE_STAGE1_TRAJECTORY_BANK")
   [[ "$SHUFFLE_EXAMPLES" != "0" ]] && CMD+=(--shuffle_examples)
+  [[ "$VLLM_ENFORCE_EAGER" != "0" ]] && CMD+=(--vllm_enforce_eager)
   [[ "$TRUST_REMOTE_CODE" != "0" ]] && CMD+=(--trust_remote_code)
   [[ "$SKIP_MERGE" != "0" ]] && CMD+=(--skip_merge)
   [[ "$DISABLE_ACTOR_CACHE" != "0" ]] && CMD+=(--disable_actor_cache)
