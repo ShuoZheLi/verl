@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
 
 import pytest
 import torch
@@ -115,6 +116,12 @@ def test_vllm_logprob_extraction_requires_sampled_token() -> None:
 
     with pytest.raises(RuntimeError, match="sampled token id 11"):
         module._vllm_token_logprob({10: _FakeLogprob(-0.25)}, 11)
+
+
+def test_process_example_accepts_eos_end_value_mode() -> None:
+    import value_decoding.best_of_n_inference_eval as module
+
+    assert "eos_end_value_mode" in inspect.signature(module.process_example).parameters
 
 
 def test_critic_final_trajectory_value_uses_pre_eos_value_for_ppo_mode() -> None:
