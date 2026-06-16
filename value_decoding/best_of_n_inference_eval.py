@@ -869,7 +869,6 @@ def sample_actor_trajectory(
     actor_top_k: int,
     max_new_tokens: int,
     eos_token_ids: tuple[int, ...],
-    eos_end_value_mode: str,
     use_actor_cache: bool,
 ) -> SampledTrajectory:
     set_decode_seed(seed)

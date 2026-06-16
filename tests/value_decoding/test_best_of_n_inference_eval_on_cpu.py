@@ -124,6 +124,12 @@ def test_process_example_accepts_eos_end_value_mode() -> None:
     assert "eos_end_value_mode" in inspect.signature(module.process_example).parameters
 
 
+def test_sample_actor_trajectory_does_not_require_eos_end_value_mode() -> None:
+    import value_decoding.best_of_n_inference_eval as module
+
+    assert "eos_end_value_mode" not in inspect.signature(module.sample_actor_trajectory).parameters
+
+
 def test_critic_final_trajectory_value_uses_pre_eos_value_for_ppo_mode() -> None:
     critic = _DummyValueHeadCritic()
     input_ids = torch.tensor([[4, 7, 99]], dtype=torch.long)
