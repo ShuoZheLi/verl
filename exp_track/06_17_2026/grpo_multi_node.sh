@@ -35,6 +35,14 @@ export TOKENIZERS_PARALLELISM=true
 export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
 export VLLM_LOGGING_LEVEL=INFO
+export VLLM_NO_USAGE_STATS=1
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
+
+# Keep Ray worker logs in the run directory so EngineCore child-process crashes
+# are archived with the job. The stdout stack often only shows EngineDeadError;
+# the actionable CUDA/OOM traceback is usually in these Ray logs.
+export RAY_TMPDIR_ROOT="${SCRATCH}/ray_tmp/${SLURM_JOB_ID}"
+mkdir -p "$RAY_TMPDIR_ROOT"
 
 # You had both 0 and 1 before; the later one wins anyway.
 # Keep only one to avoid confusion.
@@ -63,10 +71,8 @@ POLICY_INIT_CKPT="/work2/09576/shuozhe/saved_model/Qwen2.5-1.5B"
 
 # The Qwen2.5 config advertises a 131072-token context window. Leaving
 # rollout.max_model_len unset makes vLLM allocate/schedule for that full window,
-# even though this experiment only uses 2048 prompt + 2048 response tokens. On
-# 1-GPU-per-node colocated FSDP+vLLM runs this can make vLLM's EngineCore die
-# after repeated sleep/wake and weight updates. Keep rollout capacity aligned
-# with the actual training sequence budget.
+# even though this experiment only uses 2048 prompt + 2048 response tokens. Keep
+# rollout capacity aligned with the actual training sequence budget.
 ROLLOUT_MAX_MODEL_LEN=4096
 ROLLOUT_MAX_NUM_SEQS=128
 ROLLOUT_MAX_NUM_BATCHED_TOKENS=8192
@@ -154,7 +160,7 @@ archive_ray_logs() {
   mkdir -p "$LOG_DIR/ray"
   for node in "${nodes_array[@]}"; do
     srun --nodes=1 --ntasks=1 -w "$node" \
-      bash -c "if [[ -d /tmp/ray/session_latest/logs ]]; then tar -C /tmp/ray/session_latest -czf - logs; fi" \
+      bash -c "for d in '${RAY_TMPDIR_ROOT}'/$(hostname -s)/session_latest /tmp/ray/session_latest; do if [[ -d \"\$d/logs\" ]]; then tar -C \"\$d\" -czf - logs; exit 0; fi; done" \
       > "$LOG_DIR/ray/${node}.tar.gz" 2> "$LOG_DIR/ray/${node}.tar.err" || true
   done
 }
@@ -255,9 +261,12 @@ RAY_GPUS_PER_NODE=1
 echo "Starting Ray head..."
 srun --nodes=1 --ntasks=1 -w "$head_node" \
   bash -c "source '${VENV}/bin/activate' && \
+           node_ray_tmp='${RAY_TMPDIR_ROOT}'/\$(hostname -s) && \
+           mkdir -p \"\$node_ray_tmp\" && \
            ray start --head \
            --node-ip-address='${head_node_ip}' \
            --port='${port}' \
+           --temp-dir=\"\$node_ray_tmp\" \
            --num-cpus='${SLURM_CPUS_PER_TASK}' \
            --num-gpus='${RAY_GPUS_PER_NODE}'" \
   > "$LOG_DIR/ray_head.log" 2>&1 &
@@ -290,7 +299,10 @@ for ((i = 1; i <= worker_num; i++)); do
 
   srun --nodes=1 --ntasks=1 -w "$node_i" \
     bash -c "source '${VENV}/bin/activate' && \
+             node_ray_tmp='${RAY_TMPDIR_ROOT}'/\$(hostname -s) && \
+             mkdir -p \"\$node_ray_tmp\" && \
              ray start --address '${ip_head}' \
+             --temp-dir=\"\$node_ray_tmp\" \
              --num-cpus='${SLURM_CPUS_PER_TASK}' \
              --num-gpus='${RAY_GPUS_PER_NODE}'" \
     > "$LOG_DIR/ray_worker_${i}.log" 2>&1 &
@@ -365,9 +377,10 @@ python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.rollout.max_num_batched_tokens="${ROLLOUT_MAX_NUM_BATCHED_TOKENS}" \
   actor_rollout_ref.rollout.gpu_memory_utilization="${ROLLOUT_GPU_MEMORY_UTILIZATION}" \
   actor_rollout_ref.rollout.enforce_eager=True \
-  actor_rollout_ref.rollout.free_cache_engine=True \
+  actor_rollout_ref.rollout.free_cache_engine=False \
   actor_rollout_ref.rollout.enable_chunked_prefill=True \
   actor_rollout_ref.rollout.enable_prefix_caching=False \
+  actor_rollout_ref.rollout.agent.num_workers=4 \
   actor_rollout_ref.rollout.n=8 \
   actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=4096 \
   actor_rollout_ref.hybrid_engine=True \
