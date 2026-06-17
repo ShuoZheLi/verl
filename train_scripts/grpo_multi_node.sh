@@ -385,7 +385,7 @@ python3 -m verl.trainer.main_ppo \
   trainer.project_name="GRPO_metamath" \
   trainer.experiment_name="${RUN_ID}" \
   trainer.default_local_dir="${TRAIN_LOG_DIR}" \
-  +ray_kwargs.ray_init.runtime_env.env_vars.RAY_DEDUP_LOGS=0 \
-  +ray_kwargs.ray_init.runtime_env.env_vars.VLLM_LOGGING_LEVEL=INFO \
+  +ray_kwargs.ray_init.runtime_env.env_vars.RAY_DEDUP_LOGS="'0'" \
+  +ray_kwargs.ray_init.runtime_env.env_vars.VLLM_LOGGING_LEVEL="'INFO'" \
   "$@" \
   2>&1 | tee "$TRAIN_STDOUT_LOG"
