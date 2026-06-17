@@ -86,6 +86,13 @@ from verl.utils.py_functional import convert_to_regular_types
 # QAT support
 from verl.utils.qat import apply_qat, enable_qat_fuse
 from verl.utils.ray_utils import get_event_loop
+from verl.utils.sparse_update_mask import (
+    SparseUpdateMaskManager,
+    build_masks_from_model,
+    load_sparse_masks,
+    save_sparse_masks,
+    sparse_mask_metadata,
+)
 from verl.workers.config import FSDPCriticConfig, FSDPEngineConfig, HFModelConfig, RolloutConfig
 from verl.workers.config.optimizer import build_optimizer
 from verl.workers.rollout import get_rollout_class
@@ -193,6 +200,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         self.ulysses_sharding_manager = FSDPUlyssesShardingManager(self.ulysses_device_mesh)
         self._lora_rank = self.config.model.get("lora_rank", 0)
         self._is_lora = self.config.model.get("lora_adapter_path") is not None or self._lora_rank > 0
+        self.sparse_update_manager = None
 
         self.role = role
         assert self.role in ["actor", "rollout", "ref", "actor_rollout", "actor_rollout_ref"]
@@ -542,6 +550,19 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             if self.qat_config.mode == "w4a4":
                 self._restore_w4a4_input_scales(actor_module, self.config.model.path)
 
+        sparse_update_masks = None
+        sparse_update_metadata = None
+        sparse_update_config = self.config.actor.get("sparse_update", {}) if role == "actor" else {}
+        sparse_update_enabled = sparse_update_config.get("enabled", False) and optim_config is not None
+        if sparse_update_enabled and not self.use_orig_params:
+            self.use_orig_params = True
+            if self.rank == 0:
+                print("sparse_update requires FSDP use_orig_params=True; enabling it for actor.")
+        if sparse_update_enabled:
+            sparse_update_masks, sparse_update_metadata = self._prepare_sparse_update_masks(
+                actor_module, sparse_update_config
+            )
+
         torch.distributed.barrier()
 
         if self.rank == 0:
@@ -671,7 +692,52 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             actor_optimizer = None
             actor_lr_scheduler = None
 
-        return actor_module_fsdp, actor_optimizer, actor_lr_scheduler, actor_model_config
+        return actor_module_fsdp, actor_optimizer, actor_lr_scheduler, actor_model_config, sparse_update_masks, sparse_update_metadata
+
+    def _prepare_sparse_update_masks(self, model, sparse_update_config):
+        mask_path = sparse_update_config.get("mask_path", None)
+        build_mask_on_init = sparse_update_config.get("build_mask_on_init", False)
+        save_mask_path = sparse_update_config.get("save_mask_path", None)
+
+        if mask_path:
+            masks, metadata = load_sparse_masks(mask_path)
+            metadata["mask_path"] = mask_path
+        elif build_mask_on_init:
+            masks = build_masks_from_model(model, sparse_update_config)
+            metadata = sparse_mask_metadata(masks, sparse_update_config)
+            if save_mask_path:
+                save_sparse_masks(save_mask_path, masks, metadata)
+                metadata["save_mask_path"] = save_mask_path
+        else:
+            raise ValueError(
+                "actor_rollout_ref.actor.sparse_update.enabled=true requires either mask_path or build_mask_on_init=true."
+            )
+
+        if self.rank == 0:
+            print(
+                "sparse_update mask prepared: "
+                f"mode={metadata.get('mode')} rank_k={metadata.get('rank_k')} "
+                f"alpha_princ={metadata.get('alpha_princ')} alpha_low={metadata.get('alpha_low')} "
+                f"num_masked_tensors={len(masks)} "
+                f"trainable_fraction={metadata.get('linear_trainable_fraction', 0.0):.6f}"
+            )
+            for name, density in list(metadata.get("per_param_density", {}).items())[:20]:
+                print(f"sparse_update layer {name}: trainable_fraction={density:.6f}")
+        return masks, metadata
+
+    def _build_sparse_update_manager(self, model, sparse_update_config, masks=None, metadata=None):
+        if masks is None or metadata is None:
+            masks, metadata = self._prepare_sparse_update_masks(model, sparse_update_config)
+
+        manager = SparseUpdateMaskManager(
+            model=model,
+            masks=masks,
+            config=sparse_update_config,
+            metadata=metadata,
+        )
+        if self.rank == 0:
+            print("sparse_update enabled for actor optimizer")
+        return manager
 
     def _build_rollout(self, trust_remote_code=False):
         from torch.distributed.device_mesh import init_device_mesh
@@ -879,6 +945,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 self.actor_optimizer,
                 self.actor_lr_scheduler,
                 self.actor_model_config,
+                sparse_update_masks,
+                sparse_update_metadata,
             ) = self._build_model_optimizer(
                 model_path=local_path,
                 fsdp_config=fsdp_config,
@@ -908,10 +976,22 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 offload_fsdp_optimizer(optimizer=self.actor_optimizer)
                 log_gpu_memory_usage("After offload actor optimizer during init", logger=logger)
 
+            sparse_update_config = self.config.actor.get("sparse_update", {})
+            if sparse_update_config.get("enabled", False):
+                self.sparse_update_manager = self._build_sparse_update_manager(
+                    model=self.actor_module_fsdp,
+                    sparse_update_config=sparse_update_config,
+                    masks=sparse_update_masks,
+                    metadata=sparse_update_metadata,
+                )
+
         if self._is_actor:
             actor_cfg = omega_conf_to_dataclass(self.config.actor)
             self.actor = DataParallelPPOActor(
-                config=actor_cfg, actor_module=self.actor_module_fsdp, actor_optimizer=self.actor_optimizer
+                config=actor_cfg,
+                actor_module=self.actor_module_fsdp,
+                actor_optimizer=self.actor_optimizer,
+                sparse_update_manager=self.sparse_update_manager,
             )
 
         if self._is_rollout:
@@ -1179,6 +1259,12 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         self.checkpoint_manager.save_checkpoint(
             local_path=local_path, hdfs_path=hdfs_path, global_step=global_step, max_ckpt_to_keep=max_ckpt_to_keep
         )
+        if self.sparse_update_manager is not None:
+            os.makedirs(local_path, exist_ok=True)
+            torch.save(
+                self.sparse_update_manager.state_dict(),
+                os.path.join(local_path, f"sparse_update_state_rank_{self.rank}.pt"),
+            )
         dist.barrier()
 
         if self._is_lora and hasattr(getattr(self, "actor_module", self.actor_module_fsdp), "peft_config"):
@@ -1236,6 +1322,9 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         self.checkpoint_manager.load_checkpoint(
             local_path=local_path, hdfs_path=hdfs_path, del_local_after_load=del_local_after_load
         )
+        sparse_state_path = os.path.join(local_path, f"sparse_update_state_rank_{self.rank}.pt")
+        if self.sparse_update_manager is not None and os.path.exists(sparse_state_path):
+            self.sparse_update_manager.load_state_dict(torch.load(sparse_state_path, map_location="cpu", weights_only=False))
 
         if self._is_offload_param:
             offload_fsdp_model_to_cpu(self.actor_module_fsdp)

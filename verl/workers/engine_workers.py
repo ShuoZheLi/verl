@@ -118,6 +118,9 @@ class TrainingWorker(Worker, DistProfilerExtension):
             self, DistProfiler(rank=self.rank, config=self.profiler_config, tool_config=self.profiler_tool_config)
         )
 
+        engine_kwargs = {}
+        if self.engine_config.strategy in {"fsdp", "fsdp2"}:
+            engine_kwargs["sparse_update_config"] = self.config.sparse_update_config
         self.engine: BaseEngine = EngineRegistry.new(
             model_type=self.config.model_type,
             backend=self.engine_config.strategy,
@@ -125,6 +128,7 @@ class TrainingWorker(Worker, DistProfilerExtension):
             engine_config=self.engine_config,
             optimizer_config=self.optimizer_config,
             checkpoint_config=self.checkpoint_config,
+            **engine_kwargs,
         )
 
         # build dispatch info
@@ -516,6 +520,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 engine_config=actor_config.engine,
                 optimizer_config=actor_config.optim,
                 checkpoint_config=actor_config.checkpoint,
+                sparse_update_config=actor_config.sparse_update,
             )
 
             assert self.config.actor.use_dynamic_bsz == self.config.rollout.log_prob_use_dynamic_bsz

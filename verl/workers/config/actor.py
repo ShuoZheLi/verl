@@ -29,6 +29,7 @@ from .optimizer import OptimizerConfig
 __all__ = [
     "PolicyLossConfig",
     "RouterReplayConfig",
+    "SparseUpdateConfig",
     "ActorConfig",
     "FSDPActorConfig",
     "McoreActorConfig",
@@ -90,6 +91,36 @@ class PolicyLossConfig(BaseConfig):
     kl_cov_ratio: float = 0.0002
     ppo_kl_coef: float = 0.1
     rollout_correction: RolloutCorrectionConfig = field(default_factory=RolloutCorrectionConfig)
+
+
+@dataclass
+class SparseUpdateConfig(BaseConfig):
+    """Configuration for sparse actor weight updates."""
+
+    enabled: bool = False
+    mode: str = "safe_svd_lowmag"
+    mask_path: Optional[str] = None
+    save_mask_path: Optional[str] = None
+    build_mask_on_init: bool = False
+    rank_k: int = 128
+    alpha_princ: float = 0.5
+    alpha_low: float = 0.5
+    target_modules: list[str] = field(
+        default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    )
+    exclude_keywords: list[str] = field(
+        default_factory=lambda: ["embed", "lm_head", "norm", "layernorm", "rmsnorm"]
+    )
+    apply_to_bias: bool = False
+    restore_frozen_after_step: bool = True
+    mask_optimizer_state: bool = True
+    verify_frozen_weights: bool = False
+    verification_interval: int = 10
+    verification_tolerance: float = 1e-6
+    random_mask_same_density: bool = False
+    dry_run_log_only: bool = False
+    svd_device: Optional[str] = None
+    strict_load: bool = True
 
 
 @dataclass
@@ -176,6 +207,7 @@ class ActorConfig(BaseConfig):
     rollout_n: int = MISSING  # must be override by sampling config
     model_config: HFModelConfig = field(default_factory=BaseConfig)
     router_replay: RouterReplayConfig = field(default_factory=RouterReplayConfig)
+    sparse_update: SparseUpdateConfig = field(default_factory=SparseUpdateConfig)
 
     # Store global batch info for loss aggregation:
     # dp_size: data parallel size

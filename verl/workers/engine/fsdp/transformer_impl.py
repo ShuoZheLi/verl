@@ -66,6 +66,13 @@ from verl.utils.fsdp_utils import (
 )
 from verl.utils.model import convert_weight_keys, extract_multi_modal_inputs
 from verl.utils.py_functional import convert_to_regular_types
+from verl.utils.sparse_update_mask import (
+    SparseUpdateMaskManager,
+    build_masks_from_model,
+    load_sparse_masks,
+    save_sparse_masks,
+    sparse_mask_metadata,
+)
 from verl.utils.torch_functional import logprobs_from_logits
 from verl.utils.ulysses import (
     gather_outputs_and_unpad,
@@ -99,6 +106,7 @@ class FSDPEngine(BaseEngine):
         engine_config: FSDPEngineConfig,
         optimizer_config: FSDPOptimizerConfig,
         checkpoint_config: CheckpointConfig,
+        sparse_update_config=None,
     ):
         """
         Initialize the FSDPEngine.
@@ -114,6 +122,10 @@ class FSDPEngine(BaseEngine):
         self.engine_config = engine_config
         self.optimizer_config = optimizer_config
         self.checkpoint_config = checkpoint_config
+        self.sparse_update_config = sparse_update_config
+        self.sparse_update_manager = None
+        self._sparse_update_prepared_masks = None
+        self._sparse_update_prepared_metadata = None
 
         self.mode = None
 
@@ -440,6 +452,23 @@ class FSDPEngine(BaseEngine):
             raise NotImplementedError(f"LR scheduler type {lr_scheduler_type} is not supported")
         return lr_scheduler
 
+    def _prepare_sparse_update_masks(self, module):
+        mask_path = self.sparse_update_config.get("mask_path", None)
+        build_mask_on_init = self.sparse_update_config.get("build_mask_on_init", False)
+        save_mask_path = self.sparse_update_config.get("save_mask_path", None)
+        if mask_path:
+            masks, metadata = load_sparse_masks(mask_path)
+            metadata["mask_path"] = mask_path
+        elif build_mask_on_init:
+            masks = build_masks_from_model(module, self.sparse_update_config)
+            metadata = sparse_mask_metadata(masks, self.sparse_update_config)
+            if save_mask_path:
+                save_sparse_masks(save_mask_path, masks, metadata)
+                metadata["save_mask_path"] = save_mask_path
+        else:
+            raise ValueError("sparse_update.enabled=true requires either mask_path or build_mask_on_init=true.")
+        return masks, metadata
+
     def _build_model_optimizer(self):
         from verl.utils.model import print_model_size
 
@@ -454,6 +483,19 @@ class FSDPEngine(BaseEngine):
         if self.rank == 0:
             print_model_size(module)
         log_gpu_memory_usage("After init model from HF AutoModel", logger=logger)
+
+        if (
+            not self.engine_config.forward_only
+            and self.sparse_update_config is not None
+            and self.sparse_update_config.get("enabled", False)
+        ):
+            if self.engine_config.strategy == "fsdp" and not self.engine_config.use_orig_params:
+                self.engine_config.use_orig_params = True
+                if self.rank == 0:
+                    print("sparse_update requires FSDP use_orig_params=True; enabling it for actor.")
+            self._sparse_update_prepared_masks, self._sparse_update_prepared_metadata = (
+                self._prepare_sparse_update_masks(module)
+            )
 
         # Wrap model with FSDP for distributed training (sharding, mixed precision, etc.)
         log_gpu_memory_usage("Before FSDP", logger=None)
@@ -472,6 +514,20 @@ class FSDPEngine(BaseEngine):
         self.module = module
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
+
+        if not self.engine_config.forward_only and self.sparse_update_config is not None:
+            if self.sparse_update_config.get("enabled", False):
+                masks = self._sparse_update_prepared_masks
+                metadata = self._sparse_update_prepared_metadata
+                if masks is None or metadata is None:
+                    masks, metadata = self._prepare_sparse_update_masks(module)
+                self.sparse_update_manager = SparseUpdateMaskManager(module, masks, self.sparse_update_config, metadata)
+                if self.rank == 0:
+                    print(
+                        "sparse_update enabled: "
+                        f"mode={metadata.get('mode')} num_masked_tensors={len(masks)} "
+                        f"trainable_fraction={metadata.get('linear_trainable_fraction', 0.0):.6f}"
+                    )
 
     def train_mode(self, **kwargs):
         """
@@ -571,7 +627,13 @@ class FSDPEngine(BaseEngine):
             print(f"WARN: grad_norm is not finite: {grad_norm}")
             self.optimizer.zero_grad()
         else:
+            if self.sparse_update_manager is not None:
+                self.sparse_update_manager.apply_grad_mask()
+                self.sparse_update_manager.mask_optimizer_state(self.optimizer)
             self.optimizer.step()
+            if self.sparse_update_manager is not None:
+                self.sparse_update_manager.restore_frozen_params()
+                self.sparse_update_manager.mask_optimizer_state(self.optimizer)
         return grad_norm.item()
 
     def lr_scheduler_step(self):
@@ -628,6 +690,12 @@ class FSDPEngine(BaseEngine):
         self.checkpoint_manager.save_checkpoint(
             local_path=local_path, hdfs_path=hdfs_path, global_step=global_step, max_ckpt_to_keep=max_ckpt_to_keep
         )
+        if self.sparse_update_manager is not None:
+            os.makedirs(local_path, exist_ok=True)
+            torch.save(
+                self.sparse_update_manager.state_dict(),
+                os.path.join(local_path, f"sparse_update_state_rank_{self.rank}.pt"),
+            )
 
         torch.distributed.barrier()
         if self._is_offload_param:
@@ -647,6 +715,9 @@ class FSDPEngine(BaseEngine):
         self.checkpoint_manager.load_checkpoint(
             local_path=local_path, hdfs_path=hdfs_path, del_local_after_load=del_local_after_load
         )
+        sparse_state_path = os.path.join(local_path, f"sparse_update_state_rank_{self.rank}.pt")
+        if self.sparse_update_manager is not None and os.path.exists(sparse_state_path):
+            self.sparse_update_manager.load_state_dict(torch.load(sparse_state_path, map_location="cpu", weights_only=False))
 
         torch.distributed.barrier()
         if self._is_offload_param:

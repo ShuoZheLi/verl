@@ -55,11 +55,18 @@ class DataParallelPPOActor(BasePPOActor):
         actor_optimizer (torch.optim.Optimizer, optional): Actor optimizer. Defaults to None.
     """
 
-    def __init__(self, config: ActorConfig, actor_module: nn.Module, actor_optimizer: torch.optim.Optimizer = None):
+    def __init__(
+        self,
+        config: ActorConfig,
+        actor_module: nn.Module,
+        actor_optimizer: torch.optim.Optimizer = None,
+        sparse_update_manager=None,
+    ):
         """When optimizer is None, it is Reference Policy"""
         super().__init__(config)
         self.actor_module = actor_module
         self.actor_optimizer = actor_optimizer
+        self.sparse_update_manager = sparse_update_manager
         role = "Ref" if actor_optimizer is None else "Actor"
 
         self.use_remove_padding = self.config.get("use_remove_padding", False)
@@ -402,6 +409,10 @@ class DataParallelPPOActor(BasePPOActor):
         if isinstance(grad_norm, DTensor):
             grad_norm = grad_norm.full_tensor()
 
+        if self.sparse_update_manager is not None:
+            self.sparse_update_manager.apply_grad_mask()
+            self.sparse_update_manager.mask_optimizer_state(self.actor_optimizer)
+
         # if grad_norm is not finite, skip the update
         if self.scaler is not None:
             self.scaler.step(self.actor_optimizer)
@@ -412,6 +423,10 @@ class DataParallelPPOActor(BasePPOActor):
                 self.actor_optimizer.zero_grad()
             else:
                 self.actor_optimizer.step()
+
+        if self.sparse_update_manager is not None:
+            self.sparse_update_manager.restore_frozen_params()
+            self.sparse_update_manager.mask_optimizer_state(self.actor_optimizer)
 
         # Clear cached weight scales for QAT (weights changed)
         if getattr(self.actor_module, "_qat_fuse_enabled", False):
@@ -672,6 +687,8 @@ class DataParallelPPOActor(BasePPOActor):
 
                 grad_norm = self._optimizer_step()
                 mini_batch_metrics = {"actor/grad_norm": grad_norm.detach().item()}
+                if self.sparse_update_manager is not None:
+                    mini_batch_metrics.update(self.sparse_update_manager.maybe_verify())
                 append_to_dict(metrics, mini_batch_metrics)
         self.actor_optimizer.zero_grad()
         return metrics

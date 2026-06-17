@@ -81,3 +81,80 @@ qat:
 
   # Path to vLLM quantization config JSON file
   quantization_config_path: null
+
+# Sparse actor weight-update mask configuration.
+sparse_update:
+
+  # Whether to enable sparse actor updates.
+  enabled: false
+
+  # Mask mode: safe_svd_lowmag, non_principal, low_magnitude, principal, or random_same_density.
+  mode: safe_svd_lowmag
+
+  # Optional path to load a prebuilt mask file.
+  mask_path: null
+
+  # Optional path to save masks generated at initialization.
+  save_mask_path: null
+
+  # Build masks from initial actor weights before RL training starts.
+  build_mask_on_init: false
+
+  # Rank for SVD reconstruction of pretrained linear weights.
+  rank_k: 128
+
+  # Fraction of rank-k reconstruction entries considered principal.
+  alpha_princ: 0.5
+
+  # Fraction of original weight entries considered low-magnitude.
+  alpha_low: 0.5
+
+  # Linear module suffixes to mask.
+  target_modules:
+
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+  # Parameter name keywords to skip.
+  exclude_keywords:
+
+    - embed
+    - lm_head
+    - norm
+    - layernorm
+    - rmsnorm
+
+  # Whether bias tensors may be masked.
+  apply_to_bias: false
+
+  # Restore frozen entries to their initialization after optimizer.step.
+  restore_frozen_after_step: true
+
+  # Zero AdamW state entries corresponding to frozen weights.
+  mask_optimizer_state: true
+
+  # Periodically verify frozen entries remain unchanged.
+  verify_frozen_weights: false
+
+  # Verification interval in actor optimizer steps.
+  verification_interval: 10
+
+  # Absolute tolerance for frozen-weight verification.
+  verification_tolerance: 1.0e-6
+
+  # Use a random mask with layerwise safe-mask density.
+  random_mask_same_density: false
+
+  # Build/log masks but do not enforce them.
+  dry_run_log_only: false
+
+  # Optional device for SVD mask construction.
+  svd_device: null
+
+  # Fail if loaded masks and model parameters do not match.
+  strict_load: true
