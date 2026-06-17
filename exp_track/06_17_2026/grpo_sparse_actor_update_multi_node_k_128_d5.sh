@@ -2,10 +2,10 @@
 #SBATCH --job-name=grpo_sparse_metamath_multinode
 #SBATCH --account=ECS26006
 #SBATCH --partition=gh
-#SBATCH --nodes=8
+#SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=03:00:00
+#SBATCH --time=00:20:00
 #SBATCH --output=slurm-%j.out
 #SBATCH --error=slurm-%j.err
 
@@ -57,7 +57,7 @@ RUN_ID="${RUN_NAME}_${REAL_SLURM_JOB_ID}"
 # -----------------------------
 # When true, math_dapo incorrect answers get reward 0.0 instead of -1.0.
 MATH_DAPO_BINARY_REWARD=true
-POLICY_INIT_CKPT="/work2/09576/shuozhe/saved_model/Qwen2.5-0.5B"
+POLICY_INIT_CKPT="/work2/09576/shuozhe/saved_model/Qwen2.5-1.5B"
 
 TRAIN_FILE="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/train.parquet"
 VAL_FILE="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet"
@@ -359,8 +359,6 @@ python3 -m verl.trainer.main_ppo \
   data.max_prompt_length=2048 \
   data.max_response_length=2048 \
   actor_rollout_ref.model.path="$POLICY_MODEL_PATH" \
-  actor_rollout_ref.model.use_remove_padding=False \
-  +actor_rollout_ref.model.override_config.attn_implementation=eager \
   actor_rollout_ref.actor.optim.lr=1e-6 \
   actor_rollout_ref.actor.ppo_mini_batch_size=32 \
   actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
@@ -383,7 +381,7 @@ python3 -m verl.trainer.main_ppo \
   +reward.reward_kwargs.math_dapo_binary_reward="${MATH_DAPO_BINARY_REWARD}" \
   critic.enable=False \
   trainer.critic_warmup=0 \
-  trainer.val_before_train=True \
+  trainer.val_before_train=false \
   trainer.n_gpus_per_node="${RAY_GPUS_PER_NODE}" \
   trainer.nnodes="${SLURM_JOB_NUM_NODES}" \
   trainer.test_freq=50 \
