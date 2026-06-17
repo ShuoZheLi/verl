@@ -306,8 +306,30 @@ class SparseUpdateMaskManager:
 
     def _collect_fsdp_shard_infos_by_name(self, model: nn.Module) -> dict[str, Any]:
         shard_infos = {}
-        for module in model.modules():
+        handle_prefixes_by_id: dict[int, list[str]] = {}
+        module_names_by_id: dict[int, list[str]] = {}
+        handles = []
+        all_handles = getattr(model, "_all_handles", None)
+        if all_handles is not None:
+            handles.extend(all_handles)
+
+        for module_name, module in model.named_modules():
+            canonical_module_name = _canonical_name(module_name).strip(".")
+            module_names_by_id.setdefault(id(module), [])
+            if canonical_module_name not in module_names_by_id[id(module)]:
+                module_names_by_id[id(module)].append(canonical_module_name)
             handle = getattr(module, "_handle", None)
+            if handle is not None:
+                handles.append(handle)
+                handle_prefixes_by_id.setdefault(id(handle), [])
+                if canonical_module_name not in handle_prefixes_by_id[id(handle)]:
+                    handle_prefixes_by_id[id(handle)].append(canonical_module_name)
+
+        seen_handles = set()
+        for handle in handles:
+            if handle is None or id(handle) in seen_handles:
+                continue
+            seen_handles.add(id(handle))
             flat_param = getattr(handle, "flat_param", None)
             param_infos = getattr(flat_param, "_param_infos", None)
             shard_param_infos = getattr(flat_param, "_shard_param_infos", None)
@@ -315,9 +337,17 @@ class SparseUpdateMaskManager:
                 continue
             for param_info, shard_param_info in zip(param_infos, shard_param_infos):
                 param_name = getattr(param_info, "param_name", param_info[0])
+                param_module = getattr(param_info, "module", param_info[1])
                 module_name = getattr(param_info, "module_name", param_info[2])
-                full_name = f"{module_name}.{param_name}" if module_name else param_name
-                shard_infos[_canonical_name(full_name)] = shard_param_info
+                relative_name = f"{module_name}.{param_name}" if module_name else param_name
+                candidate_names = [relative_name]
+                for module_path in module_names_by_id.get(id(param_module), []):
+                    candidate_names.append(f"{module_path}.{param_name}" if module_path else param_name)
+                for prefix in handle_prefixes_by_id.get(id(handle), []):
+                    if prefix:
+                        candidate_names.append(f"{prefix}.{relative_name}")
+                for full_name in candidate_names:
+                    shard_infos[_canonical_name(full_name)] = shard_param_info
         return shard_infos
 
     def _get_fsdp_shard_info(self, name: str) -> Any:
@@ -347,14 +377,18 @@ class SparseUpdateMaskManager:
     def _initialize_original_params(self) -> None:
         seen = set()
         target_param_names = set()
+        named_param_names = {_canonical_name(name) for name, _ in self.model.named_parameters()}
         target_modules = _as_list(_cfg_get(self.config, "target_modules", DEFAULT_TARGET_MODULES), DEFAULT_TARGET_MODULES)
         exclude_keywords = _as_list(
             _cfg_get(self.config, "exclude_keywords", DEFAULT_EXCLUDE_KEYWORDS), DEFAULT_EXCLUDE_KEYWORDS
         )
         apply_to_bias = bool(_cfg_get(self.config, "apply_to_bias", False))
         for name in self._fsdp_shard_infos_by_name:
-            if should_mask_param_name(name, target_modules, exclude_keywords, apply_to_bias):
-                target_param_names.add(name)
+            matching_named_param = next((alias for alias in _name_aliases(name) if alias in named_param_names), None)
+            if matching_named_param and should_mask_param_name(
+                matching_named_param, target_modules, exclude_keywords, apply_to_bias
+            ):
+                target_param_names.add(matching_named_param)
         for name, param in self.model.named_parameters():
             canonical_name = _canonical_name(name)
             if param.ndim == 1 and "flat_param" in canonical_name:
@@ -401,9 +435,12 @@ class SparseUpdateMaskManager:
         shard_info = self._get_fsdp_shard_info(name)
         if shard_info is None:
             self.num_shape_mismatches += 1
+            available_names = list(self._fsdp_shard_infos_by_name)[:10]
             raise ValueError(
                 "sparse_update could not find FSDP shard metadata for parameter "
-                f"{name} with local shape {tuple(param.shape)} and full mask shape {tuple(full_mask.shape)}."
+                f"{name} with local shape {tuple(param.shape)} and full mask shape {tuple(full_mask.shape)}. "
+                f"Collected {len(self._fsdp_shard_infos_by_name)} FSDP shard metadata entries; "
+                f"first entries: {available_names}."
             )
         if not shard_info.in_shard:
             if param.numel() != 0:

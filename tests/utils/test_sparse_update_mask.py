@@ -156,6 +156,83 @@ def test_manager_matches_fsdp_shard_info_without_model_prefix():
     assert manager.num_shape_mismatches == 0
 
 
+def test_manager_collects_fsdp_shards_from_root_all_handles():
+    ParamInfo = namedtuple("ParamInfo", ["param_name", "module", "module_name"])
+    ShardInfo = namedtuple(
+        "ShardInfo", ["in_shard", "offset_in_shard", "numel_in_shard", "intra_param_start_idx", "intra_param_end_idx"]
+    )
+
+    model = nn.Module()
+    model.model = nn.Module()
+    model.model.layers = nn.ModuleList([nn.Module()])
+    model.model.layers[0].self_attn = nn.Module()
+    model.model.layers[0].self_attn.q_proj = nn.Module()
+    model.model.layers[0].self_attn.q_proj.weight = nn.Parameter(torch.tensor([10.0, 20.0, 30.0]))
+    flat_param = nn.Parameter(torch.empty(0))
+    flat_param._param_infos = (
+        ParamInfo("weight", model.model.layers[0].self_attn.q_proj, "layers.0.self_attn.q_proj"),
+    )
+    flat_param._shard_param_infos = (ShardInfo(True, 0, 3, 2, 4),)
+    handle = type("Handle", (), {"flat_param": flat_param})()
+    model._all_handles = [handle]
+
+    full_mask = torch.tensor([[True, False, True], [False, True, False]])
+    manager = SparseUpdateMaskManager(
+        model, {"model.layers.0.self_attn.q_proj.weight": full_mask}, {"enabled": True, "strict_load": True}
+    )
+
+    assert torch.equal(manager.local_masks["model.layers.0.self_attn.q_proj.weight"], torch.tensor([True, False, True]))
+    assert manager.num_missing_masks == 0
+    assert manager.num_shape_mismatches == 0
+
+
+def test_manager_collects_fsdp_shards_with_wrapped_module_prefix():
+    ParamInfo = namedtuple("ParamInfo", ["param_name", "module", "module_name"])
+    ShardInfo = namedtuple(
+        "ShardInfo", ["in_shard", "offset_in_shard", "numel_in_shard", "intra_param_start_idx", "intra_param_end_idx"]
+    )
+
+    model = nn.Module()
+    model.model = nn.Module()
+    model.model.layers = nn.ModuleList([nn.Module()])
+    model.model.layers[0].self_attn = nn.Module()
+    model.model.layers[0].self_attn.q_proj = nn.Module()
+    model.model.layers[0].self_attn.q_proj.weight = nn.Parameter(torch.tensor([10.0, 20.0, 30.0]))
+    flat_param = nn.Parameter(torch.empty(0))
+    flat_param._param_infos = (ParamInfo("weight", model.model.layers[0].self_attn.q_proj, "self_attn.q_proj"),)
+    flat_param._shard_param_infos = (ShardInfo(True, 0, 3, 2, 4),)
+    model.model.layers[0]._handle = type("Handle", (), {"flat_param": flat_param})()
+
+    full_mask = torch.tensor([[True, False, True], [False, True, False]])
+    manager = SparseUpdateMaskManager(
+        model, {"model.layers.0.self_attn.q_proj.weight": full_mask}, {"enabled": True, "strict_load": True}
+    )
+
+    assert torch.equal(manager.local_masks["model.layers.0.self_attn.q_proj.weight"], torch.tensor([True, False, True]))
+
+
+def test_manager_supports_empty_fsdp_original_param_local_shard():
+    ParamInfo = namedtuple("ParamInfo", ["param_name", "module", "module_name"])
+    ShardInfo = namedtuple(
+        "ShardInfo", ["in_shard", "offset_in_shard", "numel_in_shard", "intra_param_start_idx", "intra_param_end_idx"]
+    )
+
+    model = nn.Module()
+    model.q_proj = nn.Module()
+    model.q_proj.weight = nn.Parameter(torch.tensor([]))
+    flat_param = nn.Parameter(torch.empty(0))
+    flat_param._param_infos = (ParamInfo("weight", model.q_proj, "q_proj"),)
+    flat_param._shard_param_infos = (ShardInfo(False, None, None, None, None),)
+    model._all_handles = [type("Handle", (), {"flat_param": flat_param})()]
+
+    full_mask = torch.tensor([[True, False, True], [False, True, False]])
+    manager = SparseUpdateMaskManager(model, {"q_proj.weight": full_mask}, {"enabled": True, "strict_load": True})
+
+    assert torch.equal(manager.local_masks["q_proj.weight"], torch.empty(0, dtype=torch.bool))
+    assert manager.num_missing_masks == 0
+    assert manager.num_shape_mismatches == 0
+
+
 def test_random_same_density_is_deterministic_from_seed():
     class TinyModel(nn.Module):
         def __init__(self):
