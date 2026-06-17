@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=grpo_metamath_multinode
+#SBATCH --job-name=grpo_1d5
 #SBATCH --account=ECS26006
 #SBATCH --partition=gh
 #SBATCH --nodes=4

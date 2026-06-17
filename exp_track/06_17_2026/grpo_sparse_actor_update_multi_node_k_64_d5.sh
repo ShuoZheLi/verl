@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=grpo_1d5_sparse_actor_update_multi_node_k_128_d5
+#SBATCH --job-name=grpo_1d5_sparse_actor_update_multi_node_k_64_d5
 #SBATCH --account=ECS26006
 #SBATCH --partition=gh
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
 #SBATCH --time=15:00:00
-#SBATCH --output=slurm-%j_grpo_1d5_sparse_actor_update_multi_node_k_128_d5.out
-#SBATCH --error=slurm-%j_grpo_1d5_sparse_actor_update_multi_node_k_128_d5.err
+#SBATCH --output=slurm-%j_grpo_1d5_sparse_actor_update_multi_node_k_64_d5.out
+#SBATCH --error=slurm-%j_grpo_1d5_sparse_actor_update_multi_node_k_64_d5.err
 
 set -euo pipefail
 
@@ -48,7 +48,7 @@ python3 -V
 # -----------------------------
 # Run identity
 # -----------------------------
-RUN_NAME="grpo_1d5_sparse_actor_update_multi_node_k_128_d5"
+RUN_NAME="grpo_1d5_sparse_actor_update_multi_node_k_64_d5"
 REAL_SLURM_JOB_ID="${SLURM_JOB_ID}"
 RUN_ID="${RUN_NAME}_${REAL_SLURM_JOB_ID}"
 
@@ -83,7 +83,7 @@ TRAIN_STDOUT_LOG="${TRAIN_LOG_DIR}/job_${RUN_ID}.txt"
 # Sparse update config
 # -----------------------------
 SPARSE_UPDATE_MODE="${SPARSE_UPDATE_MODE:-safe_svd_lowmag}"
-SPARSE_UPDATE_RANK_K="${SPARSE_UPDATE_RANK_K:-128}"
+SPARSE_UPDATE_RANK_K="${SPARSE_UPDATE_RANK_K:-64}"
 SPARSE_UPDATE_ALPHA_PRINC="${SPARSE_UPDATE_ALPHA_PRINC:-0.5}"
 SPARSE_UPDATE_ALPHA_LOW="${SPARSE_UPDATE_ALPHA_LOW:-0.5}"
 SPARSE_UPDATE_MASK_PATH="${SPARSE_UPDATE_MASK_PATH:-}"
