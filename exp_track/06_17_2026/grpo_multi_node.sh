@@ -32,7 +32,15 @@ export TIKTOKEN_ENCODINGS_BASE
 
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=true
-export HYDRA_FULL_ERROR=0
+export HYDRA_FULL_ERROR=1
+export RAY_DEDUP_LOGS=0
+export VLLM_LOGGING_LEVEL=INFO
+export VLLM_NO_USAGE_STATS=1
+
+# Put Ray logs under the run scratch tree so vLLM EngineCore child-process
+# crashes are archived. The top-level traceback often only says EngineDeadError.
+export RAY_TMPDIR_ROOT="${SCRATCH}/ray_tmp/${SLURM_JOB_ID}"
+mkdir -p "$RAY_TMPDIR_ROOT"
 
 # You had both 0 and 1 before; the later one wins anyway.
 # Keep only one to avoid confusion.
@@ -58,6 +66,15 @@ RUN_ID="${RUN_NAME}_${REAL_SLURM_JOB_ID}"
 # When true, math_dapo incorrect answers get reward 0.0 instead of -1.0.
 MATH_DAPO_BINARY_REWARD=true
 POLICY_INIT_CKPT="/work2/09576/shuozhe/saved_model/Qwen2.5-1.5B"
+
+# Qwen2.5 advertises a 131072-token context window. This experiment only uses
+# 2048 prompt + 2048 response tokens, so cap vLLM to the actual rollout budget.
+# Leaving this uncapped made vLLM initialize with max_seq_len=131072 in the
+# failing job log.
+ROLLOUT_MAX_MODEL_LEN=4096
+ROLLOUT_MAX_NUM_SEQS=128
+ROLLOUT_MAX_NUM_BATCHED_TOKENS=8192
+ROLLOUT_GPU_MEMORY_UTILIZATION=0.4
 
 TRAIN_FILE="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/train.parquet"
 VAL_FILE="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet"
@@ -134,6 +151,18 @@ stop_ray_all_nodes() {
   done
 }
 
+archive_ray_logs() {
+  if [[ ${#nodes_array[@]} -eq 0 ]]; then
+    return 0
+  fi
+  mkdir -p "$LOG_DIR/ray"
+  for node in "${nodes_array[@]}"; do
+    srun --nodes=1 --ntasks=1 -w "$node" \
+      bash -c "for d in '${RAY_TMPDIR_ROOT}'/\$(hostname -s)/session_latest /tmp/ray/session_latest; do if [[ -d \"\$d/logs\" ]]; then tar -C \"\$d\" -czf - logs; exit 0; fi; done; exit 1" \
+      > "$LOG_DIR/ray/${node}.tar.gz" 2> "$LOG_DIR/ray/${node}.tar.err" || true
+  done
+}
+
 
 count_alive_ray_nodes() {
   local ray_address="$1"
@@ -157,6 +186,7 @@ PY
 
 cleanup() {
   echo "Stopping Ray on all nodes..."
+  archive_ray_logs || true
   stop_ray_all_nodes || true
   sync_to_work
 }
@@ -175,6 +205,10 @@ echo "RUN_DIR: $RUN_DIR"
 echo "LOG_DIR: $LOG_DIR"
 describe_path "POLICY_INIT_CKPT" "$POLICY_INIT_CKPT"
 describe_path "POLICY_MODEL_PATH" "$POLICY_MODEL_PATH"
+echo "ROLLOUT_MAX_MODEL_LEN: $ROLLOUT_MAX_MODEL_LEN"
+echo "ROLLOUT_MAX_NUM_SEQS: $ROLLOUT_MAX_NUM_SEQS"
+echo "ROLLOUT_MAX_NUM_BATCHED_TOKENS: $ROLLOUT_MAX_NUM_BATCHED_TOKENS"
+echo "ROLLOUT_GPU_MEMORY_UTILIZATION: $ROLLOUT_GPU_MEMORY_UTILIZATION"
 echo "Checking inputs..."
 ls -ld "$WORK_DIR"
 ls -lh "$TRAIN_FILE"
@@ -225,9 +259,12 @@ RAY_GPUS_PER_NODE=1
 echo "Starting Ray head..."
 srun --nodes=1 --ntasks=1 -w "$head_node" \
   bash -c "source '${VENV}/bin/activate' && \
+           node_ray_tmp='${RAY_TMPDIR_ROOT}'/\$(hostname -s) && \
+           mkdir -p \"\$node_ray_tmp\" && \
            ray start --head \
            --node-ip-address='${head_node_ip}' \
            --port='${port}' \
+           --temp-dir=\"\$node_ray_tmp\" \
            --num-cpus='${SLURM_CPUS_PER_TASK}' \
            --num-gpus='${RAY_GPUS_PER_NODE}'" \
   > "$LOG_DIR/ray_head.log" 2>&1 &
@@ -260,7 +297,10 @@ for ((i = 1; i <= worker_num; i++)); do
 
   srun --nodes=1 --ntasks=1 -w "$node_i" \
     bash -c "source '${VENV}/bin/activate' && \
+             node_ray_tmp='${RAY_TMPDIR_ROOT}'/\$(hostname -s) && \
+             mkdir -p \"\$node_ray_tmp\" && \
              ray start --address '${ip_head}' \
+             --temp-dir=\"\$node_ray_tmp\" \
              --num-cpus='${SLURM_CPUS_PER_TASK}' \
              --num-gpus='${RAY_GPUS_PER_NODE}'" \
     > "$LOG_DIR/ray_worker_${i}.log" 2>&1 &
@@ -324,15 +364,20 @@ python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
   actor_rollout_ref.actor.calculate_sum_pi_squared=True \
   actor_rollout_ref.actor.fsdp_config.param_offload=False \
+  actor_rollout_ref.actor.fsdp_config.use_orig_params=True \
   actor_rollout_ref.actor.use_kl_loss=False \
   actor_rollout_ref.ref.fsdp_config.param_offload=True \
   actor_rollout_ref.rollout.name=vllm \
   actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
   actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
-  actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
+  actor_rollout_ref.rollout.max_model_len="${ROLLOUT_MAX_MODEL_LEN}" \
+  actor_rollout_ref.rollout.max_num_seqs="${ROLLOUT_MAX_NUM_SEQS}" \
+  actor_rollout_ref.rollout.max_num_batched_tokens="${ROLLOUT_MAX_NUM_BATCHED_TOKENS}" \
+  actor_rollout_ref.rollout.gpu_memory_utilization="${ROLLOUT_GPU_MEMORY_UTILIZATION}" \
   actor_rollout_ref.rollout.enforce_eager=True \
   actor_rollout_ref.rollout.free_cache_engine=True \
   actor_rollout_ref.rollout.enable_chunked_prefill=True \
+  actor_rollout_ref.rollout.enable_prefix_caching=False \
   actor_rollout_ref.rollout.n=8 \
   actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=4096 \
   actor_rollout_ref.hybrid_engine=True \
