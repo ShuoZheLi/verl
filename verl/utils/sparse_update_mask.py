@@ -191,6 +191,7 @@ def build_masks_from_model(model: nn.Module, config: Any) -> dict[str, torch.Boo
     apply_to_bias = bool(_cfg_get(config, "apply_to_bias", False))
     svd_device = _cfg_get(config, "svd_device", None)
     dry_run = bool(_cfg_get(config, "dry_run_log_only", False))
+    seed = int(_cfg_get(config, "seed", 42))
 
     masks: dict[str, torch.BoolTensor] = {}
     skipped: dict[str, str] = {}
@@ -216,6 +217,9 @@ def build_masks_from_model(model: nn.Module, config: Any) -> dict[str, torch.Boo
             alpha_low=alpha_low,
             mode=mode,
             svd_device=svd_device,
+            generator=torch.Generator(device=torch.device(svd_device) if svd_device is not None else param.device).manual_seed(
+                seed + sum(ord(ch) for ch in canonical_name)
+            ),
         )
         masks[canonical_name] = mask
         logger.info("sparse_update mask %s trainable_fraction=%.6f", canonical_name, mask.float().mean().item())
@@ -484,6 +488,7 @@ class SparseUpdateMaskManager:
     def state_dict(self) -> dict[str, Any]:
         return {
             "masks": {name: mask.detach().cpu().bool() for name, mask in self.masks.items()},
+            "local_masks": {name: mask.detach().cpu().bool() for name, mask in self.local_masks.items()},
             "original_params": {name: tensor.detach().cpu() for name, tensor in self.original_params.items()},
             "metadata": self.metadata,
             "step": self._step,
@@ -492,6 +497,8 @@ class SparseUpdateMaskManager:
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
         if "masks" in state:
             self.masks = {str(name): tensor.detach().cpu().bool() for name, tensor in state["masks"].items()}
+        if "local_masks" in state:
+            self.local_masks = {str(name): tensor.detach().cpu().bool() for name, tensor in state["local_masks"].items()}
         if "original_params" in state:
             self.original_params = {str(name): tensor.detach().cpu() for name, tensor in state["original_params"].items()}
         self.metadata = dict(state.get("metadata", self.metadata))

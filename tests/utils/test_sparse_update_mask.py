@@ -6,6 +6,7 @@ from torch import nn
 from verl.utils.sparse_update_mask import (
     SparseUpdateMaskManager,
     bottom_fraction_mask,
+    build_masks_from_model,
     build_safe_svd_lowmag_mask_for_tensor,
     load_sparse_masks,
     save_sparse_masks,
@@ -125,3 +126,30 @@ def test_manager_supports_fsdp_original_param_local_shard():
     optimizer.step()
     manager.restore_frozen_params()
     assert model.q_proj.weight[1].item() == 20.0
+
+    state = manager.state_dict()
+    assert torch.equal(state["local_masks"]["q_proj.weight"], torch.tensor([True, False, True]))
+    manager.load_state_dict(state)
+    assert torch.equal(manager.local_masks["q_proj.weight"], torch.tensor([True, False, True]))
+
+
+def test_random_same_density_is_deterministic_from_seed():
+    class TinyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q_proj = nn.Linear(4, 4, bias=False)
+
+    torch.manual_seed(0)
+    model = TinyModel()
+    config = {
+        "mode": "random_same_density",
+        "rank_k": 2,
+        "alpha_princ": 0.5,
+        "alpha_low": 0.5,
+        "target_modules": ["q_proj"],
+        "exclude_keywords": [],
+        "seed": 123,
+    }
+    masks_a = build_masks_from_model(model, config)
+    masks_b = build_masks_from_model(model, config)
+    assert torch.equal(masks_a["q_proj.weight"], masks_b["q_proj.weight"])

@@ -705,7 +705,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         elif build_mask_on_init:
             masks = build_masks_from_model(model, sparse_update_config)
             metadata = sparse_mask_metadata(masks, sparse_update_config)
-            if save_mask_path:
+            if save_mask_path and self.rank == 0:
                 save_sparse_masks(save_mask_path, masks, metadata)
                 metadata["save_mask_path"] = save_mask_path
         else:
@@ -723,6 +723,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             )
             for name, density in list(metadata.get("per_param_density", {}).items())[:20]:
                 print(f"sparse_update layer {name}: trainable_fraction={density:.6f}")
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
         return masks, metadata
 
     def _build_sparse_update_manager(self, model, sparse_update_config, masks=None, metadata=None):

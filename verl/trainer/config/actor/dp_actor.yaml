@@ -158,3 +158,6 @@ sparse_update:
 
   # Fail if loaded masks and model parameters do not match.
   strict_load: true
+
+  # Seed used for random_same_density masks.
+  seed: 42

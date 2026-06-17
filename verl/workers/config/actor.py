@@ -121,6 +121,7 @@ class SparseUpdateConfig(BaseConfig):
     dry_run_log_only: bool = False
     svd_device: Optional[str] = None
     strict_load: bool = True
+    seed: int = 42
 
 
 @dataclass

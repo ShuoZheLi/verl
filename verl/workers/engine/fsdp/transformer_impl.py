@@ -462,11 +462,13 @@ class FSDPEngine(BaseEngine):
         elif build_mask_on_init:
             masks = build_masks_from_model(module, self.sparse_update_config)
             metadata = sparse_mask_metadata(masks, self.sparse_update_config)
-            if save_mask_path:
+            if save_mask_path and self.rank == 0:
                 save_sparse_masks(save_mask_path, masks, metadata)
                 metadata["save_mask_path"] = save_mask_path
         else:
             raise ValueError("sparse_update.enabled=true requires either mask_path or build_mask_on_init=true.")
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
         return masks, metadata
 
     def _build_model_optimizer(self):
