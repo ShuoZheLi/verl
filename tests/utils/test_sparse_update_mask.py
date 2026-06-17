@@ -1,3 +1,5 @@
+from collections import namedtuple
+
 import torch
 from torch import nn
 
@@ -92,6 +94,34 @@ def test_manager_fails_on_local_shard_shape_mismatch():
     try:
         SparseUpdateMaskManager(model, {"weight": mask}, {"enabled": True, "strict_load": True})
     except ValueError as exc:
-        assert "full-shape parameters" in str(exc)
+        assert "could not find FSDP shard metadata" in str(exc)
     else:
         raise AssertionError("Expected local shard/full mask shape mismatch to fail loudly")
+
+
+def test_manager_supports_fsdp_original_param_local_shard():
+    ParamInfo = namedtuple("ParamInfo", ["param_name", "module", "module_name"])
+    ShardInfo = namedtuple(
+        "ShardInfo", ["in_shard", "offset_in_shard", "numel_in_shard", "intra_param_start_idx", "intra_param_end_idx"]
+    )
+
+    model = nn.Module()
+    model.q_proj = nn.Module()
+    model.q_proj.weight = nn.Parameter(torch.tensor([10.0, 20.0, 30.0]))
+    flat_param = nn.Parameter(torch.empty(0))
+    flat_param._param_infos = (ParamInfo("weight", model.q_proj, "q_proj"),)
+    flat_param._shard_param_infos = (ShardInfo(True, 0, 3, 2, 4),)
+    model._handle = type("Handle", (), {"flat_param": flat_param})()
+
+    full_mask = torch.tensor([[True, False, True], [False, True, False]])
+    manager = SparseUpdateMaskManager(model, {"q_proj.weight": full_mask}, {"enabled": True, "strict_load": True})
+    assert torch.equal(manager.local_masks["q_proj.weight"], torch.tensor([True, False, True]))
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.1, weight_decay=0.1)
+    optimizer.zero_grad(set_to_none=True)
+    model.q_proj.weight.grad = torch.ones_like(model.q_proj.weight)
+    manager.apply_grad_mask()
+    assert torch.equal(model.q_proj.weight.grad, torch.tensor([1.0, 0.0, 1.0]))
+    optimizer.step()
+    manager.restore_frozen_params()
+    assert model.q_proj.weight[1].item() == 20.0

@@ -6,8 +6,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
 #SBATCH --time=00:20:00
-#SBATCH --output=slurm-%j.out
-#SBATCH --error=slurm-%j.err
+#SBATCH --output=slurm-%j_grpo_1d5_sparse_actor_update_multi_node_k_128_d5.out
+#SBATCH --error=slurm-%j_grpo_1d5_sparse_actor_update_multi_node_k_128_d5.err
 
 set -euo pipefail
 
@@ -48,7 +48,7 @@ python3 -V
 # -----------------------------
 # Run identity
 # -----------------------------
-RUN_NAME="05b_grpo_sparse_safe_svd_lowmag"
+RUN_NAME="grpo_1d5_sparse_actor_update_multi_node_k_128_d5"
 REAL_SLURM_JOB_ID="${SLURM_JOB_ID}"
 RUN_ID="${RUN_NAME}_${REAL_SLURM_JOB_ID}"
 

@@ -2,12 +2,12 @@
 #SBATCH --job-name=grpo_metamath_multinode
 #SBATCH --account=ECS26006
 #SBATCH --partition=gh
-#SBATCH --nodes=8
+#SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=03:00:00
-#SBATCH --output=slurm-%j.out
-#SBATCH --error=slurm-%j.err
+#SBATCH --time=15:00:00
+#SBATCH --output=slurm-%j_grpo_1d5.out
+#SBATCH --error=slurm-%j_grpo_1d5.err
 
 set -euo pipefail
 
@@ -48,7 +48,7 @@ python3 -V
 # -----------------------------
 # Run identity
 # -----------------------------
-RUN_NAME="05b_grpo_dsk-1d5b"
+RUN_NAME="grpo_1d5"
 REAL_SLURM_JOB_ID="${SLURM_JOB_ID}"
 RUN_ID="${RUN_NAME}_${REAL_SLURM_JOB_ID}"
 
@@ -57,7 +57,7 @@ RUN_ID="${RUN_NAME}_${REAL_SLURM_JOB_ID}"
 # -----------------------------
 # When true, math_dapo incorrect answers get reward 0.0 instead of -1.0.
 MATH_DAPO_BINARY_REWARD=true
-POLICY_INIT_CKPT="/work2/09576/shuozhe/saved_model/Qwen2.5-0.5B"
+POLICY_INIT_CKPT="/work2/09576/shuozhe/saved_model/Qwen2.5-1.5B"
 
 TRAIN_FILE="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/train.parquet"
 VAL_FILE="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet"

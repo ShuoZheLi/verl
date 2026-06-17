@@ -104,6 +104,26 @@ def should_mask_param(
     return True
 
 
+def should_mask_param_name(
+    name: str,
+    target_modules: Optional[list[str]] = None,
+    exclude_keywords: Optional[list[str]] = None,
+    apply_to_bias: bool = False,
+) -> bool:
+    canonical_name = _canonical_name(name).lower()
+    target_modules = _as_list(target_modules, DEFAULT_TARGET_MODULES)
+    exclude_keywords = _as_list(exclude_keywords, DEFAULT_EXCLUDE_KEYWORDS)
+    if any(keyword.lower() in canonical_name for keyword in exclude_keywords):
+        return False
+    if canonical_name.endswith(".bias"):
+        return apply_to_bias and any(f".{target.lower()}." in f".{canonical_name}" for target in target_modules)
+    if not canonical_name.endswith(".weight"):
+        return False
+    if target_modules and not any(f".{target.lower()}." in f".{canonical_name}" for target in target_modules):
+        return False
+    return True
+
+
 def _rank_k_reconstruction(weight: torch.Tensor, rank_k: int) -> torch.Tensor:
     max_rank = min(weight.shape)
     if max_rank <= 0:
@@ -261,12 +281,30 @@ class SparseUpdateMaskManager:
         self.masks = { _canonical_name(name): mask.detach().cpu().bool() for name, mask in masks.items() }
         self.metadata = metadata or sparse_mask_metadata(self.masks, config)
         self.original_params: dict[str, torch.Tensor] = {}
+        self.local_masks: dict[str, torch.BoolTensor] = {}
         self.num_missing_masks = 0
         self.num_shape_mismatches = 0
         self._step = 0
         self._param_names_by_id: dict[int, str] = {}
+        self._fsdp_shard_infos_by_name = self._collect_fsdp_shard_infos_by_name(model)
         if self.enabled:
             self._initialize_original_params()
+
+    def _collect_fsdp_shard_infos_by_name(self, model: nn.Module) -> dict[str, Any]:
+        shard_infos = {}
+        for module in model.modules():
+            handle = getattr(module, "_handle", None)
+            flat_param = getattr(handle, "flat_param", None)
+            param_infos = getattr(flat_param, "_param_infos", None)
+            shard_param_infos = getattr(flat_param, "_shard_param_infos", None)
+            if param_infos is None or shard_param_infos is None:
+                continue
+            for param_info, shard_param_info in zip(param_infos, shard_param_infos):
+                param_name = getattr(param_info, "param_name", param_info[0])
+                module_name = getattr(param_info, "module_name", param_info[2])
+                full_name = f"{module_name}.{param_name}" if module_name else param_name
+                shard_infos[_canonical_name(full_name)] = shard_param_info
+        return shard_infos
 
     def _iter_named_masked_params(self):
         for name, param in self.model.named_parameters():
@@ -282,6 +320,9 @@ class SparseUpdateMaskManager:
             _cfg_get(self.config, "exclude_keywords", DEFAULT_EXCLUDE_KEYWORDS), DEFAULT_EXCLUDE_KEYWORDS
         )
         apply_to_bias = bool(_cfg_get(self.config, "apply_to_bias", False))
+        for name in self._fsdp_shard_infos_by_name:
+            if should_mask_param_name(name, target_modules, exclude_keywords, apply_to_bias):
+                target_param_names.add(name)
         for name, param in self.model.named_parameters():
             canonical_name = _canonical_name(name)
             if param.ndim == 1 and "flat_param" in canonical_name:
@@ -294,17 +335,15 @@ class SparseUpdateMaskManager:
             if canonical_name not in self.masks:
                 continue
             mask = self.masks[canonical_name]
+            local_mask = mask
             if tuple(mask.shape) != tuple(param.shape):
+                local_mask = self._maybe_make_local_shard_mask(canonical_name, param, mask)
+            if tuple(local_mask.shape) != tuple(param.shape):
                 self.num_shape_mismatches += 1
-                if param.ndim == 1 or param.numel() < mask.numel():
-                    raise ValueError(
-                        "sparse_update currently requires named unflattened full-shape parameters for FSDP "
-                        "(for FSDP1 use use_orig_params=True and a compatible sharding mode). "
-                        f"Parameter {canonical_name} has local shape {tuple(param.shape)} but mask shape {tuple(mask.shape)}."
-                    )
                 raise ValueError(
                     f"sparse_update mask shape mismatch for {canonical_name}: mask {tuple(mask.shape)} vs param {tuple(param.shape)}"
                 )
+            self.local_masks[canonical_name] = local_mask.detach().cpu().bool()
             self.original_params[canonical_name] = param.detach().cpu().clone()
             self._param_names_by_id[id(param)] = canonical_name
             seen.add(canonical_name)
@@ -326,8 +365,34 @@ class SparseUpdateMaskManager:
         if uncovered:
             logger.warning("sparse_update missing masks for target params: %s", uncovered[:10])
 
+    def _maybe_make_local_shard_mask(self, name: str, param: torch.Tensor, full_mask: torch.BoolTensor) -> torch.BoolTensor:
+        shard_info = self._fsdp_shard_infos_by_name.get(name)
+        if shard_info is None:
+            self.num_shape_mismatches += 1
+            raise ValueError(
+                "sparse_update could not find FSDP shard metadata for parameter "
+                f"{name} with local shape {tuple(param.shape)} and full mask shape {tuple(full_mask.shape)}."
+            )
+        if not shard_info.in_shard:
+            if param.numel() != 0:
+                raise ValueError(
+                    f"sparse_update expected empty local shard for {name}, got shape {tuple(param.shape)}."
+                )
+            return torch.empty(0, dtype=torch.bool)
+        start = shard_info.intra_param_start_idx
+        end = shard_info.intra_param_end_idx
+        if start is None or end is None:
+            raise ValueError(f"sparse_update missing FSDP shard indices for {name}.")
+        local_mask = full_mask.reshape(-1)[start : end + 1].contiguous()
+        if local_mask.numel() != param.numel():
+            raise ValueError(
+                f"sparse_update local shard mask for {name} has {local_mask.numel()} entries, "
+                f"but parameter local shard has {param.numel()} entries."
+            )
+        return local_mask
+
     def _mask_for_param(self, name: str, param: torch.Tensor) -> torch.Tensor:
-        return self.masks[name].to(device=param.device, dtype=torch.bool)
+        return self.local_masks[name].to(device=param.device, dtype=torch.bool)
 
     def _original_for_param(self, name: str, param: torch.Tensor) -> torch.Tensor:
         return self.original_params[name].to(device=param.device, dtype=param.dtype)
