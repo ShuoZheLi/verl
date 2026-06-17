@@ -40,6 +40,16 @@ def _canonical_name(name: str) -> str:
     return name.replace(FSDP_PREFIX, "")
 
 
+def _name_aliases(name: str) -> list[str]:
+    canonical_name = _canonical_name(name)
+    aliases = [canonical_name]
+    if canonical_name.startswith("model."):
+        aliases.append(canonical_name[len("model.") :])
+    else:
+        aliases.append(f"model.{canonical_name}")
+    return list(dict.fromkeys(aliases))
+
+
 def _validate_alpha(alpha: float, name: str) -> float:
     alpha = float(alpha)
     if alpha < 0 or alpha > 1:
@@ -310,10 +320,28 @@ class SparseUpdateMaskManager:
                 shard_infos[_canonical_name(full_name)] = shard_param_info
         return shard_infos
 
+    def _get_fsdp_shard_info(self, name: str) -> Any:
+        for alias in _name_aliases(name):
+            shard_info = self._fsdp_shard_infos_by_name.get(alias)
+            if shard_info is not None:
+                return shard_info
+        return None
+
+    def _get_mask(self, name: str) -> Optional[torch.BoolTensor]:
+        for alias in _name_aliases(name):
+            mask = self.masks.get(alias)
+            if mask is not None:
+                return mask
+        return None
+
+    @staticmethod
+    def _has_seen_alias(name: str, seen: set[str]) -> bool:
+        return any(alias in seen for alias in _name_aliases(name))
+
     def _iter_named_masked_params(self):
         for name, param in self.model.named_parameters():
             canonical_name = _canonical_name(name)
-            if canonical_name in self.masks:
+            if self._get_mask(canonical_name) is not None:
                 yield canonical_name, param
 
     def _initialize_original_params(self) -> None:
@@ -336,9 +364,9 @@ class SparseUpdateMaskManager:
                 )
             if should_mask_param(canonical_name, param, target_modules, exclude_keywords, apply_to_bias):
                 target_param_names.add(canonical_name)
-            if canonical_name not in self.masks:
+            mask = self._get_mask(canonical_name)
+            if mask is None:
                 continue
-            mask = self.masks[canonical_name]
             local_mask = mask
             if tuple(mask.shape) != tuple(param.shape):
                 local_mask = self._maybe_make_local_shard_mask(canonical_name, param, mask)
@@ -351,8 +379,8 @@ class SparseUpdateMaskManager:
             self.original_params[canonical_name] = param.detach().cpu().clone()
             self._param_names_by_id[id(param)] = canonical_name
             seen.add(canonical_name)
-        missing = sorted(set(self.masks) - seen)
-        uncovered = sorted(target_param_names - seen)
+        missing = sorted(name for name in self.masks if not self._has_seen_alias(name, seen))
+        uncovered = sorted(name for name in target_param_names if not self._has_seen_alias(name, seen))
         self.num_missing_masks = len(missing) + len(uncovered)
         if missing and self.strict_load:
             raise ValueError(
@@ -370,7 +398,7 @@ class SparseUpdateMaskManager:
             logger.warning("sparse_update missing masks for target params: %s", uncovered[:10])
 
     def _maybe_make_local_shard_mask(self, name: str, param: torch.Tensor, full_mask: torch.BoolTensor) -> torch.BoolTensor:
-        shard_info = self._fsdp_shard_infos_by_name.get(name)
+        shard_info = self._get_fsdp_shard_info(name)
         if shard_info is None:
             self.num_shape_mismatches += 1
             raise ValueError(
@@ -418,7 +446,7 @@ class SparseUpdateMaskManager:
         for group in optimizer.param_groups:
             for param in group["params"]:
                 name = self._param_names_by_id.get(id(param))
-                if name is None or name not in self.masks:
+                if name is None or name not in self.local_masks:
                     continue
                 mask = self._mask_for_param(name, param)
                 state = optimizer.state.get(param, {})
