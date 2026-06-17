@@ -37,10 +37,9 @@ export RAY_DEDUP_LOGS=0
 export VLLM_LOGGING_LEVEL=INFO
 export VLLM_NO_USAGE_STATS=1
 
-# Put Ray logs under the run scratch tree so vLLM EngineCore child-process
-# crashes are archived. The top-level traceback often only says EngineDeadError.
-export RAY_TMPDIR_ROOT="${SCRATCH}/ray_tmp/${SLURM_JOB_ID}"
-mkdir -p "$RAY_TMPDIR_ROOT"
+# Keep Ray temp paths short: Ray creates Unix socket paths under this directory,
+# and long scratch paths can exceed the 107-byte AF_UNIX limit.
+export RAY_TMPDIR_ROOT="/tmp/ray_${SLURM_JOB_ID}"
 
 # You had both 0 and 1 before; the later one wins anyway.
 # Keep only one to avoid confusion.
@@ -158,7 +157,7 @@ archive_ray_logs() {
   mkdir -p "$LOG_DIR/ray"
   for node in "${nodes_array[@]}"; do
     srun --nodes=1 --ntasks=1 -w "$node" \
-      bash -c "for d in '${RAY_TMPDIR_ROOT}'/\$(hostname -s)/session_latest /tmp/ray/session_latest; do if [[ -d \"\$d/logs\" ]]; then tar -C \"\$d\" -czf - logs; exit 0; fi; done; exit 1" \
+      bash -c "for d in '${RAY_TMPDIR_ROOT}'/session_latest /tmp/ray/session_latest; do if [[ -d \"\$d/logs\" ]]; then tar -C \"\$d\" -czf - logs; exit 0; fi; done; exit 1" \
       > "$LOG_DIR/ray/${node}.tar.gz" 2> "$LOG_DIR/ray/${node}.tar.err" || true
   done
 }
@@ -259,8 +258,8 @@ RAY_GPUS_PER_NODE=1
 echo "Starting Ray head..."
 srun --nodes=1 --ntasks=1 -w "$head_node" \
   bash -c "source '${VENV}/bin/activate' && \
-           node_ray_tmp='${RAY_TMPDIR_ROOT}'/\$(hostname -s) && \
-           mkdir -p \"\$node_ray_tmp\" && \
+           node_ray_tmp='${RAY_TMPDIR_ROOT}' && \
+           rm -rf \"\$node_ray_tmp\" && mkdir -p \"\$node_ray_tmp\" && \
            ray start --head \
            --node-ip-address='${head_node_ip}' \
            --port='${port}' \
@@ -297,8 +296,8 @@ for ((i = 1; i <= worker_num; i++)); do
 
   srun --nodes=1 --ntasks=1 -w "$node_i" \
     bash -c "source '${VENV}/bin/activate' && \
-             node_ray_tmp='${RAY_TMPDIR_ROOT}'/\$(hostname -s) && \
-             mkdir -p \"\$node_ray_tmp\" && \
+             node_ray_tmp='${RAY_TMPDIR_ROOT}' && \
+             rm -rf \"\$node_ray_tmp\" && mkdir -p \"\$node_ray_tmp\" && \
              ray start --address '${ip_head}' \
              --temp-dir=\"\$node_ray_tmp\" \
              --num-cpus='${SLURM_CPUS_PER_TASK}' \
