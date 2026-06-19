@@ -32,11 +32,12 @@ export TIKTOKEN_ENCODINGS_BASE
 
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=true
-export HYDRA_FULL_ERROR=0
+export HYDRA_FULL_ERROR=1
 
 # You had both 0 and 1 before; the later one wins anyway.
 # Keep only one to avoid confusion.
 export VLLM_USE_V1=1
+export RAY_DEDUP_LOGS=0
 
 export WANDB_PROJECT="GRPO_midi"
 
@@ -61,6 +62,20 @@ POLICY_INIT_CKPT="/work2/09576/shuozhe/saved_model/Qwen2.5-1.5B"
 
 TRAIN_FILE="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/train.parquet"
 VAL_FILE="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet"
+
+MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-2048}"
+MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-2048}"
+ROLLOUT_N="${ROLLOUT_N:-8}"
+TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-32}"
+
+# Qwen2.5 advertises a 131072-token context, and verl/vLLM uses that when
+# rollout.max_model_len is left null. This job only trains with 2048+2048
+# tokens, so cap vLLM to the actual rollout length to avoid oversized KV-cache
+# planning and late EngineCore deaths under memory pressure.
+ROLLOUT_MAX_MODEL_LEN="${ROLLOUT_MAX_MODEL_LEN:-$((MAX_PROMPT_LENGTH + MAX_RESPONSE_LENGTH))}"
+ROLLOUT_MAX_NUM_BATCHED_TOKENS="${ROLLOUT_MAX_NUM_BATCHED_TOKENS:-${ROLLOUT_MAX_MODEL_LEN}}"
+ROLLOUT_MAX_NUM_SEQS="${ROLLOUT_MAX_NUM_SEQS:-256}"
+ROLLOUT_GPU_MEMORY_UTILIZATION="${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.4}"
 
 WORK_DIR="/work2/09576/shuozhe/verl"
 export PYTHONPATH="${WORK_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
@@ -214,6 +229,14 @@ echo "SPARSE_UPDATE_MODE: $SPARSE_UPDATE_MODE"
 echo "SPARSE_UPDATE_RANK_K: $SPARSE_UPDATE_RANK_K"
 echo "SPARSE_UPDATE_MASK_PATH: ${SPARSE_UPDATE_MASK_PATH:-<build on init>}"
 echo "SPARSE_UPDATE_SAVE_MASK_PATH: $SPARSE_UPDATE_SAVE_MASK_PATH"
+echo "MAX_PROMPT_LENGTH: $MAX_PROMPT_LENGTH"
+echo "MAX_RESPONSE_LENGTH: $MAX_RESPONSE_LENGTH"
+echo "ROLLOUT_N: $ROLLOUT_N"
+echo "TRAIN_BATCH_SIZE: $TRAIN_BATCH_SIZE"
+echo "ROLLOUT_MAX_MODEL_LEN: $ROLLOUT_MAX_MODEL_LEN"
+echo "ROLLOUT_MAX_NUM_BATCHED_TOKENS: $ROLLOUT_MAX_NUM_BATCHED_TOKENS"
+echo "ROLLOUT_MAX_NUM_SEQS: $ROLLOUT_MAX_NUM_SEQS"
+echo "ROLLOUT_GPU_MEMORY_UTILIZATION: $ROLLOUT_GPU_MEMORY_UTILIZATION"
 
 echo "Checking inputs..."
 ls -ld "$WORK_DIR"
@@ -355,9 +378,9 @@ python3 -m verl.trainer.main_ppo \
   data.train_files="$TRAIN_FILE" \
   data.val_files="$VAL_FILE" \
   data.prompt_key=prompt \
-  data.train_batch_size=32 \
-  data.max_prompt_length=2048 \
-  data.max_response_length=2048 \
+  data.train_batch_size="${TRAIN_BATCH_SIZE}" \
+  data.max_prompt_length="${MAX_PROMPT_LENGTH}" \
+  data.max_response_length="${MAX_RESPONSE_LENGTH}" \
   actor_rollout_ref.model.path="$POLICY_MODEL_PATH" \
   actor_rollout_ref.actor.optim.lr=1e-6 \
   actor_rollout_ref.actor.ppo_mini_batch_size=32 \
@@ -370,11 +393,14 @@ python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.rollout.name=vllm \
   actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
   actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
-  actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
+  actor_rollout_ref.rollout.gpu_memory_utilization="${ROLLOUT_GPU_MEMORY_UTILIZATION}" \
   actor_rollout_ref.rollout.enforce_eager=True \
   actor_rollout_ref.rollout.free_cache_engine=True \
   actor_rollout_ref.rollout.enable_chunked_prefill=True \
-  actor_rollout_ref.rollout.n=8 \
+  actor_rollout_ref.rollout.max_model_len="${ROLLOUT_MAX_MODEL_LEN}" \
+  actor_rollout_ref.rollout.max_num_batched_tokens="${ROLLOUT_MAX_NUM_BATCHED_TOKENS}" \
+  actor_rollout_ref.rollout.max_num_seqs="${ROLLOUT_MAX_NUM_SEQS}" \
+  actor_rollout_ref.rollout.n="${ROLLOUT_N}" \
   actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=4096 \
   actor_rollout_ref.hybrid_engine=True \
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
