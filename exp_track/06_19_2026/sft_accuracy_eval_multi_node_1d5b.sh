@@ -83,7 +83,7 @@ max_length=${max_length:-4096}
 max_token_len_per_gpu=${max_token_len_per_gpu:-4096}
 lr=${lr:-5e-6}
 total_epochs=${total_epochs:-5}
-save_freq=${save_freq:-100}
+save_freq=${save_freq:-50}
 
 # -----------------------------
 # Eval options
