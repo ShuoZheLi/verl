@@ -47,7 +47,7 @@ python3 -V
 # -----------------------------
 # Run identity and paths
 # -----------------------------
-RUN_NAME="${RUN_NAME:-qwen2.5-3b-math7500-sft}"
+RUN_NAME="${RUN_NAME:-Qwen2.5-1.5B-math7500-sft}"
 REAL_SLURM_JOB_ID="${SLURM_JOB_ID:-manual}"
 RUN_ID="${RUN_NAME}_${REAL_SLURM_JOB_ID}"
 
@@ -59,7 +59,7 @@ export HF_MODULES_CACHE_ROOT
 WORK_DIR="${WORK_DIR:-/work2/09576/shuozhe/verl}"
 export PYTHONPATH="${WORK_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 
-MODEL_INIT_CKPT="${MODEL_INIT_CKPT:-/work2/09576/shuozhe/saved_model/Qwen2.5-3B}"
+MODEL_INIT_CKPT="${MODEL_INIT_CKPT:-/work2/09576/shuozhe/saved_model/Qwen2.5-1.5B}"
 TRAIN_FILE="${TRAIN_FILE:-/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/math7500_sft.parquet}"
 VAL_FILE="${VAL_FILE:-/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet}"
 
@@ -76,7 +76,7 @@ mkdir -p "$LOG_DIR" "$TRAIN_LOG_DIR" "$ARCHIVE_ROOT"
 # -----------------------------
 # SFT training defaults
 # -----------------------------
-# This is a small-data full fine-tune. Defaults are conservative for Qwen2.5-3B.
+# This is a small-data full fine-tune. Defaults are conservative for Qwen2.5-1.5B.
 train_batch_size=${train_batch_size:-32}
 micro_batch_size_per_gpu=${micro_batch_size_per_gpu:-1}
 max_length=${max_length:-4096}
