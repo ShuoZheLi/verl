@@ -55,7 +55,7 @@ python3 -V
 # -----------------------------
 # Run identity
 # -----------------------------
-RUN_NAME="grpo_1d5"
+RUN_NAME="Qwen2.5-1.5B-math7500-grpo"
 REAL_SLURM_JOB_ID="${SLURM_JOB_ID}"
 RUN_ID="${RUN_NAME}_${REAL_SLURM_JOB_ID}"
 
@@ -391,7 +391,7 @@ python3 -m verl.trainer.main_ppo \
   trainer.save_freq=50 \
   trainer.total_epochs=5 \
   trainer.logger='["console","wandb"]' \
-  trainer.project_name="GRPO_metamath" \
+  trainer.project_name="math_7500" \
   trainer.experiment_name="${RUN_ID}" \
   trainer.default_local_dir="${TRAIN_LOG_DIR}" \
   "$@" \
