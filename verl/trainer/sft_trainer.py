@@ -668,8 +668,9 @@ def get_fsdp_full_param_context(model):
         return nullcontext()
 
     if isinstance(model, FSDP):
-        return FSDP.summon_full_params(model, recurse=True, writeback=False)
+        return FSDP.summon_full_params(model, recurse=False, writeback=False)
     return nullcontext()
+
 
 def generate_texts_from_prompts(model, tokenizer, prompt_texts, device, generation_config):
     previous_padding_side = tokenizer.padding_side
