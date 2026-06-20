@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=sft_qwen25_3b
+#SBATCH --job-name=sft_qwen25_1d5b
 #SBATCH --account=ASC24079
 #SBATCH --partition=gh
-#SBATCH --nodes=2
+#SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=00:20:00
+#SBATCH --time=04:00:00
 #SBATCH --output=slurm-%j.out
 #SBATCH --error=slurm-%j.err
 
@@ -82,7 +82,7 @@ micro_batch_size_per_gpu=${micro_batch_size_per_gpu:-1}
 max_length=${max_length:-4096}
 max_token_len_per_gpu=${max_token_len_per_gpu:-4096}
 lr=${lr:-5e-6}
-total_epochs=${total_epochs:-3}
+total_epochs=${total_epochs:-5}
 save_freq=${save_freq:-100}
 
 # -----------------------------
