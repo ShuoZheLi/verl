@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=grpo_1d5
-#SBATCH --account=ECS26006
+#SBATCH --account=ASC24079
 #SBATCH --partition=gh
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
@@ -35,6 +35,11 @@ export TOKENIZERS_PARALLELISM=true
 export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
 export VLLM_LOGGING_LEVEL=INFO
+export VLLM_NO_USAGE_STATS=1
+
+# Keep Ray temp paths short: Ray creates Unix socket paths under this directory,
+# and long scratch paths can exceed the 107-byte AF_UNIX limit.
+export RAY_TMPDIR_ROOT="/tmp/ray_${SLURM_JOB_ID}"
 
 # You had both 0 and 1 before; the later one wins anyway.
 # Keep only one to avoid confusion.
@@ -61,16 +66,14 @@ RUN_ID="${RUN_NAME}_${REAL_SLURM_JOB_ID}"
 MATH_DAPO_BINARY_REWARD=true
 POLICY_INIT_CKPT="/work2/09576/shuozhe/saved_model/Qwen2.5-1.5B"
 
-# The Qwen2.5 config advertises a 131072-token context window. Leaving
-# rollout.max_model_len unset makes vLLM allocate/schedule for that full window,
-# even though this experiment only uses 2048 prompt + 2048 response tokens. On
-# 1-GPU-per-node colocated FSDP+vLLM runs this can make vLLM's EngineCore die
-# after repeated sleep/wake and weight updates. Keep rollout capacity aligned
-# with the actual training sequence budget.
+# Qwen2.5 advertises a 131072-token context window. This experiment only uses
+# 2048 prompt + 2048 response tokens, so cap vLLM to the actual rollout budget.
+# Leaving this uncapped made vLLM initialize with max_seq_len=131072 in the
+# failing job log.
 ROLLOUT_MAX_MODEL_LEN=4096
 ROLLOUT_MAX_NUM_SEQS=128
 ROLLOUT_MAX_NUM_BATCHED_TOKENS=8192
-ROLLOUT_GPU_MEMORY_UTILIZATION=0.35
+ROLLOUT_GPU_MEMORY_UTILIZATION=0.4
 
 TRAIN_FILE="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/train.parquet"
 VAL_FILE="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet"
@@ -154,10 +157,11 @@ archive_ray_logs() {
   mkdir -p "$LOG_DIR/ray"
   for node in "${nodes_array[@]}"; do
     srun --nodes=1 --ntasks=1 -w "$node" \
-      bash -c "if [[ -d /tmp/ray/session_latest/logs ]]; then tar -C /tmp/ray/session_latest -czf - logs; fi" \
+      bash -c "for d in '${RAY_TMPDIR_ROOT}'/session_latest /tmp/ray/session_latest; do if [[ -d \"\$d/logs\" ]]; then tar -C \"\$d\" -czf - logs; exit 0; fi; done; exit 1" \
       > "$LOG_DIR/ray/${node}.tar.gz" 2> "$LOG_DIR/ray/${node}.tar.err" || true
   done
 }
+
 
 count_alive_ray_nodes() {
   local ray_address="$1"
@@ -204,7 +208,6 @@ echo "ROLLOUT_MAX_MODEL_LEN: $ROLLOUT_MAX_MODEL_LEN"
 echo "ROLLOUT_MAX_NUM_SEQS: $ROLLOUT_MAX_NUM_SEQS"
 echo "ROLLOUT_MAX_NUM_BATCHED_TOKENS: $ROLLOUT_MAX_NUM_BATCHED_TOKENS"
 echo "ROLLOUT_GPU_MEMORY_UTILIZATION: $ROLLOUT_GPU_MEMORY_UTILIZATION"
-
 echo "Checking inputs..."
 ls -ld "$WORK_DIR"
 ls -lh "$TRAIN_FILE"
@@ -255,9 +258,12 @@ RAY_GPUS_PER_NODE=1
 echo "Starting Ray head..."
 srun --nodes=1 --ntasks=1 -w "$head_node" \
   bash -c "source '${VENV}/bin/activate' && \
+           node_ray_tmp='${RAY_TMPDIR_ROOT}' && \
+           rm -rf \"\$node_ray_tmp\" && mkdir -p \"\$node_ray_tmp\" && \
            ray start --head \
            --node-ip-address='${head_node_ip}' \
            --port='${port}' \
+           --temp-dir=\"\$node_ray_tmp\" \
            --num-cpus='${SLURM_CPUS_PER_TASK}' \
            --num-gpus='${RAY_GPUS_PER_NODE}'" \
   > "$LOG_DIR/ray_head.log" 2>&1 &
@@ -290,7 +296,10 @@ for ((i = 1; i <= worker_num; i++)); do
 
   srun --nodes=1 --ntasks=1 -w "$node_i" \
     bash -c "source '${VENV}/bin/activate' && \
+             node_ray_tmp='${RAY_TMPDIR_ROOT}' && \
+             rm -rf \"\$node_ray_tmp\" && mkdir -p \"\$node_ray_tmp\" && \
              ray start --address '${ip_head}' \
+             --temp-dir=\"\$node_ray_tmp\" \
              --num-cpus='${SLURM_CPUS_PER_TASK}' \
              --num-gpus='${RAY_GPUS_PER_NODE}'" \
     > "$LOG_DIR/ray_worker_${i}.log" 2>&1 &
@@ -349,12 +358,12 @@ python3 -m verl.trainer.main_ppo \
   data.max_prompt_length=2048 \
   data.max_response_length=2048 \
   actor_rollout_ref.model.path="$POLICY_MODEL_PATH" \
-  +actor_rollout_ref.model.override_config.attn_implementation=eager \
   actor_rollout_ref.actor.optim.lr=1e-6 \
   actor_rollout_ref.actor.ppo_mini_batch_size=32 \
   actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
   actor_rollout_ref.actor.calculate_sum_pi_squared=True \
   actor_rollout_ref.actor.fsdp_config.param_offload=False \
+  actor_rollout_ref.actor.fsdp_config.use_orig_params=True \
   actor_rollout_ref.actor.use_kl_loss=False \
   actor_rollout_ref.ref.fsdp_config.param_offload=True \
   actor_rollout_ref.rollout.name=vllm \
@@ -375,7 +384,7 @@ python3 -m verl.trainer.main_ppo \
   +reward.reward_kwargs.math_dapo_binary_reward="${MATH_DAPO_BINARY_REWARD}" \
   critic.enable=False \
   trainer.critic_warmup=0 \
-  trainer.val_before_train=True \
+  trainer.val_before_train=true \
   trainer.n_gpus_per_node="${RAY_GPUS_PER_NODE}" \
   trainer.nnodes="${SLURM_JOB_NUM_NODES}" \
   trainer.test_freq=50 \
@@ -385,7 +394,5 @@ python3 -m verl.trainer.main_ppo \
   trainer.project_name="GRPO_metamath" \
   trainer.experiment_name="${RUN_ID}" \
   trainer.default_local_dir="${TRAIN_LOG_DIR}" \
-  +ray_kwargs.ray_init.runtime_env.env_vars.RAY_DEDUP_LOGS="'0'" \
-  +ray_kwargs.ray_init.runtime_env.env_vars.VLLM_LOGGING_LEVEL="'INFO'" \
   "$@" \
   2>&1 | tee "$TRAIN_STDOUT_LOG"

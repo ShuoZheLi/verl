@@ -20,10 +20,17 @@ data:
   use_dynamic_bsz: True
   train_files: ~/data/gsm8k/train.parquet
   val_files: null
+  loss_val_files: null
+  generation_eval_files: null
   train_max_samples: -1  # set to -1 to use full dataset
   val_max_samples: -1  # set to -1 to use full dataset
   # Multi-turn settings
   messages_key: messages  # Key for messages list in multi-turn mode
+  generation_eval_prompt_key: prompt
+  generation_eval_batch_size: null
+  generation_eval_max_prompt_length: 2048
+  generation_eval_filter_overlong_prompts: False
+  generation_eval_truncation: error
   tools_key: tools  # Key for tools list in multi-turn mode
   enable_thinking_key: enable_thinking  # Whether to enable thinking in multi-turn mode
   enable_thinking_default: none         # The default value when enable_thinking_key is not present in the dataset
@@ -69,7 +76,20 @@ trainer:
   seed: 1
   save_freq: -1
   test_freq: -1
+  loss_test_freq: null
   max_ckpt_to_keep: null  # Maximum number of checkpoints to keep, set to null to keep all
+  eval_method: loss
+  val_before_train: False
+  generation_eval:
+    max_new_tokens: 2048
+    do_sample: False
+    temperature: 1.0
+    top_p: 1.0
+    top_k: null
+    n: 1
+    test_freq: null
+    dtype: null
+    reward_kwargs: {}
 
   # Resume mode: "auto", "disable", or "resume_path"
   # "auto": resume from last checkpoint if available
