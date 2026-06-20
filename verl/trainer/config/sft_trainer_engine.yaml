@@ -81,6 +81,7 @@ trainer:
   eval_method: loss
   val_before_train: False
   generation_eval:
+    backend: hf
     max_new_tokens: 2048
     do_sample: False
     temperature: 1.0
@@ -89,6 +90,9 @@ trainer:
     n: 1
     test_freq: null
     dtype: null
+    vllm_gpu_memory_utilization: 0.2
+    vllm_enforce_eager: True
+    vllm_sync_weights: True
     reward_kwargs: {}
 
   # Resume mode: "auto", "disable", or "resume_path"

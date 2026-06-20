@@ -26,6 +26,7 @@ os.environ["NCCL_DEBUG"] = "WARN"
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
 import logging
+import warnings
 
 import hydra
 import torch
@@ -50,6 +51,10 @@ from verl.workers.engine_workers import TrainingWorker
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_SFT_LOGGING_LEVEL", "WARN"))
+
+
+_SFT_VLLM_ENGINE = None
+_SFT_VLLM_SYNC_VERSION = None
 
 
 class SFTTrainer:
@@ -349,13 +354,14 @@ class SFTTrainer:
             metric = {"val/loss": val_loss.detach().item()}
         return metric
 
-    def _compute_generation_reward_validation_metrics(self):
+    def _compute_generation_reward_validation_metrics(self, global_step=None):
         local_eval = evaluate_generation_reward_batches(
             model=self.engine.module,
             tokenizer=self.model_config.tokenizer,
             dataloader=self.generation_val_dataloader,
             device=self.device_name,
             config=self.config,
+            sync_version=global_step,
         )
         gathered_eval = [None for _ in range(self.engine.get_data_parallel_size())]
         dp_group = self.engine.get_data_parallel_group()
@@ -383,14 +389,14 @@ class SFTTrainer:
             return self.generation_val_dataloader is not None
         raise ValueError(f"Unsupported eval method {method!r}")
 
-    def _validate(self, meta_info, methods=None):
+    def _validate(self, meta_info, methods=None, global_step=None):
         methods = methods or self._available_eval_methods()
         combined_metric = {}
         for method in methods:
             if method == "loss":
                 metric = self._compute_loss_validation_metrics(meta_info)
             elif method == "generation_reward":
-                metric = self._compute_generation_reward_validation_metrics()
+                metric = self._compute_generation_reward_validation_metrics(global_step=global_step)
             else:
                 raise ValueError(f"Unsupported eval method {method!r}")
             if metric:
@@ -444,7 +450,7 @@ class SFTTrainer:
         }
 
         if global_step == 0 and self.config.trainer.get("val_before_train", False):
-            metric = self._validate(meta_info)
+            metric = self._validate(meta_info, global_step=global_step)
             if is_logging:
                 assert metric is not None, "val_before_train=True but no validation dataloader is available"
                 tracking.log(data=metric, step=global_step)
@@ -513,7 +519,7 @@ class SFTTrainer:
                     method for method in self.eval_methods if self._should_validate_method(method, global_step, is_last_step)
                 ]
                 if methods_to_validate:
-                    metric = self._validate(meta_info, methods=methods_to_validate)
+                    metric = self._validate(meta_info, methods=methods_to_validate, global_step=global_step)
                     if is_logging:
                         assert metric is not None
                         tracking.log(data=metric, step=global_step)
@@ -672,6 +678,205 @@ def get_fsdp_full_param_context(model):
     return nullcontext()
 
 
+def get_vllm_dtype(generation_config):
+    dtype_name = generation_config.get("dtype", None)
+    if dtype_name is None:
+        return "bfloat16"
+    dtype_name = str(dtype_name).lower()
+    dtype_map = {
+        "bf16": "bfloat16",
+        "bfloat16": "bfloat16",
+        "fp16": "float16",
+        "float16": "float16",
+        "half": "float16",
+        "fp32": "float32",
+        "float32": "float32",
+        "float": "float32",
+        "auto": "auto",
+    }
+    if dtype_name not in dtype_map:
+        raise ValueError(f"Unsupported vLLM generation dtype {dtype_name!r}")
+    return dtype_map[dtype_name]
+
+
+def get_generation_config_bool(generation_config, key, default=False):
+    value = generation_config.get(key, default)
+    if isinstance(value, str):
+        value = value.strip().lower()
+        if value in {"1", "true", "yes", "y", "on"}:
+            return True
+        if value in {"0", "false", "no", "n", "off"}:
+            return False
+        raise ValueError(f"Expected boolean value for trainer.generation_eval.{key}, got {value!r}")
+    return bool(value)
+
+
+def get_generation_config_optional_int(generation_config, key, default=None):
+    value = generation_config.get(key, default)
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() in {"", "none", "null"}:
+        return None
+    return int(value)
+
+
+def get_generation_config_optional_float(generation_config, key, default=None):
+    value = generation_config.get(key, default)
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() in {"", "none", "null"}:
+        return None
+    return float(value)
+
+
+def get_vllm_model_path(model, generation_config):
+    path = generation_config.get("vllm_model_path", None)
+    if path is not None:
+        return path
+    wrapped_module = getattr(model, "module", None) or getattr(model, "_fsdp_wrapped_module", None) or model
+    config = getattr(wrapped_module, "config", None)
+    if config is not None:
+        path = getattr(config, "_name_or_path", None)
+        if path:
+            return path
+    raise ValueError("trainer.generation_eval.vllm_model_path must be set when the model path cannot be inferred.")
+
+
+def get_or_create_vllm_engine(model, tokenizer, generation_config):
+    global _SFT_VLLM_ENGINE
+    if _SFT_VLLM_ENGINE is not None:
+        return _SFT_VLLM_ENGINE
+
+    os.environ.setdefault("VLLM_ALLOW_INSECURE_SERIALIZATION", "1")
+    os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+    try:
+        from vllm import LLM
+    except ImportError as exc:
+        raise ImportError(
+            "trainer.generation_eval.backend=vllm requires vLLM to be installed in the training environment."
+        ) from exc
+
+    model_path = get_vllm_model_path(model, generation_config)
+    llm_kwargs = {
+        "model": model_path,
+        "tokenizer": generation_config.get("vllm_tokenizer_path", None) or model_path,
+        "trust_remote_code": get_generation_config_bool(generation_config, "trust_remote_code", False),
+        "tensor_parallel_size": int(generation_config.get("vllm_tensor_parallel_size", 1)),
+        "dtype": get_vllm_dtype(generation_config),
+        "gpu_memory_utilization": float(generation_config.get("vllm_gpu_memory_utilization", 0.2)),
+        "enforce_eager": get_generation_config_bool(generation_config, "vllm_enforce_eager", True),
+        "disable_custom_all_reduce": get_generation_config_bool(
+            generation_config, "vllm_disable_custom_all_reduce", True
+        ),
+    }
+    max_model_len = generation_config.get("vllm_max_model_len", None)
+    if max_model_len is not None:
+        llm_kwargs["max_model_len"] = int(max_model_len)
+    if generation_config.get("vllm_load_format", None) is not None:
+        llm_kwargs["load_format"] = generation_config.get("vllm_load_format")
+
+    _SFT_VLLM_ENGINE = LLM(**llm_kwargs)
+    # Keep the tokenizer used by the dataset/trainer for prompt formatting and decoding consistency.
+    try:
+        _SFT_VLLM_ENGINE.set_tokenizer(tokenizer)
+    except Exception as exc:
+        warnings.warn(f"Failed to set trainer tokenizer on vLLM engine: {exc}", stacklevel=1)
+    return _SFT_VLLM_ENGINE
+
+
+def make_vllm_weight_loader(weight_batch):
+    def load_weight_batch_into_vllm(vllm_model):
+        vllm_model.load_weights(weight_batch)
+        return True
+
+    return load_weight_batch_into_vllm
+
+
+def iter_full_state_dict_items(model):
+    try:
+        from torch.distributed.fsdp import FullStateDictConfig, FullyShardedDataParallel as FSDP, StateDictType
+    except ImportError:
+        yield from model.state_dict().items()
+        return
+
+    if not isinstance(model, FSDP):
+        yield from model.state_dict().items()
+        return
+
+    state_dict_config = FullStateDictConfig(rank0_only=False, offload_to_cpu=False)
+    with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, state_dict_config):
+        yield from model.state_dict().items()
+
+
+def sync_fsdp_weights_to_vllm(model, vllm_engine, generation_config, sync_version=None):
+    global _SFT_VLLM_SYNC_VERSION
+    if not get_generation_config_bool(generation_config, "vllm_sync_weights", True):
+        return
+
+    if sync_version is None:
+        sync_version = id(model)
+    if torch.distributed.is_initialized():
+        sync_version = (sync_version, torch.distributed.get_rank())
+    if _SFT_VLLM_SYNC_VERSION == sync_version:
+        return
+
+    batch_size = int(generation_config.get("vllm_weight_sync_batch_size", 8))
+    weight_batch = []
+    for name, tensor in iter_full_state_dict_items(model):
+        if not torch.is_tensor(tensor):
+            continue
+        weight_batch.append((name, tensor.detach()))
+        if len(weight_batch) >= batch_size:
+            vllm_engine.apply_model(make_vllm_weight_loader(weight_batch))
+            weight_batch = []
+    if weight_batch:
+        vllm_engine.apply_model(make_vllm_weight_loader(weight_batch))
+    _SFT_VLLM_SYNC_VERSION = sync_version
+
+
+def get_vllm_sampling_params(generation_config, tokenizer):
+    from vllm import SamplingParams
+
+    kwargs = {
+        # The caller repeats prompts for generation_config.n to keep HF and vLLM output ordering identical.
+        "n": 1,
+        "max_tokens": int(generation_config.get("max_new_tokens", 2048)),
+        "temperature": float(generation_config.get("temperature", 1.0)),
+        "top_p": float(generation_config.get("top_p", 1.0)),
+        "skip_special_tokens": True,
+    }
+    top_k = get_generation_config_optional_int(generation_config, "top_k", None)
+    if top_k is not None:
+        kwargs["top_k"] = top_k
+    if not get_generation_config_bool(generation_config, "do_sample", False):
+        kwargs["temperature"] = 0.0
+        kwargs["top_p"] = 1.0
+        kwargs["top_k"] = -1
+    stop_token_ids = generation_config.get("stop_token_ids", None)
+    if stop_token_ids is not None:
+        kwargs["stop_token_ids"] = stop_token_ids
+    else:
+        eos_token_id = getattr(tokenizer, "eos_token_id", None)
+        if eos_token_id is not None:
+            kwargs["stop_token_ids"] = [eos_token_id]
+    return SamplingParams(**kwargs)
+
+
+def generate_texts_from_prompts_vllm(model, tokenizer, prompt_texts, generation_config, sync_version=None):
+    vllm_engine = get_or_create_vllm_engine(model, tokenizer, generation_config)
+    sync_fsdp_weights_to_vllm(model, vllm_engine, generation_config, sync_version=sync_version)
+    sampling_params = get_vllm_sampling_params(generation_config, tokenizer)
+    request_outputs = vllm_engine.generate(prompt_texts, sampling_params=sampling_params, use_tqdm=False)
+    output_texts = []
+    response_lengths = []
+    for request_output in request_outputs:
+        for completion in request_output.outputs:
+            output_texts.append(completion.text)
+            token_ids = getattr(completion, "token_ids", None) or []
+            response_lengths.append(len(token_ids))
+    return output_texts, response_lengths
+
+
 def generate_texts_from_prompts(model, tokenizer, prompt_texts, device, generation_config):
     previous_padding_side = tokenizer.padding_side
     tokenizer.padding_side = "left"
@@ -682,14 +887,14 @@ def generate_texts_from_prompts(model, tokenizer, prompt_texts, device, generati
     inputs = {key: value.to(device) for key, value in inputs.items()}
     prompt_length = inputs["input_ids"].shape[-1]
     generate_kwargs = {
-        "max_new_tokens": generation_config.get("max_new_tokens", 2048),
-        "do_sample": generation_config.get("do_sample", False),
-        "temperature": generation_config.get("temperature", 1.0),
-        "top_p": generation_config.get("top_p", 1.0),
+        "max_new_tokens": int(generation_config.get("max_new_tokens", 2048)),
+        "do_sample": get_generation_config_bool(generation_config, "do_sample", False),
+        "temperature": get_generation_config_optional_float(generation_config, "temperature", 1.0),
+        "top_p": get_generation_config_optional_float(generation_config, "top_p", 1.0),
         "pad_token_id": tokenizer.pad_token_id,
         "eos_token_id": tokenizer.eos_token_id,
     }
-    top_k = generation_config.get("top_k", None)
+    top_k = get_generation_config_optional_int(generation_config, "top_k", None)
     if top_k is not None and top_k >= 0:
         generate_kwargs["top_k"] = top_k
     if not generate_kwargs["do_sample"]:
@@ -745,7 +950,7 @@ def score_generation_outputs(batch, outputs, config):
     return scores, reward_extra_infos
 
 
-def evaluate_generation_reward_batches(model, tokenizer, dataloader, device, config):
+def evaluate_generation_reward_batches(model, tokenizer, dataloader, device, config, sync_version=None):
     result = {
         "data_sources": [],
         "sample_uids": [],
@@ -754,11 +959,19 @@ def evaluate_generation_reward_batches(model, tokenizer, dataloader, device, con
         "sample_scores": [],
     }
     generation_config = config.trainer.get("generation_eval", {})
+    rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+    total_batches = len(dataloader) if hasattr(dataloader, "__len__") else None
 
     was_training = model.training
     model.eval()
     try:
-        for batch in dataloader:
+        progress_bar = tqdm(
+            dataloader,
+            total=total_batches,
+            desc=f"Generation eval rank {rank}",
+            dynamic_ncols=True,
+        )
+        for batch in progress_bar:
             raw_prompts = batch.get("raw_prompt", batch[config.data.get("generation_eval_prompt_key", "prompt")])
             prompt_texts = extract_prompt_texts(
                 raw_prompts,
@@ -767,13 +980,36 @@ def evaluate_generation_reward_batches(model, tokenizer, dataloader, device, con
             )
             repeat_times = int(generation_config.get("n", 1))
             repeated_prompt_texts = [prompt for prompt in prompt_texts for _ in range(repeat_times)]
-            outputs, response_lengths = generate_texts_from_prompts(
-                model=model,
-                tokenizer=tokenizer,
-                prompt_texts=repeated_prompt_texts,
-                device=device,
-                generation_config=generation_config,
-            )
+            progress_bar.set_postfix(batch_size=len(prompt_texts), refresh=True)
+            backend = generation_config.get("backend", "hf")
+            if backend == "hf":
+                outputs, response_lengths = generate_texts_from_prompts(
+                    model=model,
+                    tokenizer=tokenizer,
+                    prompt_texts=repeated_prompt_texts,
+                    device=device,
+                    generation_config=generation_config,
+                )
+            elif backend == "vllm":
+                outputs, response_lengths = generate_texts_from_prompts_vllm(
+                    model=model,
+                    tokenizer=tokenizer,
+                    prompt_texts=repeated_prompt_texts,
+                    generation_config=generation_config,
+                    sync_version=sync_version,
+                )
+            else:
+                raise ValueError(f"Unsupported generation eval backend {backend!r}; expected 'hf' or 'vllm'.")
+            if len(outputs) != len(repeated_prompt_texts):
+                raise RuntimeError(
+                    f"Generation backend {backend!r} returned {len(outputs)} outputs for "
+                    f"{len(repeated_prompt_texts)} prompts. Check generation_eval.n/backend handling."
+                )
+            if len(response_lengths) != len(outputs):
+                raise RuntimeError(
+                    f"Generation backend {backend!r} returned {len(response_lengths)} response lengths for "
+                    f"{len(outputs)} outputs."
+                )
             repeated_batch = repeat_non_tensor_batch(batch, repeat_times)
             scores, reward_extra_infos = score_generation_outputs(repeated_batch, outputs, generation_config)
 

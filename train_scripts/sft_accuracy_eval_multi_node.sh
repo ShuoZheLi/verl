@@ -109,6 +109,11 @@ generation_top_k=${generation_top_k:-null}
 generation_num_samples=${generation_num_samples:-1}
 generation_dtype=${generation_dtype:-null}
 
+generation_backend=${generation_backend:-vllm}
+generation_vllm_gpu_memory_utilization=${generation_vllm_gpu_memory_utilization:-0.3}
+generation_vllm_enforce_eager=${generation_vllm_enforce_eager:-True}
+generation_vllm_sync_weights=${generation_vllm_sync_weights:-True}
+
 # -----------------------------
 # Multi-node torchrun config
 # -----------------------------
@@ -264,6 +269,10 @@ srun --nodes="$NNODES" --ntasks="$NNODES" --ntasks-per-node=1 \
       trainer.generation_eval.top_k="'"${generation_top_k}"'" \
       trainer.generation_eval.n="'"${generation_num_samples}"'" \
       trainer.generation_eval.dtype="'"${generation_dtype}"'" \
+      trainer.generation_eval.backend="'"${generation_backend}"'" \
+      trainer.generation_eval.vllm_gpu_memory_utilization="'"${generation_vllm_gpu_memory_utilization}"'" \
+      trainer.generation_eval.vllm_enforce_eager="'"${generation_vllm_enforce_eager}"'" \
+      trainer.generation_eval.vllm_sync_weights="'"${generation_vllm_sync_weights}"'" \
       trainer.logger="[\"console\",\"wandb\"]" \
       "$@"
   ' _ "$@" 2>&1 | tee "$TRAIN_STDOUT_LOG"
