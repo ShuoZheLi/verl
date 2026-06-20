@@ -84,7 +84,7 @@ save_freq=${save_freq:-100}
 # Eval options
 # -----------------------------
 # eval_method: loss, generation_reward, or both.
-eval_method=${eval_method:-both}
+eval_method=${eval_method:-generation_reward}
 eval_before_train=${eval_before_train:-True}
 eval_freq=${eval_freq:--1}
 loss_eval_freq=${loss_eval_freq:-50}
@@ -95,7 +95,7 @@ loss_eval_files=${loss_eval_files:-${TRAIN_FILE}}
 generation_eval_files=${generation_eval_files:-${VAL_FILE}}
 
 # Generation accuracy eval can be memory-heavy; start small unless you know memory is safe.
-generation_eval_batch_size=${generation_eval_batch_size:-1}
+generation_eval_batch_size=${generation_eval_batch_size:-32}
 generation_max_new_tokens=${generation_max_new_tokens:-2048}
 generation_do_sample=${generation_do_sample:-False}
 generation_temperature=${generation_temperature:-1.0}
