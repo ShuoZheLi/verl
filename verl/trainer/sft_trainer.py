@@ -748,7 +748,12 @@ def get_or_create_vllm_engine(model, tokenizer, generation_config):
         return _SFT_VLLM_ENGINE
 
     os.environ.setdefault("VLLM_ALLOW_INSECURE_SERIALIZATION", "1")
+    os.environ.setdefault("VLLM_HOST_IP", generation_config.get("vllm_host_ip", "127.0.0.1"))
     os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+    os.environ.setdefault(
+        "VLLM_ENABLE_V1_MULTIPROCESSING",
+        "1" if get_generation_config_bool(generation_config, "vllm_enable_multiprocessing", False) else "0",
+    )
     try:
         from vllm import LLM
     except ImportError as exc:
