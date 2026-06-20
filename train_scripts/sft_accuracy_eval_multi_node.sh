@@ -88,7 +88,7 @@ eval_method=${eval_method:-generation_reward}
 eval_before_train=${eval_before_train:-True}
 eval_freq=${eval_freq:--1}
 loss_eval_freq=${loss_eval_freq:-50}
-generation_eval_freq=${generation_eval_freq:-100}
+generation_eval_freq=${generation_eval_freq:-50}
 
 # loss_eval_files must be SFT messages format; generation_eval_files must be PPO prompt+reward_model format.
 loss_eval_files=${loss_eval_files:-${TRAIN_FILE}}
