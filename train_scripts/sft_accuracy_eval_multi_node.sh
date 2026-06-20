@@ -51,6 +51,11 @@ RUN_NAME="${RUN_NAME:-qwen2.5-3b-math7500-sft}"
 REAL_SLURM_JOB_ID="${SLURM_JOB_ID:-manual}"
 RUN_ID="${RUN_NAME}_${REAL_SLURM_JOB_ID}"
 
+HF_DATASETS_CACHE_ROOT="${HF_DATASETS_CACHE:-}"
+HF_MODULES_CACHE_ROOT="${HF_MODULES_CACHE:-}"
+export HF_DATASETS_CACHE_ROOT
+export HF_MODULES_CACHE_ROOT
+
 WORK_DIR="${WORK_DIR:-/work2/09576/shuozhe/verl}"
 export PYTHONPATH="${WORK_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 
@@ -208,8 +213,12 @@ srun --nodes="$NNODES" --ntasks="$NNODES" --ntasks-per-node=1 \
     export PYTHONPATH="'"${WORK_DIR}"'${PYTHONPATH:+:${PYTHONPATH}}"
     export UV_CACHE_DIR="'"${UV_CACHE_DIR}"'"
     export HF_HOME="'"${HF_HOME}"'"
+    node_cache_root="${TMPDIR:-/tmp}/verl_'"${RUN_ID}"'_node_${SLURM_PROCID}"
+    export HF_DATASETS_CACHE="${HF_DATASETS_CACHE_ROOT:-${node_cache_root}/huggingface_datasets}"
+    export HF_MODULES_CACHE="${HF_MODULES_CACHE_ROOT:-${node_cache_root}/huggingface_modules}"
     export TIKTOKEN_ENCODINGS_BASE="'"${TIKTOKEN_ENCODINGS_BASE}"'"
-    export TORCH_EXTENSIONS_DIR="'"${TORCH_EXTENSIONS_DIR}"'"
+    export TORCH_EXTENSIONS_DIR="'"${TORCH_EXTENSIONS_DIR}"'/node_${SLURM_PROCID}"
+    mkdir -p "$HF_DATASETS_CACHE" "$HF_MODULES_CACHE" "$TORCH_EXTENSIONS_DIR"
     export PYTHONUNBUFFERED=1
     export TOKENIZERS_PARALLELISM=true
     export HYDRA_FULL_ERROR="'"${HYDRA_FULL_ERROR}"'"
