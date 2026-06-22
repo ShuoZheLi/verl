@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=ppo_metamath_multinode
-#SBATCH --account=ECS26006
+#SBATCH --account=ASC24079
 #SBATCH --partition=gh
 #SBATCH --nodes=8
 #SBATCH --ntasks-per-node=1
