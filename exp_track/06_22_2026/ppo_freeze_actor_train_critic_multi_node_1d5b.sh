@@ -5,7 +5,7 @@
 #SBATCH --nodes=8
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=00:20:00
+#SBATCH --time=20:00:00
 #SBATCH --output=slurm-%j_1d5b_instruct_critic_train.out
 #SBATCH --error=slurm-%j_1d5b_instruct_critic_train.err
 
@@ -48,7 +48,7 @@ python3 -V
 # -----------------------------
 # Run identity
 # -----------------------------
-RUN_NAME="7b_testset"
+RUN_NAME="Qwen2.5-1.5B_7b_critic"
 REAL_SLURM_JOB_ID="${SLURM_JOB_ID}"
 RUN_ID="${RUN_NAME}_${REAL_SLURM_JOB_ID}"
 
@@ -58,7 +58,7 @@ RUN_ID="${RUN_NAME}_${REAL_SLURM_JOB_ID}"
 MATH_DAPO_BINARY_REWARD=true
 POLICY_INIT_CKPT="/work/09576/shuozhe/saved_model/Qwen2.5-1.5B-Instruct"
 CRITIC_INIT_CKPT="/work/09576/shuozhe/saved_model/DeepSeek-R1-Distill-Qwen-7B"
-RESUME_CKPT="/scratch/09576/shuozhe/verl_runs/7b_testset_752950/train_log/global_step_1380"
+RESUME_CKPT="/scratch/09576/shuozhe/verl_runs/7b_testset_752950/train_log/global_step_1100"
 CRITIC_ONLY_STEPS=1000000000
 
 TRAIN_FILE="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/train.parquet"

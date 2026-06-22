@@ -48,7 +48,7 @@ python3 -V
 # -----------------------------
 # Run identity
 # -----------------------------
-RUN_NAME="7b_testset"
+RUN_NAME="Qwen2.5-3B_7b_critic"
 REAL_SLURM_JOB_ID="${SLURM_JOB_ID}"
 RUN_ID="${RUN_NAME}_${REAL_SLURM_JOB_ID}"
 
@@ -58,7 +58,7 @@ RUN_ID="${RUN_NAME}_${REAL_SLURM_JOB_ID}"
 MATH_DAPO_BINARY_REWARD=true
 POLICY_INIT_CKPT="/work/09576/shuozhe/saved_model/Qwen2.5-3B-Instruct"
 CRITIC_INIT_CKPT="/work/09576/shuozhe/saved_model/DeepSeek-R1-Distill-Qwen-7B"
-RESUME_CKPT="/scratch/09576/shuozhe/verl_runs/7b_testset_752951/train_log/global_step_1160"
+RESUME_CKPT="/scratch/09576/shuozhe/verl_runs/7b_testset_752951/train_log/global_step_1100"
 CRITIC_ONLY_STEPS=1000000000
 
 TRAIN_FILE="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/train.parquet"
