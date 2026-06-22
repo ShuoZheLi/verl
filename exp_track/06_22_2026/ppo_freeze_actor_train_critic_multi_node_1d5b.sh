@@ -2,10 +2,10 @@
 #SBATCH --job-name=ppo_metamath_multinode
 #SBATCH --account=ASC24079
 #SBATCH --partition=gh
-#SBATCH --nodes=8
+#SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=20:00:00
+#SBATCH --time=00:20:00
 #SBATCH --output=slurm-%j_1d5b_instruct_critic_train.out
 #SBATCH --error=slurm-%j_1d5b_instruct_critic_train.err
 
