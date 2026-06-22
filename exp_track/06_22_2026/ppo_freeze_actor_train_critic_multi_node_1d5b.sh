@@ -2,7 +2,7 @@
 #SBATCH --job-name=ppo_metamath_multinode
 #SBATCH --account=ASC24079
 #SBATCH --partition=gh
-#SBATCH --nodes=2
+#SBATCH --nodes=8
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
 #SBATCH --time=00:20:00
@@ -157,6 +157,49 @@ finally:
 PY
 }
 
+validate_resume_checkpoint() {
+  local checkpoint_dir="$1"
+  local expected_world_size="$2"
+  local role
+  local missing=0
+
+  echo "Validating resume checkpoint for world size ${expected_world_size}: ${checkpoint_dir}"
+
+  for role in actor critic; do
+    if [[ ! -d "${checkpoint_dir}/${role}" ]]; then
+      echo "Missing checkpoint role directory: ${checkpoint_dir}/${role}" >&2
+      missing=1
+      continue
+    fi
+
+    echo "Available ${role} model shards:"
+    find "${checkpoint_dir}/${role}" -maxdepth 1 -name 'model_world_size_*_rank_*.pt' -printf '  %f\n' | sort || true
+
+    for ((rank = 0; rank < expected_world_size; rank++)); do
+      if [[ ! -f "${checkpoint_dir}/${role}/model_world_size_${expected_world_size}_rank_${rank}.pt" ]]; then
+        echo "Missing ${role} shard for current launch: model_world_size_${expected_world_size}_rank_${rank}.pt" >&2
+        missing=1
+      fi
+    done
+  done
+
+  if [[ "$missing" != "0" ]]; then
+    cat >&2 <<EOF
+Resume checkpoint shard layout does not match this Slurm/Ray launch.
+
+This script launches trainer.n_gpus_per_node=1 across SLURM_JOB_NUM_NODES=${SLURM_JOB_NUM_NODES},
+so verl expects checkpoint files named model_world_size_${expected_world_size}_rank_*.pt.
+FSDP sharded checkpoints must be resumed with the same world size unless you first reshard/convert them.
+
+Fix options:
+  1. Submit with the same number of GPUs used to save the checkpoint.
+  2. Point RESUME_CKPT at a checkpoint saved with world_size_${expected_world_size} shards.
+  3. Convert/reshard the checkpoint before resuming with a different world size.
+EOF
+    exit 1
+  fi
+}
+
 cleanup() {
   echo "Stopping Ray on all nodes..."
   stop_ray_all_nodes || true
@@ -226,6 +269,8 @@ echo "Head IP: $ip_head"
 # This version assumes 1 GPU per node, matching your example multi-node script.
 # If you really have 4 GPUs per node available to the job, see notes below.
 RAY_GPUS_PER_NODE=1
+RESUME_WORLD_SIZE=$((SLURM_JOB_NUM_NODES * RAY_GPUS_PER_NODE))
+validate_resume_checkpoint "$RESUME_CKPT" "$RESUME_WORLD_SIZE"
 
 # -----------------------------
 # Start Ray head
