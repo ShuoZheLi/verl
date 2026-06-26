@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=qw2_1d5b_inst_best_n
+#SBATCH --job-name=qw2_3b_inst_best_n_2300
 #SBATCH --account=ASC24079
 #SBATCH --partition=gh
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
 #SBATCH --time=4:00:00
-#SBATCH --output=slurm-%j_qw2_1d5b_inst_best_n_300.out
-#SBATCH --error=slurm-%j_qw2_1d5b_inst_best_n_300.err
+#SBATCH --output=slurm-%j_qw2_3b_inst_best_n_2300.out
+#SBATCH --error=slurm-%j_qw2_3b_inst_best_n_2300.err
 
 set -euo pipefail
 
@@ -40,14 +40,14 @@ python3 -V
 # -----------------------------
 # Run identity
 # -----------------------------
-RUN_NAME="best_of_n_Qwen2.5_1d5B_critic_1d5_k_8_300"
+RUN_NAME="best_of_n_Qwen2.5_3B_7b_critic_k_8_2300"
 RUN_ID="${RUN_NAME}_${SLURM_JOB_ID}"
 
 # -----------------------------
 # Paths
 # -----------------------------
-ACTOR_CHECKPOINT_DIR="/scratch/09576/shuozhe/verl_runs/7b_testset_752950/train_log/global_step_300"
-CRITIC_CHECKPOINT_DIR="/scratch/09576/shuozhe/verl_runs/7b_testset_752950/train_log/global_step_300"
+ACTOR_CHECKPOINT_DIR="/scratch/09576/shuozhe/verl_runs/Qwen2.5-3B_7b_critic_resume_780634/train_log/global_step_2300"
+CRITIC_CHECKPOINT_DIR="/scratch/09576/shuozhe/verl_runs/Qwen2.5-3B_7b_critic_resume_780634/train_log/global_step_2300"
 DATASET_PATH="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet"
 WORK_DIR="/work2/09576/shuozhe/verl"
 export PYTHONPATH="${WORK_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
@@ -58,7 +58,7 @@ ARCHIVE_DIR="${ARCHIVE_ROOT}/${RUN_ID}"
 SCRATCH_ROOT="${SCRATCH}/value_decoding_runs"
 RUN_DIR="${SCRATCH_ROOT}/${RUN_ID}"
 LOG_DIR="${RUN_DIR}/logs"
-OUTPUT_DIR="${RUN_DIR}/best_of_n_inference_eval"
+OUTPUT_DIR="${RUN_DIR}/best_of_n_3b_7b_critic_2300"
 ACTOR_MERGED_ROOT="${RUN_DIR}/merged_actor_hf"
 CRITIC_MERGED_ROOT="${RUN_DIR}/merged_critic_hf"
 ACTOR_HF_SOURCE_DIR=""
@@ -99,7 +99,7 @@ GENERATION_BACKEND="vllm"
 # vLLM shares the worker GPU with the critics in this script, so keep this conservative.
 VLLM_GPU_MEMORY_UTILIZATION=0.6
 VLLM_ENFORCE_EAGER=0
-SEED="42"
+SEED="42 111 222"
 
 REFERENCE_STAGE1_TRAJECTORY_BANK=""
 SKIP_PLOTS=0
@@ -118,10 +118,19 @@ nodes_array=()
 SCRIPT_PATH="${WORK_DIR}/value_decoding/script/$(basename "${BASH_SOURCE[0]}")"
 
 sync_to_work() {
-  echo "Syncing run directory back to WORK..."
+  echo "Syncing run directory back to WORK without merged HF cache checkpoints..."
   mkdir -p "$ARCHIVE_DIR"
-  rsync -a "$RUN_DIR"/ "$ARCHIVE_DIR"/ || true
-  echo "Archived run to: $ARCHIVE_DIR"
+  if [[ ! -d "$RUN_DIR" ]]; then
+    echo "Run directory does not exist yet, skipping archive sync: $RUN_DIR"
+    return 0
+  fi
+  rsync -a \
+    --exclude='merged_actor_hf/' \
+    --exclude='merged_critic_hf/' \
+    "$RUN_DIR"/ "$ARCHIVE_DIR"/ || true
+  rm -rf "$RUN_DIR/merged_actor_hf" "$RUN_DIR/merged_critic_hf" || true
+  echo "Archived run outputs to: $ARCHIVE_DIR"
+  echo "Removed SCRATCH-only merged HF cache checkpoints from: $RUN_DIR"
 }
 
 stop_ray_all_nodes() {
