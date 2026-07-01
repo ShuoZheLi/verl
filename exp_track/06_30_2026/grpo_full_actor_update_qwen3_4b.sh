@@ -39,6 +39,7 @@ export HYDRA_FULL_ERROR=0
 export VLLM_USE_V1=1
 
 export WANDB_PROJECT="prune_for_post_train"
+WANDB_PROJECT="prune_for_post_train"
 
 echo "Activated environment"
 echo "Python: $(which python3)"
@@ -377,7 +378,7 @@ python3 -m verl.trainer.main_ppo \
   trainer.save_freq=50 \
   trainer.total_epochs=5 \
   trainer.logger='["console","wandb"]' \
-  trainer.project_name="GRPO_metamath" \
+  trainer.project_name="${WANDB_PROJECT}" \
   trainer.experiment_name="${RUN_ID}" \
   trainer.default_local_dir="${TRAIN_LOG_DIR}" \
   "$@" \

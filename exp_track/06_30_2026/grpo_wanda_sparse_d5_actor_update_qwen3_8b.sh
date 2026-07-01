@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=grpo_qwen3_8b_wanda_d5
 #SBATCH --account=ECS26006
-#SBATCH --partition=gh-dev
+#SBATCH --partition=gh
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=00:20:00
+#SBATCH --time=15:00:00
 #SBATCH --output=slurm-%j_grpo_qwen3_8b_wanda_d5.out
 #SBATCH --error=slurm-%j_grpo_qwen3_8b_wanda_d5.err
 
@@ -39,6 +39,7 @@ export HYDRA_FULL_ERROR=0
 export VLLM_USE_V1=1
 
 export WANDB_PROJECT="prune_for_post_train"
+WANDB_PROJECT="prune_for_post_train"
 
 echo "Activated environment"
 echo "Python: $(which python3)"
@@ -106,7 +107,7 @@ if [[ ! -d "$WANDA_SCORE_DIR" && -d "/work2/09576/shuozhe/saved_score/qwen3_8b_b
 fi
 SPARSE_UPDATE_MASK_PATH="${SPARSE_UPDATE_MASK_PATH:-${TRAIN_LOG_DIR}/wanda_top_sparsity_${SPARSE_UPDATE_SPARSITY}_mask.pt}"
 SPARSE_UPDATE_VERIFY="${SPARSE_UPDATE_VERIFY:-true}"
-SPARSE_UPDATE_VERIFY_INTERVAL="${SPARSE_UPDATE_VERIFY_INTERVAL:-100}"
+SPARSE_UPDATE_VERIFY_INTERVAL="${SPARSE_UPDATE_VERIFY_INTERVAL:-200}"
 SPARSE_UPDATE_TARGET_MODULES="${SPARSE_UPDATE_TARGET_MODULES:-q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj}"
 SPARSE_UPDATE_EXCLUDE_KEYWORDS="${SPARSE_UPDATE_EXCLUDE_KEYWORDS:-embed,lm_head,norm,layernorm,rmsnorm}"
 
@@ -425,7 +426,7 @@ python3 -m verl.trainer.main_ppo \
   trainer.save_freq=50 \
   trainer.total_epochs=5 \
   trainer.logger='["console","wandb"]' \
-  trainer.project_name="GRPO_metamath" \
+  trainer.project_name="${WANDB_PROJECT}" \
   trainer.experiment_name="${RUN_ID}" \
   trainer.default_local_dir="${TRAIN_LOG_DIR}" \
   "$@" \
