@@ -5,7 +5,7 @@
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=15:00:00
+#SBATCH --time=00:20:00
 #SBATCH --output=slurm-%j_grpo_qwen3_8b_wanda_d5.out
 #SBATCH --error=slurm-%j_grpo_qwen3_8b_wanda_d5.err
 
