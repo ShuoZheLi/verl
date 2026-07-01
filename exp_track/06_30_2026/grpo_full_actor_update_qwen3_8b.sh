@@ -140,10 +140,21 @@ describe_path() {
 }
 
 sync_to_work() {
-  echo "Syncing run directory back to WORK..."
+  echo "Syncing lightweight logs/metadata back to WORK; checkpoints stay on SCRATCH."
   mkdir -p "$ARCHIVE_DIR"
-  rsync -a "$RUN_DIR"/ "$ARCHIVE_DIR"/ || true
-  echo "Archived run to: $ARCHIVE_DIR"
+  rsync -a \
+    --exclude='**/global_step_*' \
+    --exclude='**/checkpoints/**' \
+    --exclude='**/model_world_size_*_rank_*.pt' \
+    --exclude='**/optim_world_size_*_rank_*.pt' \
+    --exclude='**/extra_state_world_size_*_rank_*.pt' \
+    --exclude='**/sparse_update_state_rank_*.pt' \
+    --exclude='**/huggingface/**' \
+    --exclude='**/*.safetensors' \
+    --exclude='**/pytorch_model*.bin' \
+    "$RUN_DIR"/ "$ARCHIVE_DIR"/ || true
+  echo "Archived lightweight run files to: $ARCHIVE_DIR"
+  echo "Checkpoint/model artifacts remain on SCRATCH at: $TRAIN_LOG_DIR"
 }
 
 stop_ray_all_nodes() {
