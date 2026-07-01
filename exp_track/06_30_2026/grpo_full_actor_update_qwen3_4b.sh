@@ -59,7 +59,7 @@ RUN_ID="${RUN_NAME}_${REAL_SLURM_JOB_ID}"
 # When true, math_dapo incorrect answers get reward 0.0 instead of -1.0.
 MATH_DAPO_BINARY_REWARD=true
 WORK_DIR="${WORK_DIR:-/work2/09576/shuozhe/verl}"
-POLICY_INIT_CKPT="${POLICY_INIT_CKPT:-/work2/09576/shuozhe/saved_model/Qwen3-4b-Base}"
+POLICY_INIT_CKPT="${POLICY_INIT_CKPT:-/work2/09576/shuozhe/saved_model/Qwen3-4B-Base}"
 TRAIN_FILE="${TRAIN_FILE:-/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/train.parquet}"
 VAL_FILE="${VAL_FILE:-/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/test.parquet}"
 
@@ -67,8 +67,8 @@ VAL_FILE="${VAL_FILE:-/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/tes
 if [[ ! -d "$WORK_DIR" && -d "/work2/09576/shuozhe/verl" ]]; then
   WORK_DIR="/work2/09576/shuozhe/verl"
 fi
-if [[ ! -d "$POLICY_INIT_CKPT" && -d "/work2/09576/shuozhe/saved_model/Qwen3-4b-Base" ]]; then
-  POLICY_INIT_CKPT="/work2/09576/shuozhe/saved_model/Qwen3-4b-Base"
+if [[ ! -d "$POLICY_INIT_CKPT" && -d "/work2/09576/shuozhe/saved_model/Qwen3-4B-Base" ]]; then
+  POLICY_INIT_CKPT="/work2/09576/shuozhe/saved_model/Qwen3-4B-Base"
 fi
 if [[ ! -f "$TRAIN_FILE" && -f "/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/math7500.parquet" ]]; then
   TRAIN_FILE="/work2/09576/shuozhe/saved_dataset/MetaMathQA-math-500/math7500.parquet"
