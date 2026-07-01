@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from collections.abc import Mapping
@@ -88,6 +89,119 @@ def bottom_fraction_mask(scores: torch.Tensor, fraction: float) -> torch.BoolTen
     _, indices = torch.topk(flat, k=count, largest=False, sorted=False)
     mask[indices] = True
     return mask.reshape_as(scores)
+
+
+def keep_fraction_mask_from_scores(scores: torch.Tensor, keep_fraction: float) -> torch.BoolTensor:
+    """Return True for trainable/kept entries with highest pruning-importance scores."""
+    return top_fraction_mask(scores.detach().float(), keep_fraction)
+
+
+def _load_score_metadata(score_dir: str | os.PathLike[str]) -> tuple[str, dict[str, str], dict[str, Any]]:
+    score_dir = os.fspath(score_dir)
+    metadata_path = os.path.join(score_dir, "metadata.json")
+    if not os.path.isfile(metadata_path):
+        raise FileNotFoundError(f"WANDA score metadata not found: {metadata_path}")
+    with open(metadata_path, encoding="utf-8") as handle:
+        metadata = json.load(handle)
+    modules = metadata.get("modules")
+    if not isinstance(modules, Mapping) or not modules:
+        raise ValueError(f"Invalid WANDA score metadata {metadata_path}: missing non-empty 'modules' mapping")
+    score_key = str(metadata.get("score_key", "wanda"))
+    return score_key, {str(name): str(file_name) for name, file_name in modules.items()}, metadata
+
+
+def _load_module_score(score_dir: str | os.PathLike[str], file_name: str, score_key: str) -> torch.Tensor:
+    score_path = os.path.join(os.fspath(score_dir), file_name)
+    if not os.path.isfile(score_path):
+        raise FileNotFoundError(f"WANDA score tensor not found: {score_path}")
+    payload = torch.load(score_path, map_location="cpu", weights_only=False)
+    if isinstance(payload, Mapping):
+        if score_key not in payload:
+            raise KeyError(f"Score file {score_path} does not contain key {score_key!r}; available keys={list(payload)}")
+        payload = payload[score_key]
+    if not torch.is_tensor(payload):
+        raise ValueError(f"Score file {score_path} did not contain a tensor for key {score_key!r}")
+    return payload.detach().cpu().float()
+
+
+def _score_name_aliases(module_name: str) -> list[str]:
+    canonical_name = _canonical_name(module_name).removesuffix(".weight")
+    aliases = [canonical_name]
+    if canonical_name.startswith("model."):
+        aliases.append(canonical_name[len("model.") :])
+    else:
+        aliases.append(f"model.{canonical_name}")
+    return list(dict.fromkeys(aliases))
+
+
+def build_masks_from_wanda_scores(
+    model: nn.Module,
+    score_dir: str | os.PathLike[str],
+    keep_fraction: float,
+    config: Any = None,
+) -> tuple[dict[str, torch.BoolTensor], dict[str, Any]]:
+    """Build sparse-update masks from saved WANDA pruning scores.
+
+    WANDA scores measure pruning importance: higher score means the parameter is more important to keep.
+    The returned bool masks use VERL sparse-update semantics: True entries remain trainable, False
+    entries are frozen/restored after optimizer steps. Therefore, for sparsity s, use
+    keep_fraction = 1 - s and select the top keep_fraction scores per tensor.
+    """
+    keep_fraction = _validate_alpha(keep_fraction, "keep_fraction")
+    target_modules = _as_list(_cfg_get(config, "target_modules", DEFAULT_TARGET_MODULES), DEFAULT_TARGET_MODULES)
+    exclude_keywords = _as_list(_cfg_get(config, "exclude_keywords", DEFAULT_EXCLUDE_KEYWORDS), DEFAULT_EXCLUDE_KEYWORDS)
+    apply_to_bias = bool(_cfg_get(config, "apply_to_bias", False))
+    score_key, score_index, score_metadata = _load_score_metadata(score_dir)
+    masks: dict[str, torch.BoolTensor] = {}
+    missing_scores: list[str] = []
+    shape_mismatches: list[dict[str, Any]] = []
+
+    target_param_index = 0
+    for name, param in model.named_parameters():
+        canonical_name = _canonical_name(name)
+        if not should_mask_param(canonical_name, param, target_modules, exclude_keywords, apply_to_bias):
+            continue
+        score_file = None
+        for alias in _score_name_aliases(canonical_name):
+            score_file = score_index.get(alias)
+            if score_file is not None:
+                break
+        if score_file is None:
+            missing_scores.append(canonical_name)
+            continue
+        target_param_index += 1
+        if target_param_index == 1 or target_param_index % 25 == 0:
+            logger.info("building WANDA sparse-update mask for target tensor %d: %s", target_param_index, canonical_name)
+        scores = _load_module_score(score_dir, score_file, score_key)
+        if tuple(scores.shape) != tuple(param.shape):
+            shape_mismatches.append(
+                {"name": canonical_name, "score_shape": list(scores.shape), "param_shape": list(param.shape)}
+            )
+            continue
+        masks[canonical_name] = keep_fraction_mask_from_scores(scores, keep_fraction).cpu().bool()
+
+    if missing_scores:
+        raise ValueError(f"WANDA score directory is missing scores for target params: {missing_scores[:10]}")
+    if shape_mismatches:
+        raise ValueError(f"WANDA score tensors do not match model parameter shapes: {shape_mismatches[:10]}")
+    metadata = sparse_mask_metadata(
+        masks,
+        {
+            "mode": "wanda_top",
+            "target_modules": target_modules,
+            "exclude_keywords": exclude_keywords,
+        },
+        extra={
+            "score_dir": os.fspath(score_dir),
+            "score_key": score_key,
+            "score_model_name": score_metadata.get("model_name"),
+            "score_calibration_path": score_metadata.get("calibration_path"),
+            "sparsity": 1.0 - keep_fraction,
+            "keep_fraction": keep_fraction,
+            "selection_rule": "top WANDA scores are trainable/kept; lower scores are frozen",
+        },
+    )
+    return masks, metadata
 
 
 def should_mask_param(
@@ -191,6 +305,8 @@ def build_safe_svd_lowmag_mask_for_tensor(
 
 def build_masks_from_model(model: nn.Module, config: Any) -> dict[str, torch.BoolTensor]:
     mode = _cfg_get(config, "mode", "safe_svd_lowmag")
+    if mode == "wanda_top":
+        raise ValueError("mode='wanda_top' requires build_masks_from_wanda_scores(...) or tools/build_sparse_update_mask.py --wanda_score_dir")
     if mode == "random_same_density" or _cfg_get(config, "random_mask_same_density", False):
         mode = "random_same_density"
     rank_k = int(_cfg_get(config, "rank_k", 128))

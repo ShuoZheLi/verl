@@ -4,7 +4,12 @@ import logging
 
 from transformers import AutoModelForCausalLM
 
-from verl.utils.sparse_update_mask import build_masks_from_model, save_sparse_masks, sparse_mask_metadata
+from verl.utils.sparse_update_mask import (
+    build_masks_from_model,
+    build_masks_from_wanda_scores,
+    save_sparse_masks,
+    sparse_mask_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +19,9 @@ def parse_args():
     parser.add_argument("--model_name_or_path", required=True)
     parser.add_argument("--output_path", required=True)
     parser.add_argument("--mode", default="safe_svd_lowmag")
+    parser.add_argument("--wanda_score_dir", default=None, help="Directory produced by gradient_prune/scripts/score_wanda.py.")
+    parser.add_argument("--sparsity", type=float, default=None, help="Pruning sparsity for WANDA-score masks; keep_fraction = 1 - sparsity.")
+    parser.add_argument("--keep_fraction", type=float, default=None, help="Fraction of target weights to keep trainable for WANDA-score masks.")
     parser.add_argument("--rank_k", type=int, default=128)
     parser.add_argument("--alpha_princ", type=float, default=0.5)
     parser.add_argument("--alpha_low", type=float, default=0.5)
@@ -44,8 +52,18 @@ def main():
         torch_dtype="auto",
         trust_remote_code=args.trust_remote_code,
     )
-    masks = build_masks_from_model(model, config)
-    metadata = sparse_mask_metadata(masks, config, extra={"model_name_or_path": args.model_name_or_path})
+    if args.wanda_score_dir is not None:
+        if args.keep_fraction is None and args.sparsity is None:
+            raise ValueError("--wanda_score_dir requires either --sparsity or --keep_fraction")
+        if args.keep_fraction is not None and args.sparsity is not None:
+            raise ValueError("Specify only one of --sparsity or --keep_fraction")
+        keep_fraction = args.keep_fraction if args.keep_fraction is not None else 1.0 - args.sparsity
+        config["mode"] = "wanda_top"
+        masks, metadata = build_masks_from_wanda_scores(model, args.wanda_score_dir, keep_fraction, config)
+        metadata["model_name_or_path"] = args.model_name_or_path
+    else:
+        masks = build_masks_from_model(model, config)
+        metadata = sparse_mask_metadata(masks, config, extra={"model_name_or_path": args.model_name_or_path})
     print(f"num_masked_tensors={len(masks)}")
     print(f"linear_trainable_fraction={metadata['linear_trainable_fraction']:.6f}")
     for name, density in metadata["per_param_density"].items():
