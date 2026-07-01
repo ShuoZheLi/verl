@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=grpo_qwen3_8b_wanda_d5
 #SBATCH --account=ECS26006
-#SBATCH --partition=gh-dev
+#SBATCH --partition=gh
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=1:00:00
+#SBATCH --time=20:00:00
 #SBATCH --output=slurm-%j_grpo_qwen3_8b_wanda_d5.out
 #SBATCH --error=slurm-%j_grpo_qwen3_8b_wanda_d5.err
 

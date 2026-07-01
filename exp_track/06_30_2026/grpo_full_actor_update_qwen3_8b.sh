@@ -5,7 +5,7 @@
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=15:00:00
+#SBATCH --time=20:00:00
 #SBATCH --output=slurm-%j_grpo_qwen3_8b_full_update.out
 #SBATCH --error=slurm-%j_grpo_qwen3_8b_full_update.err
 
