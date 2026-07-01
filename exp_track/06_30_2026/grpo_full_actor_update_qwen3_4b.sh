@@ -374,7 +374,7 @@ python3 -m verl.trainer.main_ppo \
   trainer.val_before_train=true \
   trainer.n_gpus_per_node="${RAY_GPUS_PER_NODE}" \
   trainer.nnodes="${SLURM_JOB_NUM_NODES}" \
-  trainer.test_freq=50 \
+  trainer.test_freq=25 \
   trainer.save_freq=50 \
   trainer.total_epochs=5 \
   trainer.logger='["console","wandb"]' \
