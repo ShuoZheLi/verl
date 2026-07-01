@@ -322,3 +322,50 @@ def test_wanda_top_mode_requires_score_directory_for_model_builder():
         assert "--wanda_score_dir" in str(exc)
     else:
         raise AssertionError("build_masks_from_model should reject score-based wanda_top mode")
+
+
+def test_zero_frozen_params_initializes_and_restores_pruned_entries_to_zero():
+    linear = nn.Linear(3, 2, bias=False)
+    with torch.no_grad():
+        linear.weight.copy_(torch.arange(6, dtype=torch.float32).reshape(2, 3) + 1.0)
+    mask = torch.tensor([[False, True, False], [True, False, True]])
+
+    manager = SparseUpdateMaskManager(
+        linear,
+        {"weight": mask},
+        {"enabled": True, "target_modules": [], "exclude_keywords": [], "strict_load": True, "zero_frozen_params": True},
+    )
+
+    assert torch.equal(linear.weight.detach()[~mask], torch.zeros_like(linear.weight.detach()[~mask]))
+    assert torch.equal(linear.weight.detach()[mask], torch.tensor([2.0, 4.0, 6.0]))
+
+    with torch.no_grad():
+        linear.weight.add_(10.0)
+    manager.restore_frozen_params()
+
+    assert torch.equal(linear.weight.detach()[~mask], torch.zeros_like(linear.weight.detach()[~mask]))
+    assert torch.equal(linear.weight.detach()[mask], torch.tensor([12.0, 14.0, 16.0]))
+    assert manager.metrics()["sparse_update/zero_frozen_params"] == 1.0
+
+
+def test_zero_frozen_params_state_dict_round_trip_keeps_flag_and_zero_snapshot():
+    linear = nn.Linear(2, 2, bias=False)
+    with torch.no_grad():
+        linear.weight.copy_(torch.tensor([[1.0, 2.0], [3.0, 4.0]]))
+    mask = torch.tensor([[True, False], [False, True]])
+    manager = SparseUpdateMaskManager(
+        linear,
+        {"weight": mask},
+        {"enabled": True, "target_modules": [], "exclude_keywords": [], "strict_load": True, "zero_frozen_params": True},
+    )
+    state = manager.state_dict()
+
+    reloaded = SparseUpdateMaskManager(
+        linear,
+        {"weight": mask},
+        {"enabled": True, "target_modules": [], "exclude_keywords": [], "strict_load": True},
+    )
+    reloaded.load_state_dict(state)
+
+    assert reloaded.zero_frozen_params_enabled is True
+    assert torch.equal(reloaded.original_params["weight"][~mask], torch.zeros_like(reloaded.original_params["weight"][~mask]))

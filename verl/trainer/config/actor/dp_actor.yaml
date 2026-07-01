@@ -132,8 +132,14 @@ sparse_update:
   # Whether bias tensors may be masked.
   apply_to_bias: false
 
-  # Restore frozen entries to their initialization after optimizer.step.
+  # Restore frozen entries after optimizer.step. If zero_frozen_params is false,
+  # frozen entries restore to initialization; if true, they restore to exact zero.
   restore_frozen_after_step: true
+
+  # Actually prune frozen entries by setting them to zero before rollout sync and
+  # keeping them zero after optimizer.step. The sparse mask still marks True entries
+  # as trainable/kept and False entries as pruned/frozen.
+  zero_frozen_params: false
 
   # Zero AdamW state entries corresponding to frozen weights.
   mask_optimizer_state: true

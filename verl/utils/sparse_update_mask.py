@@ -403,6 +403,7 @@ class SparseUpdateMaskManager:
         self.config = config
         self.enabled = bool(_cfg_get(config, "enabled", False)) and not bool(_cfg_get(config, "dry_run_log_only", False))
         self.restore_frozen_after_step_enabled = bool(_cfg_get(config, "restore_frozen_after_step", True))
+        self.zero_frozen_params_enabled = bool(_cfg_get(config, "zero_frozen_params", False))
         self.mask_optimizer_state_enabled = bool(_cfg_get(config, "mask_optimizer_state", True))
         self.verify_frozen_weights_enabled = bool(_cfg_get(config, "verify_frozen_weights", False))
         self.verification_interval = int(_cfg_get(config, "verification_interval", 10))
@@ -525,9 +526,12 @@ class SparseUpdateMaskManager:
                 raise ValueError(
                     f"sparse_update mask shape mismatch for {canonical_name}: mask {tuple(mask.shape)} vs param {tuple(param.shape)}"
                 )
-            self.local_masks[canonical_name] = local_mask.detach().cpu().bool()
-            self.original_params[canonical_name] = param.detach().cpu().clone()
+            local_mask = local_mask.detach().cpu().bool()
+            self.local_masks[canonical_name] = local_mask
+            self.original_params[canonical_name] = self._make_original_snapshot(param, local_mask)
             self._param_names_by_id[id(param)] = canonical_name
+            if self.zero_frozen_params_enabled:
+                self._apply_param_mask_in_place(canonical_name, param)
             seen.add(canonical_name)
         missing = sorted(name for name in self.masks if not self._has_seen_alias(name, seen))
         uncovered = sorted(name for name in target_param_names if not self._has_seen_alias(name, seen))
@@ -581,6 +585,17 @@ class SparseUpdateMaskManager:
 
     def _original_for_param(self, name: str, param: torch.Tensor) -> torch.Tensor:
         return self.original_params[name].to(device=param.device, dtype=param.dtype)
+
+    def _make_original_snapshot(self, param: torch.Tensor, local_mask: torch.BoolTensor) -> torch.Tensor:
+        snapshot = param.detach().cpu().clone()
+        if self.zero_frozen_params_enabled:
+            snapshot = torch.where(local_mask, snapshot, torch.zeros_like(snapshot))
+        return snapshot
+
+    @torch.no_grad()
+    def _apply_param_mask_in_place(self, name: str, param: torch.Tensor) -> None:
+        mask = self._mask_for_param(name, param)
+        param.mul_(mask.to(dtype=param.dtype))
 
     def apply_grad_mask(self) -> None:
         if not self.enabled:
@@ -664,6 +679,7 @@ class SparseUpdateMaskManager:
             "sparse_update/num_masked_tensors": float(len(self.masks)),
             "sparse_update/num_missing_masks": float(self.num_missing_masks),
             "sparse_update/num_shape_mismatches": float(self.num_shape_mismatches),
+            "sparse_update/zero_frozen_params": float(self.zero_frozen_params_enabled),
         }
 
     def state_dict(self) -> dict[str, Any]:
@@ -673,6 +689,7 @@ class SparseUpdateMaskManager:
             "original_params": {name: tensor.detach().cpu() for name, tensor in self.original_params.items()},
             "metadata": self.metadata,
             "step": self._step,
+            "zero_frozen_params_enabled": self.zero_frozen_params_enabled,
         }
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
@@ -683,4 +700,5 @@ class SparseUpdateMaskManager:
         if "original_params" in state:
             self.original_params = {str(name): tensor.detach().cpu() for name, tensor in state["original_params"].items()}
         self.metadata = dict(state.get("metadata", self.metadata))
+        self.zero_frozen_params_enabled = bool(state.get("zero_frozen_params_enabled", self.zero_frozen_params_enabled))
         self._step = int(state.get("step", self._step))

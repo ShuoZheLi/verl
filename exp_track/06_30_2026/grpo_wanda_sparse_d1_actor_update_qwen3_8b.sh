@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=grpo_qwen3_8b_wanda_d2
+#SBATCH --job-name=grpo_qwen3_8b_wanda_d1
 #SBATCH --account=ASC24079
-#SBATCH --partition=gh
+#SBATCH --partition=gh-dev
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=72
-#SBATCH --time=15:00:00
-#SBATCH --output=slurm-%j_grpo_qwen3_8b_wanda_d2.out
-#SBATCH --error=slurm-%j_grpo_qwen3_8b_wanda_d2.err
+#SBATCH --time=1:00:00
+#SBATCH --output=slurm-%j_grpo_qwen3_8b_wanda_d1.out
+#SBATCH --error=slurm-%j_grpo_qwen3_8b_wanda_d1.err
 
 set -euo pipefail
 
@@ -49,7 +49,7 @@ python3 -V
 # -----------------------------
 # Run identity
 # -----------------------------
-RUN_NAME="grpo_qwen3_8b_wanda_sparse_kept_sparsity_d2"
+RUN_NAME="grpo_qwen3_8b_wanda_sparse_kept_sparsity_d1"
 REAL_SLURM_JOB_ID="${SLURM_JOB_ID}"
 RUN_ID="${RUN_NAME}_${REAL_SLURM_JOB_ID}"
 
@@ -108,6 +108,9 @@ fi
 SPARSE_UPDATE_MASK_PATH="${SPARSE_UPDATE_MASK_PATH:-${TRAIN_LOG_DIR}/wanda_top_sparsity_${SPARSE_UPDATE_SPARSITY}_mask.pt}"
 SPARSE_UPDATE_VERIFY="${SPARSE_UPDATE_VERIFY:-true}"
 SPARSE_UPDATE_VERIFY_INTERVAL="${SPARSE_UPDATE_VERIFY_INTERVAL:-200}"
+# false: dense forward with frozen entries restored to pretrained values.
+# true: actually pruned forward/training with frozen entries set to and kept at zero.
+SPARSE_UPDATE_ZERO_FROZEN_PARAMS="${SPARSE_UPDATE_ZERO_FROZEN_PARAMS:-true}"
 SPARSE_UPDATE_TARGET_MODULES="${SPARSE_UPDATE_TARGET_MODULES:-q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj}"
 SPARSE_UPDATE_EXCLUDE_KEYWORDS="${SPARSE_UPDATE_EXCLUDE_KEYWORDS:-embed,lm_head,norm,layernorm,rmsnorm}"
 
@@ -117,6 +120,7 @@ SPARSE_UPDATE_MASK_OVERRIDES=(
   actor_rollout_ref.actor.sparse_update.mask_path="${SPARSE_UPDATE_MASK_PATH}"
   actor_rollout_ref.actor.sparse_update.build_mask_on_init=false
   actor_rollout_ref.actor.sparse_update.restore_frozen_after_step=true
+  actor_rollout_ref.actor.sparse_update.zero_frozen_params="${SPARSE_UPDATE_ZERO_FROZEN_PARAMS}"
   actor_rollout_ref.actor.sparse_update.mask_optimizer_state=true
   actor_rollout_ref.actor.sparse_update.verify_frozen_weights="${SPARSE_UPDATE_VERIFY}"
   actor_rollout_ref.actor.sparse_update.verification_interval="${SPARSE_UPDATE_VERIFY_INTERVAL}"
@@ -245,6 +249,7 @@ describe_path "POLICY_MODEL_PATH" "$POLICY_MODEL_PATH"
 echo "SPARSE_UPDATE_MODE: $SPARSE_UPDATE_MODE"
 echo "SPARSE_UPDATE_SPARSITY: $SPARSE_UPDATE_SPARSITY"
 echo "SPARSE_UPDATE_KEEP_FRACTION: ${SPARSE_UPDATE_KEEP_FRACTION:-1 - sparsity}"
+echo "SPARSE_UPDATE_ZERO_FROZEN_PARAMS: $SPARSE_UPDATE_ZERO_FROZEN_PARAMS"
 echo "WANDA_SCORE_DIR: $WANDA_SCORE_DIR"
 echo "SPARSE_UPDATE_MASK_PATH: $SPARSE_UPDATE_MASK_PATH"
 
